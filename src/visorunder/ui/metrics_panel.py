@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..calculations.metrics import BetMetrics, GeneralMetrics
+from ..calculations.entry import LineEvaluation
+from ..calculations.metrics import GeneralMetrics
+from ..calculations.signals import SignalLevel
+from ..config.criteria import EntryCriteria
 from ..domain.bet import LockedBet
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketLine
@@ -199,7 +202,8 @@ class MetricsPanel(QWidget):
         limit_row.addWidget(self.threshold_label)
         layout.addLayout(limit_row)
 
-        layout.addWidget(_title("FALTAN PARA PERDER"))
+        self.points_title = _title("PUNTOS PARA SUPERAR LA LINEA")
+        layout.addWidget(self.points_title)
         self.points_to_exceed_label = QLabel(fmt.UNKNOWN)
         self.points_to_exceed_label.setObjectName("hugeValue")
         self.points_to_exceed_label.setAlignment(Qt.AlignCenter)
@@ -211,11 +215,21 @@ class MetricsPanel(QWidget):
         self.exceeded_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.exceeded_label)
 
-        layout.addWidget(_title("RITMO NECESARIO PARA PERDER"))
+        layout.addWidget(_title("RITMO NECESARIO PARA SUPERARLA"))
         self.required_pace_label = QLabel(fmt.UNKNOWN)
         self.required_pace_label.setObjectName("paceValue")
         self.required_pace_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.required_pace_label)
+
+        self.signal_label = QLabel("")
+        self.signal_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.signal_label)
+
+        self.margins_label = QLabel("")
+        self.margins_label.setObjectName("status")
+        self.margins_label.setAlignment(Qt.AlignCenter)
+        self.margins_label.setWordWrap(True)
+        layout.addWidget(self.margins_label)
 
         self.scope_label = QLabel("")
         self.scope_label.setObjectName("status")
@@ -246,9 +260,9 @@ class MetricsPanel(QWidget):
     # -------------------------------------------------------------- refresco
     def update_view(self, state: GameState, general: GeneralMetrics,
                     bet: Optional[LockedBet] = None,
-                    bet_metrics: Optional[BetMetrics] = None,
+                    evaluation: Optional[LineEvaluation] = None,
                     current_market_line: Optional[MarketLine] = None,
-                    selection_is_bet: bool = True,
+                    criteria: Optional[EntryCriteria] = None,
                     needs_baseline: bool = False) -> None:
         """Vuelca un ciclo completo de datos en la interfaz."""
         self.team_a_label.setText(fmt.text(state.team_a.usable_value()) or "EQUIPO A")
@@ -271,20 +285,20 @@ class MetricsPanel(QWidget):
         self.points_source_label.setText(_points_source_text(general.period_points_source))
         self.baseline_button.setVisible(bool(needs_baseline))
 
-        self._update_bet(bet, bet_metrics, current_market_line, selection_is_bet)
+        self._update_bet(bet, evaluation, current_market_line, criteria)
         self.halftime_label.setText(fmt.halftime(general.seconds_to_halftime))
         self.end_label.setText(fmt.clock(general.remaining_game_seconds))
 
-    def _update_bet(self, bet: Optional[LockedBet], m: Optional[BetMetrics],
-                    current_line: Optional[MarketLine], selection_is_bet: bool) -> None:
+    def _update_bet(self, bet: Optional[LockedBet], m: Optional[LineEvaluation],
+                    current_line: Optional[MarketLine],
+                    criteria: Optional[EntryCriteria] = None) -> None:
         if bet is not None:
             self.bet_title.setText("MI APUESTA (FIJADA)")
             self.bet_label.setText(bet.describe())
             self.bet_market_label.setText(bet.key.label)
-        elif m is not None and m.line is not None:
-            self.bet_title.setText("LINEA SELECCIONADA (SIN FIJAR)")
-            odds = fmt.odds(m.odds)
-            self.bet_label.setText(f"{m.side.value} {fmt.line(m.line)} @ {odds}")
+        elif m is not None:
+            self.bet_title.setText("LINEA ENFOCADA (SIN FIJAR)")
+            self.bet_label.setText(m.describe_under())
             self.bet_market_label.setText(m.key.label if m.key else "")
         else:
             self.bet_title.setText("MI APUESTA")
@@ -304,22 +318,42 @@ class MetricsPanel(QWidget):
             self.points_to_exceed_label.setText(fmt.UNKNOWN)
             self.required_pace_label.setText(fmt.UNKNOWN)
             self.exceeded_label.setText("")
+            self.signal_label.setText("")
+            self.margins_label.setText("")
             self.scope_label.setText("")
             return
 
         self.threshold_label.setText(fmt.integer(m.exceed_threshold))
+        # "Faltan para perder" solo cuando hay una apuesta UNDER fijada; si
+        # todavia estas buscando entrada, el dato es neutro: puntos que faltan
+        # para que la linea quede superada.
+        self.points_title.setText("FALTAN PARA PERDER" if bet is not None
+                                  else "PUNTOS PARA SUPERAR LA LINEA")
         if m.points_to_exceed is None:
             self.points_to_exceed_label.setText(fmt.UNKNOWN)
             self.points_to_exceed_label.setStyleSheet(f"color: {COLOR_MUTED};")
-            self.exceeded_label.setText("PUNTOS DEL AMBITO NO CONFIRMADOS")
+            self.exceeded_label.setText(m.unavailable_reason or "DATOS NO CONFIRMADOS")
         else:
             self.points_to_exceed_label.setText(f"{m.points_to_exceed} PUNTOS")
-            color = COLOR_DANGER if m.exceeded else (
-                COLOR_WARN if m.points_to_exceed <= 6 else COLOR_OK)
+            color = (criteria.color_for(m.signal.value) if criteria is not None
+                     else COLOR_OK)
+            if not m.signal.is_evaluable:
+                color = COLOR_MUTED
             self.points_to_exceed_label.setStyleSheet(f"color: {color};")
-            self.exceeded_label.setText("UNDER SUPERADO" if m.exceeded else "")
+            if m.exceeded:
+                self.exceeded_label.setText("LINEA SUPERADA" if bet is None
+                                            else "UNDER SUPERADO")
+            elif m.unavailable_reason:
+                self.exceeded_label.setText(m.unavailable_reason)
+            else:
+                self.exceeded_label.setText("")
 
         self.required_pace_label.setText(fmt.pace(m.required_pace))
+        self.signal_label.setText(_signal_text(m))
+        if criteria is not None:
+            self.signal_label.setStyleSheet(
+                f"color: {criteria.color_for(m.signal.value)}; font-weight: 700;")
+        self.margins_label.setText(_margins_text(m, criteria))
         self.scope_label.setText(_scope_text(m))
 
 
@@ -352,7 +386,36 @@ def _points_source_text(source: PointsSource) -> str:
     }[source]
 
 
-def _scope_text(m: BetMetrics) -> str:
+def _signal_text(m: LineEvaluation) -> str:
+    """Etiqueta textual siempre visible: nunca se depende solo del color."""
+    if not m.signal.is_evaluable:
+        return m.unavailable_reason or m.signal.label
+    texto = m.signal.label
+    if m.final_stretch:
+        # Indicador independiente: no altera ritmo, margen ni clasificacion.
+        texto += "   ·   TRAMO FINAL"
+    return texto
+
+
+def _margins_text(m: LineEvaluation, criteria: Optional[EntryCriteria]) -> str:
+    if not m.signal.is_evaluable:
+        return ""
+    referencia = f"{criteria.reference_pace:.2f}" if criteria else "--"
+    return (f"vs referencia ({referencia}) {_margin(m.margin_vs_reference)}   |   "
+            f"vs cuarto {_margin(m.margin_vs_period_pace)}   |   "
+            f"vs partido {_margin(m.margin_vs_game_pace)}")
+
+
+def _margin(value: Optional[float]) -> str:
+    if value is None:
+        return fmt.UNKNOWN
+    import math
+    if math.isinf(value):
+        return "INF"
+    return f"{value:+.2f}"
+
+
+def _scope_text(m: LineEvaluation) -> str:
     if m.key is None:
         return ""
     parts = [f"Ambito: {m.key.label}"]

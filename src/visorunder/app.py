@@ -8,11 +8,15 @@ historial) se puede probar sin interfaz grafica.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Callable, List, Optional, Tuple
 
+from .calculations import entry as entry_mod
 from .calculations import metrics as metrics_mod
+from .calculations.entry import LineEvaluation
 from .calculations.metrics import BetMetrics, GeneralMetrics
+from .config.criteria import EntryCriteria
 from .capture.roi_manager import RoiManager
 from .capture.screen_capture import ScreenCapture, create_capture
 from .config.profiles import ScreenContext, SportsbookProfile
@@ -33,16 +37,41 @@ from .storage.repositories import (
 )
 
 
+class AppMode(str, Enum):
+    """Los dos modos de la aplicacion.
+
+    BUSCANDO_ENTRADA es el modo principal: todavia no has apostado y el
+    tablero analiza en vivo todas las lineas que ofrece la casa.
+    APUESTA_FIJADA anade el seguimiento de tu apuesta SIN quitar el tablero:
+    los dos conviven en pantalla.
+    """
+
+    BUSCANDO_ENTRADA = "BUSCANDO_ENTRADA"
+    APUESTA_FIJADA = "APUESTA_FIJADA"
+
+    @property
+    def label(self) -> str:
+        return {"BUSCANDO_ENTRADA": "BUSCANDO ENTRADA",
+                "APUESTA_FIJADA": "APUESTA FIJADA"}[self.value]
+
+
 @dataclass
 class ViewModel:
     """Todo lo que la interfaz necesita para pintar un ciclo."""
 
     snapshot: Optional[ReaderSnapshot] = None
     general: Optional[GeneralMetrics] = None
-    bet_metrics: Optional[BetMetrics] = None
+    mode: AppMode = AppMode.BUSCANDO_ENTRADA
+    #: Evaluacion de TODAS las lineas que la casa ofrece ahora mismo.
+    evaluations: List[LineEvaluation] = field(default_factory=list)
+    #: Linea que ocupa la tarjeta grande (seleccion manual o cuota objetivo).
+    focus: Optional[LineEvaluation] = None
+    #: Seguimiento de la apuesta fijada, calculado contra su linea congelada.
+    bet_tracking: Optional[LineEvaluation] = None
     bet: Optional[LockedBet] = None
     selected_line: Optional[MarketLine] = None
     current_market_line: Optional[MarketLine] = None
+    criteria: EntryCriteria = field(default_factory=EntryCriteria)
 
 
 class AppController:
@@ -70,6 +99,9 @@ class AppController:
         self.locked_bet: Optional[LockedBet] = None
         self.selected_line: Optional[MarketLine] = None
         self.selected_side: Side = Side.UNDER
+        #: Valor de linea elegido a mano por el usuario. Manda sobre el
+        #: enfoque automatico por cuota objetivo mientras esa linea exista.
+        self.manual_line_value: Optional[float] = None
         self.demo_game = None
 
     # ---------------------------------------------------------------- basico
@@ -217,9 +249,25 @@ class AppController:
         self.db.close()
 
     # --------------------------------------------------------------- apuesta
-    def select_line(self, line: Optional[MarketLine], side: Side = Side.UNDER) -> None:
+    @property
+    def criteria(self) -> EntryCriteria:
+        return self.settings.entry
+
+    @property
+    def mode(self) -> AppMode:
+        return AppMode.APUESTA_FIJADA if self.locked_bet else AppMode.BUSCANDO_ENTRADA
+
+    def select_line(self, line: Optional[MarketLine], side: Side = Side.UNDER,
+                    manual: bool = True) -> None:
+        """Registra la linea elegida. `manual` la fija como foco preferido."""
         self.selected_line = line
         self.selected_side = side
+        if manual:
+            self.manual_line_value = line.line if line is not None else None
+
+    def clear_manual_selection(self) -> None:
+        """Vuelve al enfoque automatico por cuota objetivo."""
+        self.manual_line_value = None
 
     def lock_bet(self) -> Optional[LockedBet]:
         """FIJAR APUESTA: congela linea y cuota (requisito 7)."""
@@ -257,31 +305,43 @@ class AppController:
 
     # --------------------------------------------------------------- lectura
     def build_view_model(self, snapshot: Optional[ReaderSnapshot]) -> ViewModel:
-        """Traduce un ciclo de lectura en datos listos para pintar."""
+        """Traduce un ciclo de lectura en el tablero completo.
+
+        Las senales se recalculan en CADA ciclo con los ultimos valores
+        confirmados de reloj y marcador, aunque el bloque de mercado se lea a
+        menor cadencia: lo que se mueve rapido es el reloj.
+        """
         if snapshot is None:
-            return ViewModel()
+            return ViewModel(criteria=self.criteria)
         state = snapshot.state
+        criteria = self.criteria
         general = metrics_mod.compute_general_metrics(state)
 
-        bet = self.locked_bet
-        bet_metrics: Optional[BetMetrics] = None
-        if bet is not None:
-            bet_metrics = metrics_mod.compute_metrics_for_bet(state, bet)
-        elif self.selected_line is not None:
-            line = self.selected_line
-            odds = line.under_odds if self.selected_side is Side.UNDER else line.over_odds
-            bet_metrics = metrics_mod.compute_bet_metrics(
-                state, line.key, line.line, odds, self.selected_side)
+        evaluations = entry_mod.evaluate_market(
+            state, snapshot.market, criteria, general,
+            under_review=snapshot.market_under_review)
+        focus = entry_mod.choose_focus(evaluations, criteria, self.manual_line_value)
 
+        # La seleccion sigue al foco para que FIJAR APUESTA use lo que se ve.
+        if focus is not None:
+            self.select_line(focus.line, self.selected_side, manual=False)
+
+        bet = self.locked_bet
+        bet_tracking = None
         current_line = None
-        if snapshot.market is not None and bet is not None:
-            current_line = snapshot.market.find(bet.line)
-            if current_line is None and snapshot.market.lines:
-                # La casa movio la linea: se muestra la mas cercana como referencia.
-                current_line = min(snapshot.market.sorted_lines(),
-                                   key=lambda ln: abs(ln.line - bet.line))
+        if bet is not None:
+            bet_tracking = entry_mod.evaluate_locked_bet(state, bet, criteria, general)
+            if snapshot.market is not None:
+                current_line = snapshot.market.find(bet.line)
+                if current_line is None and snapshot.market.lines:
+                    # La casa movio la linea: se ensena la mas cercana como
+                    # referencia, sin tocar la apuesta fijada.
+                    current_line = min(snapshot.market.sorted_lines(),
+                                       key=lambda ln: abs(ln.line - bet.line))
 
         return ViewModel(
-            snapshot=snapshot, general=general, bet_metrics=bet_metrics, bet=bet,
-            selected_line=self.selected_line, current_market_line=current_line,
+            snapshot=snapshot, general=general, mode=self.mode,
+            evaluations=evaluations, focus=focus, bet_tracking=bet_tracking,
+            bet=bet, selected_line=self.selected_line,
+            current_market_line=current_line, criteria=criteria,
         )

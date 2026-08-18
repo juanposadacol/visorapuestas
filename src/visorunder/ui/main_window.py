@@ -284,7 +284,9 @@ class MainWindow(QMainWindow):
 
         self.metrics_panel.update_view(
             state=view.snapshot.state, general=view.general, bet=view.bet,
-            bet_metrics=view.bet_metrics, current_market_line=view.current_market_line,
+            evaluation=view.bet_tracking or view.focus,
+            current_market_line=view.current_market_line,
+            criteria=view.criteria,
             needs_baseline=view.snapshot.needs_period_baseline,
         )
         self.market_panel.update_market(view.snapshot.market, view.snapshot.market_raw,

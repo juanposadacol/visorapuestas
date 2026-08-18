@@ -67,6 +67,11 @@ class ReaderSnapshot:
     #: True si el mercado se identifico leyendo su titulo en pantalla; False si
     #: proviene del mercado por defecto elegido en el perfil.
     market_from_label: bool = False
+    #: True mientras la casa ensena un conjunto de lineas distinto al
+    #: publicado y todavia se esta confirmando.
+    market_under_review: bool = False
+    #: Lineas pendientes de confirmacion, para poder mostrarlas como aviso.
+    market_pending_lines: tuple = ()
     field_status: Dict[str, str] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 
@@ -280,6 +285,8 @@ class LiveReader:
             errors=errors,
             needs_period_baseline=self._needs_baseline(),
             market_from_label=self.market_key_from_ocr,
+            market_under_review=self.market_tracker.under_review,
+            market_pending_lines=self.market_tracker.pending_lines,
             field_status=self._field_status(),
             ts=now,
         )

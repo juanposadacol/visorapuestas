@@ -52,6 +52,23 @@ class MarketTracker:
             return ""
         return f"{self._pending_count}/{self.required}"
 
+    @property
+    def under_review(self) -> bool:
+        """True mientras se valida un conjunto de lineas distinto al publicado.
+
+        La casa ya ensena otra cosa pero todavia no se ha confirmado. En ese
+        momento la interfaz debe decir LINEA EN REVISION en vez de seguir
+        mostrando la anterior como si fuera vigente.
+        """
+        return self._pending_signature is not None
+
+    @property
+    def pending_lines(self) -> tuple:
+        """Valores de linea que estan pendientes de confirmacion."""
+        if self._pending_signature is None:
+            return ()
+        return self._pending_signature[1]
+
     def current(self, now: Optional[float] = None) -> Optional[MarketSnapshot]:
         """Mercado vigente; caduca si hace demasiado que no se lee."""
         now = now if now is not None else time.time()
