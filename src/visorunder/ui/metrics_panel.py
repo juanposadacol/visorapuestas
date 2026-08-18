@@ -57,6 +57,10 @@ class MetricsPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        # Sin un ancho minimo el divisor estrangula esta columna y los
+        # numeros se recortan justo cuando mas rapido hay que leerlos.
+        self.setMinimumWidth(430)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -99,6 +103,7 @@ class MetricsPanel(QWidget):
         grid.addWidget(_title("TOTAL PARTIDO"), 2, 0)
         grid.addWidget(self.total_label, 2, 1)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, 110)
         return card
 
     def _build_clock(self) -> QFrame:
@@ -125,6 +130,7 @@ class MetricsPanel(QWidget):
         grid.addWidget(self.played_label, 1, 1)
         grid.addWidget(self.phase_label, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, 110)
         return card
 
     def _build_quarter(self) -> QFrame:
@@ -146,6 +152,14 @@ class MetricsPanel(QWidget):
         self.game_pace_label.setObjectName("metricValue")
         self.game_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.reference_label = QLabel(fmt.UNKNOWN)
+        self.reference_label.setObjectName("metricValue")
+        self.reference_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.target_odds_label = QLabel(fmt.UNKNOWN)
+        self.target_odds_label.setObjectName("metricValue")
+        self.target_odds_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self.points_source_label = QLabel("")
         self.points_source_label.setObjectName("status")
         self.points_source_label.setWordWrap(True)
@@ -163,9 +177,14 @@ class MetricsPanel(QWidget):
         grid.addWidget(self.period_pace_label, 1, 1)
         grid.addWidget(_title("PROMEDIO DEL PARTIDO"), 2, 0)
         grid.addWidget(self.game_pace_label, 2, 1)
-        grid.addWidget(self.points_source_label, 3, 0, 1, 2)
-        grid.addWidget(self.baseline_button, 4, 0, 1, 2)
+        grid.addWidget(_title("MI REFERENCIA"), 3, 0)
+        grid.addWidget(self.reference_label, 3, 1)
+        grid.addWidget(_title("MI CUOTA UNDER OBJETIVO"), 4, 0)
+        grid.addWidget(self.target_odds_label, 4, 1)
+        grid.addWidget(self.points_source_label, 5, 0, 1, 2)
+        grid.addWidget(self.baseline_button, 6, 0, 1, 2)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, 110)
         return card
 
     def _build_bet(self) -> QFrame:
@@ -199,6 +218,7 @@ class MetricsPanel(QWidget):
         self.threshold_label = QLabel(fmt.UNKNOWN)
         self.threshold_label.setObjectName("metricValue")
         self.threshold_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.threshold_label.setMinimumWidth(110)
         limit_row.addWidget(self.threshold_label)
         layout.addLayout(limit_row)
 
@@ -225,11 +245,26 @@ class MetricsPanel(QWidget):
         self.signal_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.signal_label)
 
-        self.margins_label = QLabel("")
-        self.margins_label.setObjectName("status")
-        self.margins_label.setAlignment(Qt.AlignCenter)
-        self.margins_label.setWordWrap(True)
-        layout.addWidget(self.margins_label)
+        margins = QGridLayout()
+        margins.setContentsMargins(0, 6, 0, 0)
+        margins.setSpacing(2)
+        self.margin_reference_label = QLabel(fmt.UNKNOWN)
+        self.margin_period_label = QLabel(fmt.UNKNOWN)
+        self.margin_game_label = QLabel(fmt.UNKNOWN)
+        self.margin_reference_title = _title("MARGEN VS REFERENCIA")
+        self.margin_period_title = _title("MARGEN VS CUARTO")
+        for row, (title, widget) in enumerate((
+            (self.margin_reference_title, self.margin_reference_label),
+            (self.margin_period_title, self.margin_period_label),
+            (_title("MARGEN VS PARTIDO"), self.margin_game_label),
+        )):
+            widget.setObjectName("metricValue")
+            widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            margins.addWidget(title, row, 0)
+            margins.addWidget(widget, row, 1)
+        margins.setColumnStretch(0, 1)
+        margins.setColumnMinimumWidth(1, 110)
+        layout.addLayout(margins)
 
         self.scope_label = QLabel("")
         self.scope_label.setObjectName("status")
@@ -255,6 +290,7 @@ class MetricsPanel(QWidget):
         grid.addWidget(_title("PARA EL FINAL"), 1, 0)
         grid.addWidget(self.end_label, 1, 1)
         grid.setColumnStretch(0, 1)
+        grid.setColumnMinimumWidth(1, 110)
         return card
 
     # -------------------------------------------------------------- refresco
@@ -279,11 +315,16 @@ class MetricsPanel(QWidget):
         period_label = state.label()
         self.period_points_title.setText(
             f"PUNTOS {period_label}" if period_label != "--" else "PUNTOS DEL CUARTO")
+        self.margin_period_title.setText(
+            f"MARGEN VS {period_label}" if period_label != "--" else "MARGEN VS CUARTO")
         self.period_points_label.setText(_period_points_text(general))
         self.period_pace_label.setText(fmt.pace(general.period_pace))
         self.game_pace_label.setText(fmt.pace(general.game_pace))
         self.points_source_label.setText(_points_source_text(general.period_points_source))
         self.baseline_button.setVisible(bool(needs_baseline))
+        if criteria is not None:
+            self.reference_label.setText(f"{criteria.reference_pace:.2f} pts/min")
+            self.target_odds_label.setText(f"{criteria.target_under_odds:.2f}")
 
         self._update_bet(bet, evaluation, current_market_line, criteria)
         self.halftime_label.setText(fmt.halftime(general.seconds_to_halftime))
@@ -319,7 +360,9 @@ class MetricsPanel(QWidget):
             self.required_pace_label.setText(fmt.UNKNOWN)
             self.exceeded_label.setText("")
             self.signal_label.setText("")
-            self.margins_label.setText("")
+            for widget in (self.margin_reference_label, self.margin_period_label,
+                           self.margin_game_label):
+                widget.setText(fmt.UNKNOWN)
             self.scope_label.setText("")
             return
 
@@ -353,7 +396,11 @@ class MetricsPanel(QWidget):
         if criteria is not None:
             self.signal_label.setStyleSheet(
                 f"color: {criteria.color_for(m.signal.value)}; font-weight: 700;")
-        self.margins_label.setText(_margins_text(m, criteria))
+            self.margin_reference_title.setText(
+                f"MARGEN VS REFERENCIA ({criteria.reference_pace:.2f})")
+        self.margin_period_label.setText(_margin(m.margin_vs_period_pace))
+        self.margin_game_label.setText(_margin(m.margin_vs_game_pace))
+        self.margin_reference_label.setText(_margin(m.margin_vs_reference))
         self.scope_label.setText(_scope_text(m))
 
 
@@ -395,15 +442,6 @@ def _signal_text(m: LineEvaluation) -> str:
         # Indicador independiente: no altera ritmo, margen ni clasificacion.
         texto += "   ·   TRAMO FINAL"
     return texto
-
-
-def _margins_text(m: LineEvaluation, criteria: Optional[EntryCriteria]) -> str:
-    if not m.signal.is_evaluable:
-        return ""
-    referencia = f"{criteria.reference_pace:.2f}" if criteria else "--"
-    return (f"vs referencia ({referencia}) {_margin(m.margin_vs_reference)}   |   "
-            f"vs cuarto {_margin(m.margin_vs_period_pace)}   |   "
-            f"vs partido {_margin(m.margin_vs_game_pace)}")
 
 
 def _margin(value: Optional[float]) -> str:

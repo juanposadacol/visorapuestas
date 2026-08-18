@@ -34,7 +34,7 @@ from ..capture.screen_capture import CaptureError
 from ..domain.market import Side
 from .diagnostics_panel import DiagnosticsPanel
 from .hotkeys import HotkeyManager
-from .market_panel import MarketPanel
+from .entry_board import EntryBoard
 from .metrics_panel import MetricsPanel
 from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
@@ -72,14 +72,18 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         self.metrics_panel = MetricsPanel()
         self.metrics_panel.baselineRequested.connect(lambda: self._ask_baseline(force=True))
-        self.market_panel = MarketPanel()
-        self.market_panel.lineSelected.connect(self._on_line_selected)
-        self.market_panel.lockRequested.connect(self.lock_bet)
-        self.market_panel.unlockRequested.connect(self.unlock_bet)
+        self.entry_board = EntryBoard()
+        self.entry_board.lineSelected.connect(self._on_line_selected)
+        self.entry_board.lockRequested.connect(self.lock_bet)
+        self.entry_board.unlockRequested.connect(self.unlock_bet)
+        self.entry_board.autoFocusRequested.connect(self.controller.clear_manual_selection)
         splitter.addWidget(self.metrics_panel)
-        splitter.addWidget(self.market_panel)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.addWidget(self.entry_board)
+        # El tablero de lineas es el elemento dominante: es donde se detecta
+        # el momento de entrada, que es la funcion principal del programa.
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([460, 700])
 
         self.tabs = QTabWidget()
         self.tabs.addTab(splitter, "Panel")
@@ -235,7 +239,7 @@ class MainWindow(QMainWindow):
         self.controller.finish_game()
         self.start_button.setText("INICIAR (F8)")
         self.finish_button.setEnabled(False)
-        self.market_panel.set_locked(False)
+        self.entry_board.set_locked(False)
         self.status_label.setText("Partido finalizado. Historial guardado.")
 
     def toggle_panel(self) -> None:
@@ -253,13 +257,16 @@ class MainWindow(QMainWindow):
         self.show()
 
     # -------------------------------------------------------------- apuesta
-    def _on_line_selected(self, line, side) -> None:
-        self.controller.select_line(line, side or Side.UNDER)
+    def _on_line_selected(self, evaluation) -> None:
+        """Tu clic manda sobre el enfoque automatico por cuota objetivo."""
+        if evaluation is not None:
+            self.controller.select_line(evaluation.line, Side.UNDER, manual=True)
 
     def lock_bet(self) -> None:
         if self.controller.locked_bet is not None:
             return
-        line = self.market_panel.selected_line or self.controller.selected_line
+        selected = self.entry_board.selected_evaluation
+        line = selected.line if selected is not None else self.controller.selected_line
         if line is None:
             QMessageBox.information(self, "Fijar apuesta",
                                     "Selecciona antes una linea en el panel de mercado.")
@@ -267,12 +274,12 @@ class MainWindow(QMainWindow):
         self.controller.select_line(line, Side.UNDER)
         bet = self.controller.lock_bet()
         if bet is not None:
-            self.market_panel.set_locked(True)
+            self.entry_board.set_locked(True)
             self.status_label.setText(f"APUESTA FIJADA: {bet.describe_full()}")
 
     def unlock_bet(self) -> None:
         self.controller.unlock_bet()
-        self.market_panel.set_locked(False)
+        self.entry_board.set_locked(False)
 
     # ------------------------------------------------------------- refresco
     def _refresh(self) -> None:
@@ -289,13 +296,18 @@ class MainWindow(QMainWindow):
             criteria=view.criteria,
             needs_baseline=view.snapshot.needs_period_baseline,
         )
-        self.market_panel.update_market(view.snapshot.market, view.snapshot.market_raw,
-                                        from_label=view.snapshot.market_from_label)
+        self.entry_board.update_board(
+            evaluations=view.evaluations, criteria=view.criteria,
+            snapshot=view.snapshot.market, focus=view.focus,
+            under_review=view.snapshot.market_under_review,
+            pending_lines=view.snapshot.market_pending_lines,
+            from_label=view.snapshot.market_from_label,
+        )
         self._update_status(view)
 
     def _update_status(self, view) -> None:
         snapshot = view.snapshot
-        parts = []
+        parts = [view.mode.label]
         if self.controller.reader is not None:
             estado = "PAUSADO" if self.controller.reader.is_paused else "LEYENDO"
             parts.append(estado)

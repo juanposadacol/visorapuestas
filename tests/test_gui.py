@@ -50,6 +50,15 @@ def _pump(window, controller, cycles: int = 4):
     window._refresh()
 
 
+def _line_with_value(window, value):
+    """Localiza en el tablero la linea con ese valor."""
+    for evaluation in window.controller.build_view_model(
+            window.controller.reader.last_snapshot).evaluations:
+        if abs(evaluation.line_value - value) < 1e-6:
+            return evaluation.line
+    raise AssertionError(f"no hay linea {value} en el tablero")
+
+
 def _start(window, controller):
     reader = controller.start_session(controller.profile)
     assert reader is not None
@@ -83,10 +92,11 @@ def test_v1_flujo_completo(window):
     assert win.metrics_panel.period_points_label.text().startswith("19")
     assert win.metrics_panel.period_pace_label.text() == "4.19 pts/min"
 
-    # 12-13: se leen varias lineas y se selecciona una
-    assert win.market_panel.table.rowCount() == 4
-    win.market_panel.select_line_value(40.5)
-    linea = win.market_panel.selected_line
+    # 12-13: se evaluan varias lineas y se selecciona una
+    assert win.entry_board.table.rowCount() == 4
+    controller.select_line(_line_with_value(win, 40.5), manual=True)
+    _pump(win, controller, 1)
+    linea = controller.selected_line
     assert linea is not None and linea.line == 40.5
     assert linea.quarter == 3  # la linea va atada a su mercado
 
@@ -129,7 +139,8 @@ def test_under_superado_se_marca(window):
     _start(win, controller)
     _pump(win, controller)
     controller.set_period_baseline(3, 34, 21)
-    win.market_panel.select_line_value(37.5)
+    controller.select_line(_line_with_value(win, 37.5), manual=True)
+    _pump(win, controller, 1)
     win.lock_bet()
     _pump(win, controller, 1)
     # el cuarto se dispara hasta superar la linea
@@ -151,3 +162,119 @@ def test_finalizar_partido_cierra_la_sesion(window):
     assert row["status"] == "FINISHED"
     assert row["ended_at"] is not None
     assert controller.reader is None
+
+
+# ------------------------------------------------ tablero de entrada (etapa 3)
+def test_el_tablero_evalua_todas_las_lineas(window):
+    """Los numeros acordados: 20 puntos en el Q3 y 04:00 restantes."""
+    win, controller, game = window
+    game.clock_seconds = 240
+    game.score_a, game.score_b = 40, 35
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 30, 25)   # 20 puntos en el cuarto
+    _pump(win, controller, 1)
+
+    board = win.entry_board
+    assert board.table.rowCount() == 4
+    filas = {}
+    for row in range(board.table.rowCount()):
+        celdas = [board.table.item(row, c).text() for c in range(board.table.columnCount())]
+        filas[celdas[0]] = celdas
+    assert filas["37.5"][2:5] == ["18", "4.50", "+0.50"]
+    assert filas["38.5"][2:5] == ["19", "4.75", "+0.75"]
+    assert filas["39.5"][2:5] == ["20", "5.00", "+1.00"]
+    assert filas["40.5"][2:5] == ["21", "5.25", "+1.25"]
+    assert filas["37.5"][7] == "EXIGENTE"
+    assert filas["40.5"][7] == "MUY EXIGENTE"
+
+
+def test_el_tablero_enfoca_por_cuota_objetivo(window):
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 30, 25)
+    _pump(win, controller, 1)
+
+    view = controller.build_view_model(controller.reader.last_snapshot)
+    objetivo = controller.criteria.target_under_odds
+    candidatas = [e for e in view.evaluations if e.under_odds is not None]
+    esperada = min(candidatas, key=lambda e: abs(e.under_odds - objetivo))
+    assert view.focus.line_value == esperada.line_value
+    assert win.metrics_panel.bet_label.text() == esperada.describe_under()
+
+
+def test_la_seleccion_manual_manda_y_se_puede_volver_al_automatico(window):
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 30, 25)
+    _pump(win, controller, 1)
+
+    automatica = controller.build_view_model(controller.reader.last_snapshot).focus.line_value
+    otra = next(e.line for e in controller.build_view_model(
+        controller.reader.last_snapshot).evaluations if e.line_value != automatica)
+    controller.select_line(otra, manual=True)
+    _pump(win, controller, 1)
+    assert controller.build_view_model(controller.reader.last_snapshot).focus.line_value == otra.line
+
+    controller.clear_manual_selection()
+    _pump(win, controller, 1)
+    assert controller.build_view_model(
+        controller.reader.last_snapshot).focus.line_value == automatica
+
+
+def test_sin_marcador_inicial_las_lineas_del_cuarto_no_son_evaluables(window):
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+
+    board = win.entry_board
+    assert board.table.rowCount() == 4
+    for row in range(board.table.rowCount()):
+        assert board.table.item(row, 7).text() == "FALTA MARCADOR INICIAL Q3"
+        assert board.table.item(row, 2).text() == "--"   # no se inventan puntos
+        assert board.table.item(row, 3).text() == "--"   # ni ritmo
+    assert "Ninguna linea evaluable" in board.status_label.text()
+
+
+def test_linea_en_revision_mientras_la_casa_cambia(window):
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 30, 25)
+    _pump(win, controller, 1)
+    assert win.entry_board.review_label.isHidden() or not win.entry_board.review_label.isVisible()
+
+    # La casa mueve las lineas: una sola lectura no basta para publicarlas.
+    game.move_lines(2.0)
+    controller.reader.tick()
+    win._refresh()
+    assert controller.reader.last_snapshot.market_under_review is True
+    assert "LINEA EN REVISION" in win.entry_board.review_label.text()
+
+    # Confirmada la nueva propuesta, el tablero pasa a reflejarla.
+    _pump(win, controller, 2)
+    assert controller.reader.last_snapshot.market_under_review is False
+    valores = [controller.reader.last_snapshot.market.sorted_lines()[i].line for i in range(4)]
+    assert valores == [39.5, 40.5, 41.5, 42.5]
+
+
+def test_el_modo_cambia_al_fijar_la_apuesta(window):
+    from visorunder.app import AppMode
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 30, 25)
+    _pump(win, controller, 1)
+    assert controller.mode is AppMode.BUSCANDO_ENTRADA
+    assert win.entry_board.mode_label.text() == "BUSCANDO ENTRADA"
+
+    win.lock_bet()
+    _pump(win, controller, 1)
+    assert controller.mode is AppMode.APUESTA_FIJADA
+    assert win.entry_board.mode_label.text() == "APUESTA FIJADA"
+    # el tablero sigue vivo junto a la apuesta fijada
+    assert win.entry_board.table.rowCount() == 4
+    assert win.metrics_panel.points_title.text() == "FALTAN PARA PERDER"
