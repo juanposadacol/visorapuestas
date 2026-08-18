@@ -77,7 +77,8 @@ class MainWindow(QMainWindow):
         self.entry_board.lineSelected.connect(self._on_line_selected)
         self.entry_board.lockRequested.connect(self.lock_bet)
         self.entry_board.unlockRequested.connect(self.unlock_bet)
-        self.entry_board.autoFocusRequested.connect(self.controller.clear_manual_selection)
+        self.entry_board.autoFocusRequested.connect(self._on_auto_focus)
+        self.entry_board.visibleMarketChanged.connect(self.controller.set_visible_market)
         splitter.addWidget(self.metrics_panel)
         splitter.addWidget(self.entry_board)
         # El tablero de lineas es el elemento dominante: es donde se detecta
@@ -273,6 +274,9 @@ class MainWindow(QMainWindow):
         self.show()
 
     # -------------------------------------------------------------- apuesta
+    def _on_auto_focus(self) -> None:
+        self.controller.clear_manual_selection()
+
     def _on_line_selected(self, evaluation) -> None:
         """Tu clic manda sobre el enfoque automatico por cuota objetivo."""
         if evaluation is not None:
@@ -311,13 +315,13 @@ class MainWindow(QMainWindow):
             current_market_line=view.current_market_line,
             criteria=view.criteria,
             needs_baseline=view.snapshot.needs_period_baseline,
+            focus_freshness=view.focus_freshness,
+            focus_age_text=view.focus_age_text,
         )
         self.entry_board.update_board(
-            evaluations=view.evaluations, criteria=view.criteria,
-            snapshot=view.snapshot.market, focus=view.focus,
-            under_review=view.snapshot.market_under_review,
-            pending_lines=view.snapshot.market_pending_lines,
-            from_label=view.snapshot.market_from_label,
+            blocks=view.blocks, criteria=view.criteria, focus=view.focus,
+            in_transition=view.snapshot.market_in_transition,
+            now=view.snapshot.ts,
         )
         self._update_status(view)
 

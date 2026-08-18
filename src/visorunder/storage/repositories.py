@@ -206,6 +206,31 @@ class HistoryRepository:
             count += 1
         return count
 
+    def record_market_observation(self, session_id: Optional[int], key: MarketKey,
+                                  last_seen_at: float,
+                                  last_confirmed_at: Optional[float] = None) -> None:
+        """Anota que se miro este mercado, cambiara o no lo que ofrecia."""
+        if session_id is None:
+            return
+        self.db.execute(
+            "INSERT INTO market_observations (session_id, market_type, period, half, "
+            "first_seen_at, last_seen_at, last_confirmed_at, observations) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1) "
+            "ON CONFLICT(session_id, market_type, COALESCE(period, -1), "
+            "COALESCE(half, -1)) DO UPDATE SET "
+            "last_seen_at = excluded.last_seen_at, "
+            "last_confirmed_at = COALESCE(excluded.last_confirmed_at, last_confirmed_at), "
+            "observations = observations + 1",
+            (session_id, key.market_type.value, key.period, key.half,
+             last_seen_at, last_seen_at, last_confirmed_at))
+
+    def market_observations(self, session_id: int) -> List[Dict[str, Any]]:
+        rows = self.db.query(
+            "SELECT market_type, period, half, first_seen_at, last_seen_at, "
+            "last_confirmed_at, observations FROM market_observations "
+            "WHERE session_id = ? ORDER BY last_seen_at DESC", (session_id,))
+        return [dict(r) for r in rows]
+
     def market_history(self, session_id: int, limit: int = 200) -> List[Dict[str, Any]]:
         rows = self.db.query(
             "SELECT ts, market_type, period, line, over_odds, under_odds, clock_seconds, "

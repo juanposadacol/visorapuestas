@@ -143,7 +143,7 @@ class LiveReader:
         self.market_reads_per_second: float = 0.0
         self._last_market_read: float = 0.0
         self._last_score_persist = 0.0
-        self._last_market_signature: Optional[tuple] = None
+        self._market_signatures: Dict[MarketKey, tuple] = {}
         self._running = threading.Event()
         self._paused = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -602,6 +602,12 @@ class LiveReader:
     def _persist(self, snapshot: ReaderSnapshot, now: float) -> None:
         if self.history is None or self.session_id is None:
             return
+        # Deja constancia de que se miro este mercado, cambiara o no su oferta.
+        visible = self.markets.visible
+        if visible is not None and visible.last_seen_at is not None:
+            self.history.record_market_observation(
+                self.session_id, visible.key, visible.last_seen_at,
+                visible.last_confirmed_at)
         if now - self._last_score_persist >= 1.0 and self.state.score_a_value is not None:
             self.history.save_score_snapshot(self.session_id, self.state)
             self._last_score_persist = now
@@ -610,9 +616,12 @@ class LiveReader:
             from .market_tracker import signature as market_signature
             sig = market_signature(market) + tuple(
                 (ln.over_odds, ln.under_odds) for ln in market.sorted_lines())
-            if sig != self._last_market_signature:
+            # La firma se guarda POR MERCADO: si no, alternar entre pestanas
+            # reescribiria el historial en cada cambio.
+            previa = self._market_signatures.get(market.key)
+            if sig != previa:
                 self.history.save_market_snapshot(self.session_id, market, self.state)
-                self._last_market_signature = sig
+                self._market_signatures[market.key] = sig
 
     # ------------------------------------------------------------------ hilo
     @property

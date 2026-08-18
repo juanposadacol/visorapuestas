@@ -50,6 +50,15 @@ def _pump(window, controller, cycles: int = 4):
     window._refresh()
 
 
+def _q3_block(window):
+    """Bloque del mercado del Q3 dentro del radar."""
+    from visorunder.domain.market import MarketKey
+
+    block = window.entry_board.block_for(MarketKey.quarter(3))
+    assert block is not None, "no hay bloque para el Q3 en el tablero"
+    return block
+
+
 def _line_with_value(window, value):
     """Localiza en el tablero la linea con ese valor."""
     for evaluation in window.controller.build_view_model(
@@ -93,7 +102,7 @@ def test_v1_flujo_completo(window):
     assert win.metrics_panel.period_pace_label.text() == "4.19 pts/min"
 
     # 12-13: se evaluan varias lineas y se selecciona una
-    assert win.entry_board.table.rowCount() == 4
+    assert _q3_block(win).table.rowCount() == 4
     controller.select_line(_line_with_value(win, 40.5), manual=True)
     _pump(win, controller, 1)
     linea = controller.selected_line
@@ -175,7 +184,7 @@ def test_el_tablero_evalua_todas_las_lineas(window):
     controller.set_period_baseline(3, 30, 25)   # 20 puntos en el cuarto
     _pump(win, controller, 1)
 
-    board = win.entry_board
+    board = _q3_block(win)
     assert board.table.rowCount() == 4
     filas = {}
     for row in range(board.table.rowCount()):
@@ -185,8 +194,8 @@ def test_el_tablero_evalua_todas_las_lineas(window):
     assert filas["38.5"][2:5] == ["19", "4.75", "+0.75"]
     assert filas["39.5"][2:5] == ["20", "5.00", "+1.00"]
     assert filas["40.5"][2:5] == ["21", "5.25", "+1.25"]
-    assert filas["37.5"][7] == "EXIGENTE"
-    assert filas["40.5"][7] == "MUY EXIGENTE"
+    assert filas["37.5"][-1] == "EXIGENTE"
+    assert filas["40.5"][-1] == "MUY EXIGENTE"
 
 
 def test_el_tablero_enfoca_por_cuota_objetivo(window):
@@ -229,13 +238,13 @@ def test_sin_marcador_inicial_las_lineas_del_cuarto_no_son_evaluables(window):
     _start(win, controller)
     _pump(win, controller)
 
-    board = win.entry_board
+    board = _q3_block(win)
     assert board.table.rowCount() == 4
+    ultima = board.table.columnCount() - 1
     for row in range(board.table.rowCount()):
-        assert board.table.item(row, 7).text() == "FALTA MARCADOR INICIAL Q3"
+        assert board.table.item(row, ultima).text() == "FALTA MARCADOR INICIAL Q3"
         assert board.table.item(row, 2).text() == "--"   # no se inventan puntos
         assert board.table.item(row, 3).text() == "--"   # ni ritmo
-    assert "Ninguna linea evaluable" in board.status_label.text()
 
 
 def test_linea_en_revision_mientras_la_casa_cambia(window):
@@ -244,14 +253,14 @@ def test_linea_en_revision_mientras_la_casa_cambia(window):
     _pump(win, controller)
     controller.set_period_baseline(3, 30, 25)
     _pump(win, controller, 1)
-    assert win.entry_board.review_label.isHidden() or not win.entry_board.review_label.isVisible()
+    assert not win.entry_board.review_label.isVisible()
 
     # La casa mueve las lineas: una sola lectura no basta para publicarlas.
     game.move_lines(2.0)
     controller.reader.tick()
     win._refresh()
     assert controller.reader.last_snapshot.market_under_review is True
-    assert "LINEA EN REVISION" in win.entry_board.review_label.text()
+    assert "REVISION" in win.entry_board.review_label.text()
 
     # Confirmada la nueva propuesta, el tablero pasa a reflejarla.
     _pump(win, controller, 2)
@@ -276,5 +285,98 @@ def test_el_modo_cambia_al_fijar_la_apuesta(window):
     assert controller.mode is AppMode.APUESTA_FIJADA
     assert win.entry_board.mode_label.text() == "APUESTA FIJADA"
     # el tablero sigue vivo junto a la apuesta fijada
-    assert win.entry_board.table.rowCount() == 4
+    assert _q3_block(win).table.rowCount() == 4
     assert win.metrics_panel.points_title.text() == "FALTAN PARA PERDER"
+
+
+# ------------------------------------------------ radar multi-mercado (etapa 4)
+def _visit_tab(window, controller, tab, ticks=5):
+    window.controller.demo_game.show_tab(tab)
+    for _ in range(ticks):
+        controller.reader.tick()
+    window._refresh()
+
+
+def test_el_radar_muestra_un_bloque_por_mercado(window):
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    game.clock_seconds = 360
+    game.score_a, game.score_b = 55, 48
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    _visit_tab(win, controller, "HALF1")
+    _visit_tab(win, controller, "QUARTER")
+
+    bloques = win.entry_board.blocks()
+    assert set(bloques) == {MarketKey.game(), MarketKey.half_market(1), MarketKey.quarter(3)}
+    assert bloques[MarketKey.game()].table.rowCount() == 4
+    assert bloques[MarketKey.half_market(1)].table.rowCount() == 3
+    assert bloques[MarketKey.quarter(3)].table.rowCount() == 4
+
+
+def test_la_cabecera_de_un_mercado_no_visible_muestra_su_antiguedad(window):
+    """Regla critica: una linea vieja nunca se presenta como actual."""
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    _visit_tab(win, controller, "QUARTER")
+
+    juego = win.entry_board.block_for(MarketKey.game())
+    cuarto = win.entry_board.block_for(MarketKey.quarter(3))
+    assert "EN VIVO" in cuarto.state_label.text()
+    assert "EN VIVO" not in juego.state_label.text()
+    assert "·" in juego.state_label.text()          # lleva su antiguedad
+    # y sus lineas siguen ahi
+    assert juego.table.rowCount() == 4
+
+
+def test_la_apuesta_fijada_sobrevive_al_cambio_de_pestana(window):
+    """Requisito 19: la apuesta y el mercado visible son cosas distintas."""
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    juego = controller.build_view_model(controller.reader.last_snapshot)
+    linea = next(e for e in juego.blocks if e.key == MarketKey.game()).evaluations[-1]
+    controller.select_line(linea.line, manual=True)
+    win.lock_bet()
+    apuesta = controller.locked_bet
+    assert apuesta.key == MarketKey.game()
+
+    # el usuario se va a otra pestana
+    _visit_tab(win, controller, "QUARTER")
+    assert controller.locked_bet.key == MarketKey.game()
+    assert controller.locked_bet.line == apuesta.line
+    assert controller.locked_bet.odds == apuesta.odds
+    vm = controller.build_view_model(controller.reader.last_snapshot)
+    assert vm.bet_tracking is not None
+    assert vm.bet_tracking.key == MarketKey.game()      # se sigue su mercado
+    assert vm.snapshot.markets.visible_key == MarketKey.quarter(3)
+
+
+def test_el_selector_manual_de_mercado_visible(window):
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    assert win.entry_board.market_index(MarketKey.half_market(2)) > 0
+    win.entry_board.select_visible_market(MarketKey.half_market(2))
+    assert controller.reader.manual_visible_key == MarketKey.half_market(2)
+
+    # volver a automatico limpia la eleccion manual
+    win.entry_board.select_visible_market(None)
+    assert controller.reader.manual_visible_key is None

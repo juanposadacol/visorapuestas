@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migration_001(cx: sqlite3.Connection) -> None:
@@ -161,7 +161,49 @@ def _migration_002(cx: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [_migration_001, _migration_002]
+def _migration_003(cx: sqlite3.Connection) -> None:
+    """Registra cuando se observo por ultima vez cada mercado del evento.
+
+    Las lineas de cada mercado ya se guardan en `market_snapshots`, que lleva
+    market_type, period y half por fila. Lo que faltaba es saber CUANDO se
+    miro cada mercado aunque no cambiara nada, que es lo que permite
+    reconstruir despues la frescura con la que se estaba trabajando.
+
+    Se guarda estado observado, no datos derivados: el estado de frescura
+    (EN VIVO / RECIENTE / DESACTUALIZADO) se recalcula a partir de estas
+    marcas de tiempo y de los umbrales de la sesion.
+    """
+    cx.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS market_observations (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id        INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            market_type       TEXT NOT NULL,
+            period            INTEGER,
+            half              INTEGER,
+            first_seen_at     REAL NOT NULL,
+            last_seen_at      REAL NOT NULL,
+            last_confirmed_at REAL,
+            observations      INTEGER NOT NULL DEFAULT 1
+        );
+
+        -- OJO: en SQLite dos NULL son distintos entre si, asi que un
+        -- UNIQUE(session_id, market_type, period, half) NO agrupa el mercado
+        -- de partido, que lleva period y half a NULL. Se indexa por expresion
+        -- para que cada mercado tenga una unica fila de verdad.
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_market_obs
+            ON market_observations(session_id, market_type,
+                                   COALESCE(period, -1), COALESCE(half, -1));
+
+        CREATE INDEX IF NOT EXISTS ix_market_obs_session
+            ON market_observations(session_id, last_seen_at);
+        """
+    )
+
+
+MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [
+    _migration_001, _migration_002, _migration_003,
+]
 
 
 class Database:
