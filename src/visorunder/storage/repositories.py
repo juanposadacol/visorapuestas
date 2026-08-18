@@ -114,10 +114,40 @@ class SessionRepository:
             "INSERT INTO events (sportsbook_id, team_a, team_b, rules_name, created_at) "
             "VALUES (?, ?, ?, ?, ?)", (sportsbook_id, team_a, team_b, rules_name, time.time()))
 
-    def start(self, event_id: Optional[int], profile_id: Optional[int]) -> int:
+    def start(self, event_id: Optional[int], profile_id: Optional[int],
+              criteria=None) -> int:
+        """Abre una sesion dejando constancia de los criterios en uso."""
+        payload = json.dumps(criteria.as_dict()) if criteria is not None else "{}"
+        reference = criteria.reference_pace if criteria is not None else None
+        target = criteria.target_under_odds if criteria is not None else None
         return self.db.insert(
-            "INSERT INTO sessions (event_id, profile_id, started_at, status) VALUES (?, ?, ?, ?)",
-            (event_id, profile_id, time.time(), "ACTIVE"))
+            "INSERT INTO sessions (event_id, profile_id, started_at, status, entry_criteria, "
+            "reference_pace, target_under_odds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (event_id, profile_id, time.time(), "ACTIVE", payload, reference, target))
+
+    def save_criteria(self, session_id: int, criteria) -> None:
+        """Actualiza los criterios de la sesion si se cambian a mitad."""
+        self.db.execute(
+            "UPDATE sessions SET entry_criteria = ?, reference_pace = ?, "
+            "target_under_odds = ? WHERE id = ?",
+            (json.dumps(criteria.as_dict()), criteria.reference_pace,
+             criteria.target_under_odds, session_id))
+
+    def load_criteria(self, session_id: int):
+        """Recupera los criterios con los que se trabajo en una sesion.
+
+        Permite recalcular despues las senales exactamente como se vieron.
+        """
+        from ..config.criteria import EntryCriteria
+
+        row = self.db.query_one("SELECT entry_criteria FROM sessions WHERE id = ?", (session_id,))
+        if not row or not row["entry_criteria"]:
+            return None
+        try:
+            data = json.loads(row["entry_criteria"])
+        except json.JSONDecodeError:
+            return None
+        return EntryCriteria.from_dict(data) if data else None
 
     def finish(self, session_id: int, status: str = "FINISHED") -> None:
         self.db.execute("UPDATE sessions SET ended_at = ?, status = ? WHERE id = ?",

@@ -195,7 +195,7 @@ class AppController:
         manager.learn_anchor()
 
         self.event_id = self.sessions.create_event(profile.sportsbook, "", "", rules.name)
-        self.session_id = self.sessions.start(self.event_id, profile.profile_id)
+        self.session_id = self.sessions.start(self.event_id, profile.profile_id, self.criteria)
 
         self.reader = LiveReader(
             manager, engine, rules=rules, logbus=self.log, history=self.history,
@@ -268,6 +268,17 @@ class AppController:
     def clear_manual_selection(self) -> None:
         """Vuelve al enfoque automatico por cuota objetivo."""
         self.manual_line_value = None
+
+    def update_criteria(self, criteria: EntryCriteria) -> None:
+        """Aplica criterios nuevos y los deja guardados en la sesion en curso."""
+        self.settings.entry = criteria.validate()
+        try:
+            self.settings.save()
+        except OSError:
+            pass
+        if self.session_id is not None:
+            self.sessions.save_criteria(self.session_id, self.settings.entry)
+        self.log.info(f"Criterios de entrada: {self.settings.entry.describe()}")
 
     def lock_bet(self) -> Optional[LockedBet]:
         """FIJAR APUESTA: congela linea y cuota (requisito 7)."""

@@ -1,41 +1,51 @@
 # Visor UNDER
 
 Aplicación **de escritorio, local y para Windows** que lee en pantalla el estado de un
-partido de baloncesto y las líneas que muestra tu casa de apuestas, y calcula en tiempo
-real las métricas que importan para una apuesta **UNDER**.
+partido de baloncesto y las líneas que muestra tu casa de apuestas, y responde en tiempo
+real a una sola pregunta:
+
+> **Dada esta línea que ofrece la casa AHORA, los puntos que ya se anotaron y el tiempo
+> que queda, ¿qué ritmo tendrían que mantener desde este instante para superarla, y cómo
+> se compara con mi referencia y con el ritmo real del juego?**
 
 > **Qué NO hace, por diseño:** no apuesta, no inicia sesión en ninguna casa, no pulsa
 > botones, no usa APIs privadas ni servicios de pago, y **no predice nada**. No hay
-> modelos, ni probabilidades inventadas, ni recomendaciones. Solo lee, valida y calcula.
+> modelos, ni probabilidades, ni proyecciones del resultado final, ni recomendaciones de
+> apuesta. Solo lee, valida y calcula.
 
 ---
 
 ## 1. Qué muestra
 
+El modo principal es **BUSCANDO ENTRADA**: todas las líneas que la casa ofrece ahora
+mismo, evaluadas a la vez.
+
 ```
-CAL IRVINE           43
-CHINESE TAIPEI       31
-TOTAL PARTIDO        74
+MERCADO: Q3 - Total de puntos                        BUSCANDO ENTRADA
 
-Q3                05:28
-JUGADO DEL CUARTO 04:32
+ LÍNEA  CUOTA U  PUNTOS  RITMO NEC.  VS REF.  VS Q   VS PARTIDO   SEÑAL
+ 37.5    2.25      18       4.50      +0.50  +1.17     +1.62      EXIGENTE
+ 38.5    2.08      19       4.75      +0.75  +1.42     +1.87      EXIGENTE
+ 39.5    1.91      20       5.00      +1.00  +1.67     +2.12      MUY EXIGENTE
+ 40.5    1.74      21       5.25      +1.25  +1.92     +2.37      MUY EXIGENTE
+```
 
-PUNTOS Q3         19  (9 - 10)
-PROMEDIO CUARTO   4.19 pts/min
-PROMEDIO PARTIDO  3.02 pts/min
+Y a la izquierda, el contexto más la línea enfocada:
 
-MI APUESTA (FIJADA)
-UNDER 40.5 @ 1.87
-MERCADO ACTUAL: UNDER 42.5 @ 1.82
-
-LÍMITE PARA PERDER      41
-FALTAN PARA PERDER
-        22 PUNTOS
-RITMO NECESARIO PARA PERDER
-        4.02 pts/min
-
-PARA EL DESCANSO  YA PASÓ
-PARA EL FINAL     15:28
+```
+CAL IRVINE           40      LÍNEA ENFOCADA (SIN FIJAR)
+CHINESE TAIPEI       35      UNDER 40.5 @ 1.74
+TOTAL PARTIDO        75
+                             LÍMITE PARA PERDER          41
+Q3                04:00      PUNTOS PARA SUPERAR LA LÍNEA
+JUGADO DEL CUARTO 06:00              21 PUNTOS
+                             RITMO NECESARIO PARA SUPERARLA
+PUNTOS Q3      20 (10-10)            5.25 pts/min
+PROMEDIO CUARTO 3.33/min                MUY EXIGENTE
+PROMEDIO PARTIDO 2.88/min
+MI REFERENCIA   4.00/min     MARGEN VS REFERENCIA (4.00)  +1.25
+MI CUOTA OBJETIVO   1.80     MARGEN VS Q3                 +1.92
+                             MARGEN VS PARTIDO            +2.37
 ```
 
 Si un dato no se puede leer con seguridad, aparece `--`. **Nunca** un número inventado.
@@ -131,12 +141,51 @@ Consejos para que el OCR acierte:
 ## 5. Uso durante el partido
 
 1. Elige el perfil y pulsa **INICIAR** (o `F8`).
-2. En unos segundos aparecen reloj, cuarto, marcador y las líneas disponibles.
-3. Haz clic en la línea UNDER que estás considerando.
-4. Pulsa **FIJAR APUESTA** (o `F9`).
-5. A partir de ahí, todo se actualiza solo. **La línea fijada ya no cambia** aunque la casa
-   mueva la suya: verás a la vez `MI APUESTA` y `MERCADO ACTUAL`.
+2. En unos segundos aparecen reloj, cuarto, marcador y **todas** las líneas evaluadas.
+3. Observas el tablero hasta que una línea te interesa. La tarjeta grande enfoca sola la
+   línea cuya cuota UNDER está más cerca de tu **cuota objetivo**; si haces clic en otra,
+   manda tu elección (*Enfoque automático* vuelve al criterio de la cuota).
+4. Cuando decides entrar, pulsas **FIJAR APUESTA** (o `F9`).
+5. A partir de ahí sigues viendo el tablero **y** el seguimiento de tu apuesta. **La línea
+   fijada ya no cambia** aunque la casa mueva la suya.
 6. Al terminar, **FINALIZAR PARTIDO** guarda la sesión en la base de datos.
+
+### Los dos modos
+
+| Modo | Cuándo | Qué muestra |
+|---|---|---|
+| **BUSCANDO ENTRADA** | todavía no has apostado | todas las líneas con sus señales; es el modo principal |
+| **APUESTA FIJADA** | tras pulsar `F9` | lo mismo **más** el seguimiento de tu línea congelada |
+
+### Tus criterios (botón **CRITERIOS**)
+
+| Parámetro | Inicial | Para qué |
+|---|---|---|
+| Ritmo de referencia | 4.00 pts/min | con qué comparas el ritmo necesario |
+| Cuota UNDER objetivo | 1.80 | qué línea se enfoca sola en la tarjeta grande |
+| Umbrales de señal | +1.00 / +0.30 / −0.30 | dónde empieza cada nivel de la escala |
+| Tramo final | 60 s | aviso independiente; **no** altera ningún cálculo |
+| Colores | verde/amarillo/rojo | paleta invertible; la etiqueta de texto siempre se muestra |
+
+Ninguno está escrito a fuego. El ritmo de referencia es **tu** criterio operativo, no una
+constante del baloncesto.
+
+### Cómo leer la señal
+
+`margen = ritmo necesario − tu referencia`
+
+| Señal | Significa |
+|---|---|
+| **MUY EXIGENTE** | superar la línea exigiría un ritmo muy superior a tu referencia |
+| **EXIGENTE** | exigiría un ritmo superior |
+| **NEUTRO** | el ritmo necesario está cerca de tu referencia |
+| **PELIGROSO** | la línea se superaría con un ritmo inferior al de tu referencia |
+| **NO EVALUABLE** | faltan datos confirmados; se indica el motivo |
+
+No afirma que una apuesta vaya a ganar: es una escala matemática sobre tus parámetros.
+Y no hay correcciones ocultas: que queden pocos puntos o poco tiempo **no** cambia la
+clasificación; si quedan 5 puntos en 00:30, verás 10.00 pts/min y margen +6.00 tal cual,
+con el aviso `TRAMO FINAL` aparte.
 
 ### Atajos de teclado
 
@@ -176,8 +225,9 @@ Los obtiene, por orden de prioridad:
 2. **Historial propio**, si la app estaba abierta cuando empezó el cuarto.
 3. **Tú**, pulsando *Introducir marcador al empezar el cuarto*.
 
-Hasta entonces, `PUNTOS Q3` y `PROMEDIO Q3` muestran `--`. El total del partido y las
-métricas de mercado de partido sí funcionan desde el primer segundo.
+Hasta entonces, las líneas de ese cuarto aparecen como **NO EVALUABLE — FALTA MARCADOR
+INICIAL Q3**, sin puntos ni ritmo inventados. El bloqueo es **por línea**: un mercado de
+partido sigue funcionando con normalidad en el mismo tablero.
 
 ---
 
@@ -189,6 +239,8 @@ métricas de mercado de partido sí funcionan desde el primer segundo.
 - Una cuota leída como `187` se marca como **no confirmada** y se propone `1.87`; nunca se
   corrige a escondidas.
 - Un dato confirmado **caduca**: si el OCR se pierde, vuelve a `--` en lugar de congelarse.
+- Cuando la casa cambia de línea, el tablero avisa con **LÍNEA EN REVISIÓN** mientras la
+  confirma, en vez de seguir enseñando la anterior como si fuera vigente.
 - El reloj usa *confianza temporal*: se acepta al instante si es coherente con el tiempo
   real transcurrido, lo que permite refrescarlo segundo a segundo.
 
@@ -241,9 +293,13 @@ Todo en tu equipo, en `%APPDATA%\VisorUnder`:
 
 ```
 visorunder.db      base de datos SQLite (perfiles, historial, apuestas)
-settings.json      preferencias
+settings.json      preferencias y tus criterios de entrada
 logs\              registro de diagnóstico
 ```
+
+Se guardan los datos **originales** (marcador, reloj, líneas, cuotas, timestamps) junto a
+los criterios usados en cada sesión. Los márgenes y las señales no se guardan: son datos
+derivados y se recalculan exactamente igual a partir de lo anterior.
 
 No hay servidor, ni nube, ni cuenta, ni suscripción.
 
@@ -253,7 +309,7 @@ No hay servidor, ni nube, ni cuenta, ni suscripción.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest          # 142 tests
+python -m pytest          # 199 tests
 ```
 
 La arquitectura y las decisiones técnicas están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).

@@ -36,6 +36,7 @@ from .diagnostics_panel import DiagnosticsPanel
 from .hotkeys import HotkeyManager
 from .entry_board import EntryBoard
 from .metrics_panel import MetricsPanel
+from .criteria_dialog import CriteriaDialog
 from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
 from .styles import STYLESHEET
@@ -117,6 +118,11 @@ class MainWindow(QMainWindow):
         self.finish_button.clicked.connect(self.finish_game)
         self.finish_button.setEnabled(False)
 
+        self.criteria_button = QPushButton("CRITERIOS")
+        self.criteria_button.setToolTip(
+            "Ritmo de referencia, cuota UNDER objetivo, umbrales de senal y colores")
+        self.criteria_button.clicked.connect(self.configure_criteria)
+
         self.baseline_button = QPushButton("Marcador inicial del cuarto")
         self.baseline_button.clicked.connect(lambda: self._ask_baseline(force=True))
 
@@ -128,6 +134,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.profile_combo)
         bar.addWidget(self.new_profile_button)
         bar.addWidget(self.configure_button)
+        bar.addWidget(self.criteria_button)
         bar.addSpacing(12)
         bar.addWidget(self.start_button)
         bar.addWidget(self.finish_button)
@@ -210,6 +217,15 @@ class MainWindow(QMainWindow):
             self.controller.resume()
 
     # ---------------------------------------------------------------- modos
+    def configure_criteria(self) -> None:
+        """Edita tus criterios de entrada. Se aplican de inmediato."""
+        dialog = CriteriaDialog(self.controller.criteria, self)
+        if not dialog.exec():
+            return
+        self.controller.update_criteria(dialog.result_criteria())
+        self.status_label.setText(
+            f"Criterios actualizados: {self.controller.criteria.describe()}")
+
     def toggle_reading(self) -> None:
         controller = self.controller
         if controller.reader is None:

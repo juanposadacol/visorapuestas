@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _migration_001(cx: sqlite3.Connection) -> None:
@@ -143,7 +143,25 @@ def _migration_001(cx: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [_migration_001]
+def _migration_002(cx: sqlite3.Connection) -> None:
+    """Guarda en la sesion los criterios de entrada con los que se trabajo.
+
+    Se guarda la CONFIGURACION, no las evaluaciones. Los margenes y las
+    senales son datos derivados: con el marcador, el reloj, las lineas, las
+    cuotas y estos parametros se pueden recalcular exactamente igual mas
+    adelante, asi que duplicarlos en la base solo crearia dos versiones de la
+    verdad que podrian discrepar.
+    """
+    cx.executescript(
+        """
+        ALTER TABLE sessions ADD COLUMN entry_criteria TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE sessions ADD COLUMN reference_pace REAL;
+        ALTER TABLE sessions ADD COLUMN target_under_odds REAL;
+        """
+    )
+
+
+MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [_migration_001, _migration_002]
 
 
 class Database:

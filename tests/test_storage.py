@@ -35,9 +35,11 @@ def _profile():
 
 
 def test_esquema_versionado(db):
-    assert db.version == 1
+    from visorunder.storage.database import SCHEMA_VERSION
+
+    assert db.version == SCHEMA_VERSION
     db.migrate()  # idempotente
-    assert db.version == 1
+    assert db.version == SCHEMA_VERSION
 
 
 def test_guardar_y_cargar_perfil(db):
@@ -142,3 +144,62 @@ def test_observaciones_ocr_para_diagnostico(db):
     rows = history.observations(session_id)
     assert rows[0]["raw_text"] == "O5:2B"
     assert rows[0]["value_text"] == "328"
+
+
+# --------------------------------------- criterios de la sesion (migracion 002)
+def test_migracion_002_actualiza_una_base_de_la_version_1(tmp_path):
+    """Una base ya existente debe subir de version sin perder el historial."""
+    import sqlite3
+
+    from visorunder.storage.database import _migration_001
+
+    path = tmp_path / "vieja.db"
+    cx = sqlite3.connect(path)
+    _migration_001(cx)
+    cx.execute("PRAGMA user_version = 1")
+    cx.execute("INSERT INTO sessions (started_at, status) VALUES (?, ?)", (1000.0, "FINISHED"))
+    cx.commit()
+    cx.close()
+
+    db = Database(path)
+    assert db.version == 2
+    fila = db.query_one("SELECT started_at, status, entry_criteria FROM sessions")
+    assert fila["started_at"] == 1000.0     # el historial anterior sigue ahi
+    assert fila["status"] == "FINISHED"
+    assert fila["entry_criteria"] == "{}"   # sin criterios registrados
+    db.close()
+
+
+def test_la_sesion_guarda_los_criterios_usados(db):
+    from visorunder.config.criteria import EntryCriteria
+
+    sessions = SessionRepository(db)
+    criteria = EntryCriteria(reference_pace=4.25, target_under_odds=1.95,
+                             threshold_very_demanding=1.5)
+    session_id = sessions.start(None, None, criteria)
+
+    recuperados = sessions.load_criteria(session_id)
+    assert recuperados.reference_pace == 4.25
+    assert recuperados.target_under_odds == 1.95
+    assert recuperados.threshold_very_demanding == 1.5
+    # consultables tambien como columnas sueltas
+    fila = db.query_one("SELECT reference_pace, target_under_odds FROM sessions WHERE id = ?",
+                        (session_id,))
+    assert fila["reference_pace"] == 4.25
+
+
+def test_cambiar_los_criterios_a_mitad_de_sesion_queda_registrado(db):
+    from visorunder.config.criteria import EntryCriteria
+
+    sessions = SessionRepository(db)
+    session_id = sessions.start(None, None, EntryCriteria())
+    sessions.save_criteria(session_id, EntryCriteria(reference_pace=3.8))
+    assert sessions.load_criteria(session_id).reference_pace == 3.8
+
+
+def test_no_se_persisten_datos_derivados(db):
+    """Los margenes y las senales se recalculan; no se duplican en la base."""
+    tablas = {r["name"] for r in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "line_evaluations" not in tablas
+    columnas = {r["name"] for r in db.query("PRAGMA table_info(market_snapshots)")}
+    assert not columnas & {"signal", "margin", "required_pace", "points_to_exceed"}

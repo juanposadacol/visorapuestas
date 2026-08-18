@@ -5,6 +5,24 @@ cualquier ampliación futura no rompa las garantías que hoy tiene la aplicació
 
 ---
 
+## 0. Función principal
+
+El núcleo de la aplicación es **detectar el momento de entrada**, no analizar una apuesta
+ya hecha. Mientras no has apostado, el programa evalúa continuamente **todas** las líneas
+que la casa ofrece y las convierte en señales comparables. `FIJAR APUESTA` existe, pero es
+una función secundaria que se añade encima sin quitar el tablero.
+
+Orden de prioridades del sistema:
+
+1. detectar el estado del partido;
+2. leer el mercado actual;
+3. calcular señales de entrada en tiempo real;
+4. comparar contra la referencia del usuario y contra los ritmos observados;
+5. permitir seleccionar y fijar una apuesta;
+6. hacer seguimiento de la apuesta fijada.
+
+---
+
 ## 1. Principio rector
 
 > Es preferible mostrar `--` durante 500 ms que mostrar un número incorrecto y calcular
@@ -25,14 +43,14 @@ De ahí salen tres reglas que atraviesan todo el código:
 ```
 src/visorunder/
 ├── domain/          reglas del juego, estado, mercados, apuesta, tiempo, valores
-├── calculations/    matemáticas puras: métricas y resolución de ámbito por mercado
+├── calculations/    matemáticas puras: métricas, ámbito por mercado, entrada y señales
 ├── capture/         ROIs, backends de captura, re-anclaje por imagen
 ├── ocr/             abstracción de motor, motores concretos, preprocesado, estabilización
 ├── parsers/         texto OCR → valores tipados y validados
 ├── pipeline/        ciclo de lectura en vivo, seguimiento de mercado, modo demo
 ├── storage/         SQLite con migraciones y repositorios
 ├── ui/              PySide6: panel, mercado, selector de ROI, diagnóstico, atajos
-├── config/          perfiles de casa, preferencias, rutas
+├── config/          perfiles de casa, criterios de entrada, preferencias, rutas
 ├── diagnostics/     bus de log
 ├── app.py           controlador (sin Qt: se puede probar sin interfaz)
 └── __main__.py      arranque
@@ -66,6 +84,41 @@ probar toda la aplicación sin pantalla ni OCR reales.
 
 ---
 
+## 3.bis El motor de entrada
+
+`calculations/entry.py` evalúa cada línea y produce un `LineEvaluation`:
+
+```
+puntos que faltan   = floor(línea) + 1 − puntos del ámbito
+ritmo necesario     = puntos que faltan / minutos restantes del ámbito
+margen vs referencia = ritmo necesario − tu ritmo de referencia
+margen vs cuarto     = ritmo necesario − promedio real del cuarto
+margen vs partido    = ritmo necesario − promedio real del partido
+```
+
+`calculations/signals.py` traduce el margen a la escala `MUY EXIGENTE / EXIGENTE /
+NEUTRO / PELIGROSO`, con umbrales configurables, o a `NO EVALUABLE` cuando falta algún
+dato confirmado.
+
+Tres decisiones de diseño que conviene no romper:
+
+- **`evaluate_line` se apoya en `compute_bet_metrics`**, no reimplementa la resolución de
+  ámbito. El tablero y el seguimiento de una apuesta comparten exactamente el mismo
+  cálculo, así que no pueden divergir.
+- **Sin heurísticas ocultas.** La clasificación depende solo del margen y de los umbrales.
+  Que queden pocos puntos o poco tiempo no la modifica; `TRAMO FINAL` es un indicador
+  independiente que solo informa.
+- **Vocabulario neutro.** El dominio habla de *superar la línea*, un hecho del partido
+  independiente del lado apostado. "Faltan para perder" es una traducción de interfaz que
+  solo aparece con una apuesta UNDER fijada. Gracias a eso, soportar OVER más adelante no
+  obliga a reescribir el motor.
+
+El **enfoque** de la tarjeta grande se decide por **cuota UNDER objetivo**, no por mayor
+margen: un margen más alto suele venir con una cuota bastante peor. La selección manual
+del usuario siempre manda sobre el enfoque automático.
+
+---
+
 ## 4. Puntos técnicamente delicados
 
 ### 4.1 Que la línea visible no es la del cuarto en juego
@@ -82,6 +135,10 @@ añadir un caso ahí, sin tocar métricas ni interfaz.
 Al abrir la app a mitad del Q3 no hay base, y los puntos del cuarto son `--` hasta que el
 usuario los introduzca. Esta salvaguarda tiene un test dedicado porque un fallo aquí
 corrompe silenciosamente todas las métricas del cuarto.
+
+Con el enfoque de detección de entrada esto pesa más: las líneas de ese cuarto quedan
+**NO EVALUABLE** con su motivo visible en la propia fila. El bloqueo es **por línea**, de
+modo que un mercado de partido sigue operativo en el mismo tablero.
 
 ### 4.3 Ruido del OCR
 `ocr/stabilization.py` implementa `Stabilizer`: N lecturas iguales para confirmar, más un
@@ -131,9 +188,15 @@ Versión del esquema en `PRAGMA user_version`, migraciones numeradas en
 | `score_snapshots` | reloj, cuarto, marcador y puntos del cuarto |
 | `market_snapshots` | una fila por línea: tipo, cuarto, línea, cuotas, contexto |
 | `bets` | apuesta fijada con el estado del partido en ese instante |
+| `sessions.entry_criteria` | criterios usados en la sesión (migración 002) |
 
 `bets` guarda `line` y `odds` **congeladas**: `LockedBet` es una dataclass `frozen`, así
 que es imposible mutarla por accidente.
+
+**No se persisten datos derivados.** Márgenes, ritmos necesarios y señales no se guardan:
+con el marcador, el reloj, las líneas, las cuotas, los timestamps y los criterios de la
+sesión se recalculan exactamente igual. Duplicarlos crearía dos versiones de la verdad que
+podrían discrepar tras un cambio de fórmula.
 
 ---
 
@@ -159,6 +222,8 @@ lectura del mercado → cálculo → interfaz**.
 ## 8. Ampliaciones naturales
 
 - Nuevos mercados: añadir un caso en `market_scope.resolve`.
+- Nuevos niveles o criterios de señal: `signals.py` y `EntryCriteria`.
+- Soporte de OVER: el motor ya es neutro; queda la traducción en la interfaz.
 - Nuevos motores OCR: implementar `OcrEngine` y registrarlo.
 - Nuevas reglas de juego: crear un `GameRules` (la prórroga ya está contemplada).
 - Gráficas del historial: los datos ya están en `market_snapshots` y `score_snapshots`.
