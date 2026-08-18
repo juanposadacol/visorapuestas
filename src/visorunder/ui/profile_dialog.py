@@ -37,7 +37,12 @@ from PySide6.QtWidgets import (
 
 from ..capture.roi import Rect, RoiKind
 from ..capture.screen_capture import CaptureError, ScreenCapture, available_backends
-from ..config.profiles import KNOWN_SPORTSBOOKS, ScreenContext, SportsbookProfile
+from ..config.profiles import (
+    DEFAULT_MARKET_CHOICES,
+    KNOWN_SPORTSBOOKS,
+    ScreenContext,
+    SportsbookProfile,
+)
 from ..domain.rules import preset_names
 from ..ocr import preprocessing
 from ..ocr.base import OcrEngine
@@ -99,6 +104,12 @@ class ProfileDialog(QDialog):
         self.rules_combo = QComboBox()
         self.rules_combo.addItems(preset_names())
 
+        # Si no se configura el ROI del titulo del mercado, hay que decir
+        # EXPLICITAMENTE a que mercado pertenecen las lineas leidas.
+        self.default_market_combo = QComboBox()
+        for value, label in DEFAULT_MARKET_CHOICES:
+            self.default_market_combo.addItem(label, value)
+
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("auto")
         self.engine_combo.addItems(available_engines())
@@ -124,6 +135,7 @@ class ProfileDialog(QDialog):
         form.addRow("Nombre del perfil", self.name_edit)
         form.addRow("Casa de apuestas", self.sportsbook_combo)
         form.addRow("Reglas del partido", self.rules_combo)
+        form.addRow("Mercado si no se lee el titulo", self.default_market_combo)
         form.addRow("Motor OCR", self.engine_combo)
         form.addRow("Backends de captura", self.backend_label)
         form.addRow("Frecuencia de lectura", self.rate_spin)
@@ -184,6 +196,8 @@ class ProfileDialog(QDialog):
         self.name_edit.setText(self.profile.name)
         self.sportsbook_combo.setCurrentText(self.profile.sportsbook or self.profile.name)
         self.rules_combo.setCurrentText(self.profile.rules_name)
+        market_index = self.default_market_combo.findData(self.profile.default_market)
+        self.default_market_combo.setCurrentIndex(max(0, market_index))
         index = self.engine_combo.findText(self.profile.engine)
         self.engine_combo.setCurrentIndex(index if index >= 0 else 0)
         self.rate_spin.setValue(self.profile.reads_per_second)
@@ -317,6 +331,7 @@ class ProfileDialog(QDialog):
         self.profile.name = name
         self.profile.sportsbook = self.sportsbook_combo.currentText().strip()
         self.profile.rules_name = self.rules_combo.currentText()
+        self.profile.default_market = self.default_market_combo.currentData() or "GAME"
         self.profile.engine = self.engine_combo.currentText()
         self.profile.reads_per_second = float(self.rate_spin.value())
         self.profile.stabilization_required = int(self.confirm_spin.value())

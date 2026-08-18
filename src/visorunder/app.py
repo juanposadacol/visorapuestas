@@ -172,6 +172,7 @@ class AppController:
             value_ttl=profile.value_ttl_seconds,
             sportsbook=profile.sportsbook or profile.name,
         )
+        self.reader.market_reads_per_second = profile.market_reads_per_second
         self.reader.start(profile.reads_per_second)
         self.profile = profile
         return self.reader

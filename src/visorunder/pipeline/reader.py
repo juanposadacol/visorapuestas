@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..calculations import metrics as metrics_mod
 from ..capture.roi import OcrHints, RoiKind
 from ..capture.roi_manager import RoiFrame, RoiManager
+from ..config.profiles import resolve_default_market
 from ..diagnostics.logbus import LogBus
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, MarketSnapshot
@@ -45,6 +46,10 @@ from ..parsers.quarter_parser import GAME_OVER, HALFTIME, parse_period
 from ..parsers.score_parser import parse_breakdown, parse_score, parse_score_pair
 from .market_tracker import MarketTracker
 
+#: Regiones que solo se capturan cuando toca refrescar el mercado.
+_MARKET_ROIS = (RoiKind.MARKET_BLOCK, RoiKind.MARKET_LABEL, RoiKind.LINES,
+                RoiKind.OVER_ODDS, RoiKind.UNDER_ODDS)
+
 
 @dataclass
 class ReaderSnapshot:
@@ -59,6 +64,9 @@ class ReaderSnapshot:
     reads: int = 0
     errors: List[str] = field(default_factory=list)
     needs_period_baseline: bool = False
+    #: True si el mercado se identifico leyendo su titulo en pantalla; False si
+    #: proviene del mercado por defecto elegido en el perfil.
+    market_from_label: bool = False
     field_status: Dict[str, str] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 
@@ -100,6 +108,13 @@ class LiveReader:
         self.market_label = Stabilizer[MarketKey]("MARKET_LABEL", required=req, ttl=value_ttl * 4)
 
         self._previous_period: Optional[int] = None
+        self.market_key_from_ocr: bool = False
+        #: Cadencia propia del bloque de lineas, la region mas cara de leer
+        #: (necesita deteccion de texto). 0 = leerlo en cada ciclo, que es el
+        #: valor por defecto: el mercado es el objeto principal de analisis.
+        #: Un valor mayor que 0 lo lee mas despacio para ahorrar CPU.
+        self.market_reads_per_second: float = 0.0
+        self._last_market_read: float = 0.0
         self._last_score_persist = 0.0
         self._last_market_signature: Optional[tuple] = None
         self._running = threading.Event()
@@ -154,7 +169,10 @@ class LiveReader:
         ocr_ms = 0.0
         reads = 0
 
-        frames = self.roi_manager.grab_all()
+        market_due = self._market_is_due(now)
+        wanted = [k for k in self.roi_manager.configured_kinds()
+                  if market_due or k not in _MARKET_ROIS]
+        frames = self.roi_manager.grab_all(wanted)
         for kind, frame in frames.items():
             if not frame.ok:
                 errors.append(f"{kind.value}: {frame.error}")
@@ -196,10 +214,16 @@ class LiveReader:
             parsed = parse_score_pair(result.text, confidence=result.confidence)
             if parsed.value is not None:
                 a, b = parsed.value
+                # La sospecha viaja con cada mitad: si el recorte estaba sucio,
+                # ninguno de los dos marcadores se confirma.
                 self.score_a.submit(ParseResult(value=a, raw=parsed.raw, normalized=str(a),
-                                                confidence=parsed.confidence), now)
+                                                confidence=parsed.confidence,
+                                                suspicious=parsed.suspicious,
+                                                reason=parsed.reason), now)
                 self.score_b.submit(ParseResult(value=b, raw=parsed.raw, normalized=str(b),
-                                                confidence=parsed.confidence), now)
+                                                confidence=parsed.confidence,
+                                                suspicious=parsed.suspicious,
+                                                reason=parsed.reason), now)
             else:
                 self.score_a.submit(ParseResult(value=None, raw=parsed.raw,
                                                 reason=parsed.reason), now)
@@ -239,7 +263,10 @@ class LiveReader:
         self._sync_state(now)
 
         # --- mercado ------------------------------------------------------
-        market_raw = self._read_market(frames, now)
+        market_raw = self.market_tracker.last_raw
+        if self._market_is_due(now):
+            self._last_market_read = now
+            market_raw = self._read_market(frames, now) or market_raw
         confirmed_market = self.market_tracker.current(now)
 
         snapshot = ReaderSnapshot(
@@ -252,6 +279,7 @@ class LiveReader:
             reads=reads,
             errors=errors,
             needs_period_baseline=self._needs_baseline(),
+            market_from_label=self.market_key_from_ocr,
             field_status=self._field_status(),
             ts=now,
         )
@@ -278,6 +306,11 @@ class LiveReader:
         for index, (pa, pb) in enumerate(zip(parsed_a.value, parsed_b.value), start=1):
             self.state.tracker.set_breakdown(index, pa, pb)
 
+    def _market_is_due(self, now: float) -> bool:
+        if self.market_reads_per_second <= 0:
+            return True
+        return (now - self._last_market_read) >= (1.0 / self.market_reads_per_second)
+
     def _read_market(self, frames: Dict[RoiKind, RoiFrame], now: float) -> Optional[MarketSnapshot]:
         # Etiqueta del mercado: define a QUE cuarto pertenecen las lineas.
         frame = frames.get(RoiKind.MARKET_LABEL)
@@ -288,6 +321,20 @@ class LiveReader:
             self._log_reading(RoiKind.MARKET_LABEL, result, parsed, self.market_label)
 
         key = self.market_label.current(now).usable_value()
+        from_ocr = key is not None
+        if key is None:
+            # Sin titulo legible se usa el mercado por defecto QUE EL USUARIO
+            # eligio en el perfil. Nunca se supone "partido" por comodidad.
+            key = resolve_default_market(
+                getattr(self.roi_manager.profile, "default_market", "GAME"),
+                self.state.period_value)
+            if key is None:
+                self.log.warn(
+                    "No se puede atribuir el mercado: falta el titulo y el mercado "
+                    "por defecto depende del cuarto, que aun no se conoce",
+                    region=RoiKind.MARKET_BLOCK.value)
+                return None
+        self.market_key_from_ocr = from_ocr
 
         block = frames.get(RoiKind.MARKET_BLOCK)
         if block and block.ok:

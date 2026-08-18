@@ -11,7 +11,7 @@ import re
 from typing import Optional, Tuple
 
 from .base import ParseResult
-from .normalize import clean, extract_integers, normalize_digits
+from .normalize import clean, dropped_characters, extract_integers, normalize_digits
 
 MAX_REASONABLE_SCORE = 250
 
@@ -33,6 +33,13 @@ def parse_score(text: str, *, confidence: float = 0.0) -> ParseResult:
     if value > MAX_REASONABLE_SCORE:
         return ParseResult(value=None, raw=raw, normalized=norm, confidence=confidence,
                            reason=f"marcador inverosimil: {value}")
+    basura = dropped_characters(raw, keep="")
+    if basura:
+        # El OCR vio simbolos que no son digitos: es probable que ademas haya
+        # perdido alguna cifra. No se confirma (requisitos 21 y 37).
+        return ParseResult(value=value, raw=raw, normalized=digits, confidence=confidence,
+                           suspicious=True,
+                           reason=f"caracteres no numericos en el recorte: {basura!r}")
     return ParseResult(value=value, raw=raw, normalized=digits, confidence=confidence)
 
 
@@ -40,15 +47,21 @@ def parse_score_pair(text: str, *, confidence: float = 0.0) -> ParseResult:
     """Parsea un ROI que contiene los dos marcadores: devuelve (a, b)."""
     raw = clean(text)
     norm = normalize_digits(raw, keep="-: ")
+    basura = dropped_characters(raw, keep="-: ")
+    suspicious = bool(basura)
+    reason = f"caracteres no numericos en el recorte: {basura!r}" if basura else ""
+
     m = _PAIR.match(norm.replace(":", "-"))
     if m:
         a, b = int(m.group(1)), int(m.group(2))
         if a <= MAX_REASONABLE_SCORE and b <= MAX_REASONABLE_SCORE:
-            return ParseResult(value=(a, b), raw=raw, normalized=f"{a}-{b}", confidence=confidence)
+            return ParseResult(value=(a, b), raw=raw, normalized=f"{a}-{b}",
+                               confidence=confidence, suspicious=suspicious, reason=reason)
     numbers = extract_integers(norm)
     if len(numbers) == 2 and all(n <= MAX_REASONABLE_SCORE for n in numbers):
         return ParseResult(value=(numbers[0], numbers[1]), raw=raw,
-                           normalized=f"{numbers[0]}-{numbers[1]}", confidence=confidence)
+                           normalized=f"{numbers[0]}-{numbers[1]}", confidence=confidence,
+                           suspicious=suspicious, reason=reason)
     return ParseResult.fail(raw, "no se reconocen dos marcadores", norm)
 
 

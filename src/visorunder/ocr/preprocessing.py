@@ -80,6 +80,22 @@ def add_border(image: Any, size: int = 10, value: int = 255) -> Any:
     return cv2.copyMakeBorder(image, size, size, size, size, cv2.BORDER_CONSTANT, value=value)
 
 
+#: Altura util para el reconocedor de texto. Ampliar mas alla de esto no
+#: mejora el acierto y multiplica el coste de cada lectura.
+TARGET_LINE_HEIGHT = 64
+
+
+def effective_scale(image: Any, hints: OcrHints) -> float:
+    """Factor de ampliacion real, acotado por la altura util del reconocedor."""
+    if image is None or not hints.single_line:
+        return hints.scale
+    height = image.shape[0]
+    if height <= 0:
+        return hints.scale
+    needed = TARGET_LINE_HEIGHT / float(height)
+    return max(1.0, min(hints.scale, needed))
+
+
 def prepare(image: Any, hints: Optional[OcrHints] = None) -> Any:
     """Pipeline completo de preprocesado segun los ajustes del ROI."""
     if image is None:
@@ -93,7 +109,7 @@ def prepare(image: Any, hints: Optional[OcrHints] = None) -> Any:
     if should_invert:
         out = invert(out)
 
-    out = upscale(out, hints.scale)
+    out = upscale(out, effective_scale(out, hints))
     if hints.denoise:
         out = denoise(out)
     out = binarize(out, hints.threshold)

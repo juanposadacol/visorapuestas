@@ -287,7 +287,8 @@ class MainWindow(QMainWindow):
             bet_metrics=view.bet_metrics, current_market_line=view.current_market_line,
             needs_baseline=view.snapshot.needs_period_baseline,
         )
-        self.market_panel.update_market(view.snapshot.market, view.snapshot.market_raw)
+        self.market_panel.update_market(view.snapshot.market, view.snapshot.market_raw,
+                                        from_label=view.snapshot.market_from_label)
         self._update_status(view)
 
     def _update_status(self, view) -> None:

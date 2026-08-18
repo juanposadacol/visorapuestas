@@ -86,3 +86,21 @@ def extract_integers(text: str) -> list:
     if not text:
         return []
     return [int(m) for m in re.findall(r"\d+", text)]
+
+
+def dropped_characters(text: str, keep: str = ":.,") -> str:
+    """Caracteres que `normalize_digits` tira por no ser digitos ni confusiones.
+
+    En un ROI declarado numerico, que el OCR devuelva simbolos ajenos delata una
+    lectura degradada: probablemente tambien se haya comido algun digito.
+    """
+    if not text:
+        return ""
+    dropped = []
+    for ch in clean(text):
+        if ch.isdigit() or ch in keep or ch.isspace():
+            continue
+        if ch in DIGIT_CONFUSIONS:
+            continue
+        dropped.append(ch)
+    return "".join(dropped)

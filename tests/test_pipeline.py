@@ -184,3 +184,51 @@ def test_el_log_de_diagnostico_registra_bruto_y_confirmado(rig):
     assert entries[-1].raw == "O5:2B"
     assert entries[-1].normalized == "05:28"
     assert entries[-1].value == "328"
+
+
+# ---------------------------------------- mercado por defecto (requisito 5)
+def test_sin_titulo_de_mercado_se_usa_la_eleccion_explicita_del_perfil(rig):
+    """Sin ROI de titulo NO se supone 'partido': manda lo que eligio el usuario."""
+    reader, engine = rig
+    reader.roi_manager.profile.remove_roi(RoiKind.MARKET_LABEL)
+    reader.roi_manager.refresh_layout()
+    reader.roi_manager.profile.default_market = "CURRENT_QUARTER"
+    snap = _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31",
+                 block="40.5 OVER 1.75 UNDER 1.87")
+    assert snap.market.key == MarketKey.quarter(3)
+    assert snap.market_from_label is False
+
+
+def test_mercado_por_defecto_de_partido(rig):
+    reader, engine = rig
+    reader.roi_manager.profile.remove_roi(RoiKind.MARKET_LABEL)
+    reader.roi_manager.refresh_layout()
+    reader.roi_manager.profile.default_market = "GAME"
+    snap = _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31",
+                 block="153.5 OVER 1.85 UNDER 1.80")
+    assert snap.market.key.market_type is MarketType.GAME_TOTAL
+
+
+def test_no_se_publican_lineas_si_el_mercado_no_puede_atribuirse(rig):
+    """CURRENT_QUARTER sin cuarto confirmado: mejor sin lineas que mal atribuidas."""
+    reader, engine = rig
+    reader.roi_manager.profile.remove_roi(RoiKind.MARKET_LABEL)
+    reader.roi_manager.profile.remove_roi(RoiKind.PERIOD)
+    reader.roi_manager.refresh_layout()
+    reader.roi_manager.profile.default_market = "CURRENT_QUARTER"
+    engine.set_text("CLOCK", "05:28")
+    engine.set_text("SCORE_PAIR", "43 - 31")
+    engine.set_text("MARKET_BLOCK", "40.5 OVER 1.75 UNDER 1.87")
+    snap = None
+    for _ in range(4):
+        snap = reader.tick()
+    assert snap.market is None
+
+
+def test_el_titulo_leido_tiene_prioridad_sobre_el_defecto(rig):
+    reader, engine = rig
+    reader.roi_manager.profile.default_market = "GAME"
+    snap = _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31",
+                 label="3.er Cuarto - Total de puntos", block="40.5 OVER 1.75 UNDER 1.87")
+    assert snap.market.key == MarketKey.quarter(3)
+    assert snap.market_from_label is True

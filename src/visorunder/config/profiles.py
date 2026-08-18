@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..capture.roi import NormalizedRect, Rect, Roi, RoiKind
+from ..domain.market import MarketKey
 
 #: Casas preconfiguradas por nombre. La geometria SIEMPRE la dibuja el usuario;
 #: aqui solo se ofrecen los nombres para no obligar a teclearlos.
@@ -61,8 +62,18 @@ class SportsbookProfile:
     screen: ScreenContext = field(default_factory=ScreenContext)
     rois: Dict[RoiKind, Roi] = field(default_factory=dict)
     rules_name: str = "FIBA"
+    #: Mercado al que pertenecen las lineas cuando NO se lee el titulo del
+    #: mercado en pantalla. Es una eleccion EXPLICITA del usuario, nunca una
+    #: suposicion del programa (ver requisito 5).
+    #: "GAME" | "CURRENT_QUARTER" | "Q1" | "Q2" | "Q3" | "Q4" | "H1" | "H2"
+    default_market: str = "GAME"
     engine: str = "auto"
     reads_per_second: float = 3.0
+    #: Cadencia de lectura del bloque de lineas. 0 = en cada ciclo, que es el
+    #: valor por defecto porque el mercado es el objeto principal de analisis
+    #: y un cambio de linea debe reflejarse cuanto antes. Bajarlo (p. ej. a
+    #: 1.5) ahorra CPU en equipos justos a costa de reaccionar mas tarde.
+    market_reads_per_second: float = 0.0
     stabilization_required: int = 3
     value_ttl_seconds: float = 3.0
     notes: str = ""
@@ -136,8 +147,10 @@ class SportsbookProfile:
             "screen": self.screen.as_dict(),
             "rois": [roi.as_dict() for roi in self.rois.values()],
             "rules_name": self.rules_name,
+            "default_market": self.default_market,
             "engine": self.engine,
             "reads_per_second": self.reads_per_second,
+            "market_reads_per_second": self.market_reads_per_second,
             "stabilization_required": self.stabilization_required,
             "value_ttl_seconds": self.value_ttl_seconds,
             "notes": self.notes,
@@ -157,8 +170,10 @@ class SportsbookProfile:
                        int(frame.get("width", 1920)), int(frame.get("height", 1080))),
             screen=ScreenContext.from_dict(data.get("screen", {})),
             rules_name=data.get("rules_name", "FIBA"),
+            default_market=data.get("default_market", "GAME"),
             engine=data.get("engine", "auto"),
             reads_per_second=float(data.get("reads_per_second", 3.0)),
+            market_reads_per_second=float(data.get("market_reads_per_second", 1.5)),
             stabilization_required=int(data.get("stabilization_required", 3)),
             value_ttl_seconds=float(data.get("value_ttl_seconds", 3.0)),
             notes=data.get("notes", ""),
@@ -173,3 +188,35 @@ class SportsbookProfile:
     @staticmethod
     def from_json(text: str, profile_id: Optional[int] = None) -> "SportsbookProfile":
         return SportsbookProfile.from_dict(json.loads(text), profile_id)
+
+
+#: Opciones del mercado por defecto, con su etiqueta para la interfaz.
+DEFAULT_MARKET_CHOICES = [
+    ("GAME", "Partido - Total de puntos"),
+    ("CURRENT_QUARTER", "El cuarto que se este jugando"),
+    ("Q1", "1.er cuarto - Total de puntos"),
+    ("Q2", "2.o cuarto - Total de puntos"),
+    ("Q3", "3.er cuarto - Total de puntos"),
+    ("Q4", "4.o cuarto - Total de puntos"),
+    ("H1", "1.a mitad - Total de puntos"),
+    ("H2", "2.a mitad - Total de puntos"),
+]
+
+
+def resolve_default_market(choice: str, current_period: Optional[int]) -> Optional[MarketKey]:
+    """Traduce la opcion elegida por el usuario en un MarketKey concreto.
+
+    Devuelve None cuando la opcion depende del cuarto en juego y este todavia
+    no se conoce: en ese caso las lineas se quedan sin publicar, que es
+    preferible a atribuirlas a un mercado equivocado.
+    """
+    choice = (choice or "GAME").upper()
+    if choice == "GAME":
+        return MarketKey.game()
+    if choice == "CURRENT_QUARTER":
+        return MarketKey.quarter(current_period) if current_period else None
+    if choice.startswith("Q") and choice[1:].isdigit():
+        return MarketKey.quarter(int(choice[1:]))
+    if choice.startswith("H") and choice[1:].isdigit():
+        return MarketKey.half_market(int(choice[1:]))
+    return MarketKey.game()

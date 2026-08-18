@@ -22,8 +22,14 @@ from ..base import EngineNotAvailable, OcrBox, OcrEngine, OcrResult, timed
 class RapidOcrEngine(OcrEngine):
     name = "rapidocr"
 
+    #: Lado maximo al que el detector reescala la imagen. Nuestros recortes son
+    #: pequenos, asi que 640 sobra y ahorra bastante tiempo por ciclo.
+    DEFAULT_OPTIONS = {"det_limit_side_len": 640}
+
     def __init__(self, **options: Any) -> None:
-        self._options = options
+        merged = dict(self.DEFAULT_OPTIONS)
+        merged.update(options)
+        self._options = merged
         self._engine = None
 
     @classmethod
@@ -61,9 +67,15 @@ class RapidOcrEngine(OcrEngine):
     def recognize(self, image: Any, hints: Optional[OcrHints] = None) -> OcrResult:
         if image is None:
             return OcrResult(engine=self.name, error="imagen vacia")
+        single_line = hints.single_line if hints else True
         try:
             engine = self._ensure()
-            output = engine(image)
+            if single_line:
+                # El recorte ES una linea de texto: nos saltamos la deteccion,
+                # que es la etapa mas cara del motor.
+                output = engine(image, use_det=False, use_cls=False, use_rec=True)
+            else:
+                output = engine(image)
         except Exception as exc:  # pragma: no cover - depende del entorno
             return OcrResult(engine=self.name, error=f"{type(exc).__name__}: {exc}")
 
@@ -74,9 +86,14 @@ class RapidOcrEngine(OcrEngine):
         boxes: List[OcrBox] = []
         for item in detections:
             try:
-                points, text, score = item[0], item[1], float(item[2])
-                top = min(p[1] for p in points)
-                left = min(p[0] for p in points)
+                if single_line or len(item) < 3:
+                    # Sin deteccion el motor devuelve [texto, confianza].
+                    text, score = item[0], float(item[1])
+                    top = left = 0
+                else:
+                    points, text, score = item[0], item[1], float(item[2])
+                    top = min(p[1] for p in points)
+                    left = min(p[0] for p in points)
             except Exception:  # pragma: no cover - formatos alternativos
                 continue
             boxes.append(OcrBox(text=str(text), confidence=score, top=int(top), left=int(left)))

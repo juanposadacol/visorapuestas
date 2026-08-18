@@ -42,6 +42,7 @@ class MarketPanel(QWidget):
         self._selected_line_value: Optional[float] = None
         self._selected_side: Side = Side.UNDER
         self._locked = False
+        self._table_signature: tuple = ()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -130,11 +131,18 @@ class MarketPanel(QWidget):
 
     # -------------------------------------------------------------- refresco
     def update_market(self, snapshot: Optional[MarketSnapshot],
-                      raw: Optional[MarketSnapshot] = None) -> None:
-        """Redibuja la tabla conservando la fila seleccionada."""
+                      raw: Optional[MarketSnapshot] = None,
+                      from_label: bool = True) -> None:
+        """Actualiza la tabla conservando la fila seleccionada.
+
+        La tabla solo se reconstruye cuando cambia el CONJUNTO de lineas; si
+        solo se movieron las cuotas se reescriben las celdas. Asi la seleccion
+        del usuario no parpadea ni se pierde cuatro veces por segundo.
+        """
         self._snapshot = snapshot
         if snapshot is None or snapshot.is_empty:
             self.table.setRowCount(0)
+            self._table_signature = ()
             self.market_label.setText("MERCADO: --")
             if raw is not None and raw.suspended:
                 self.status_label.setText("Mercado SUSPENDIDO por la casa")
@@ -144,26 +152,40 @@ class MarketPanel(QWidget):
             self.lock_button.setEnabled(False)
             return
 
-        self.market_label.setText(
-            f"MERCADO: {snapshot.key.label if snapshot.key else 'sin identificar'}")
+        etiqueta = snapshot.key.label if snapshot.key else "sin identificar"
+        origen = "" if from_label else "   (mercado por defecto del perfil)"
+        self.market_label.setText(f"MERCADO: {etiqueta}{origen}")
 
         lines = snapshot.sorted_lines()
-        self.table.setRowCount(len(lines))
-        for row, line in enumerate(lines):
-            line_item = QTableWidgetItem(fmt.line(line.line))
-            line_item.setData(Qt.UserRole, float(line.line))
-            line_item.setTextAlignment(Qt.AlignCenter)
-            over_item = QTableWidgetItem(fmt.odds(line.over_odds))
-            over_item.setTextAlignment(Qt.AlignCenter)
-            under_item = QTableWidgetItem(fmt.odds(line.under_odds))
-            under_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 0, line_item)
-            self.table.setItem(row, 1, over_item)
-            self.table.setItem(row, 2, under_item)
+        signature = tuple(round(ln.line, 2) for ln in lines)
+        rebuild = signature != self._table_signature
+        if rebuild:
+            self.table.blockSignals(True)
+            self.table.setRowCount(len(lines))
+            self._table_signature = signature
 
-        if self._selected_line_value is None and lines:
-            self._selected_line_value = lines[0].line
-        self._highlight_selection()
+        for row, line in enumerate(lines):
+            if rebuild:
+                line_item = QTableWidgetItem(fmt.line(line.line))
+                line_item.setData(Qt.UserRole, float(line.line))
+                line_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 0, line_item)
+                for column in (1, 2):
+                    item = QTableWidgetItem("")
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.table.setItem(row, column, item)
+            over_item = self.table.item(row, 1)
+            under_item = self.table.item(row, 2)
+            if over_item is not None:
+                over_item.setText(fmt.odds(line.over_odds))
+            if under_item is not None:
+                under_item.setText(fmt.odds(line.under_odds))
+
+        if rebuild:
+            self.table.blockSignals(False)
+            if self._selected_line_value is None and lines:
+                self._selected_line_value = lines[0].line
+            self._highlight_selection()
 
         suspended = " (SUSPENDIDO)" if snapshot.suspended else ""
         self.status_label.setText(

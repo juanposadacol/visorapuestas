@@ -177,6 +177,9 @@ class OcrHints:
     whitelist: str = ""           # caracteres permitidos (motores que lo soporten)
     psm: int = 7                  # una sola linea de texto (Tesseract)
     roi_kind: str = ""            # que region es: lo usan los motores simulados
+    #: True si el recorte contiene UNA sola linea de texto. Permite saltarse la
+    #: deteccion de texto del motor, que es con diferencia la etapa mas cara.
+    single_line: bool = True
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -184,15 +187,19 @@ class OcrHints:
     @staticmethod
     def for_kind(kind: RoiKind) -> "OcrHints":
         if kind is RoiKind.CLOCK:
-            return OcrHints(scale=4.0, whitelist="0123456789:.", psm=7, roi_kind=kind.value)
+            return OcrHints(scale=3.0, whitelist="0123456789:.", psm=7,
+                            roi_kind=kind.value, single_line=True)
         if kind in (RoiKind.SCORE_A, RoiKind.SCORE_B):
-            return OcrHints(scale=4.0, whitelist="0123456789", psm=7, roi_kind=kind.value)
+            return OcrHints(scale=3.0, whitelist="0123456789", psm=7,
+                            roi_kind=kind.value, single_line=True)
         if kind is RoiKind.SCORE_PAIR:
-            return OcrHints(scale=3.5, whitelist="0123456789-: ", psm=7, roi_kind=kind.value)
+            return OcrHints(scale=3.0, whitelist="0123456789-: ", psm=7,
+                            roi_kind=kind.value, single_line=True)
         if kind in (RoiKind.MARKET_BLOCK, RoiKind.LINES, RoiKind.OVER_ODDS,
                     RoiKind.UNDER_ODDS, RoiKind.BREAKDOWN_A, RoiKind.BREAKDOWN_B):
-            return OcrHints(scale=2.5, psm=6, roi_kind=kind.value)  # varias lineas
-        return OcrHints(scale=2.5, psm=7, roi_kind=kind.value)
+            # Varias filas: aqui si hace falta la deteccion de texto.
+            return OcrHints(scale=2.0, psm=6, roi_kind=kind.value, single_line=False)
+        return OcrHints(scale=2.0, psm=7, roi_kind=kind.value, single_line=True)
 
 
 @dataclass
