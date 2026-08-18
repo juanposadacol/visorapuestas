@@ -25,6 +25,7 @@ from ..capture.roi import OcrHints, RoiKind
 from ..capture.roi_manager import RoiFrame, RoiManager
 from ..config.profiles import resolve_default_market
 from ..diagnostics.logbus import LogBus
+from ..domain.event_markets import EventMarkets, MarketState
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, MarketSnapshot
 from ..domain.rules import FIBA, GameRules
@@ -56,6 +57,9 @@ class ReaderSnapshot:
     """Fotografia completa de un ciclo, lista para pintar en la interfaz."""
 
     state: GameState
+    #: Todos los mercados del evento con su frescura.
+    markets: Optional[EventMarkets] = None
+    #: Mercado visible ahora mismo (atajo de `markets.visible`).
     market: Optional[MarketSnapshot] = None
     market_raw: Optional[MarketSnapshot] = None
     market_key: Optional[MarketKey] = None
@@ -67,6 +71,10 @@ class ReaderSnapshot:
     #: True si el mercado se identifico leyendo su titulo en pantalla; False si
     #: proviene del mercado por defecto elegido en el perfil.
     market_from_label: bool = False
+    #: True mientras se esta cambiando de pestana: el titulo en bruto ya dice
+    #: otro mercado pero todavia no esta confirmado, asi que no se atribuye
+    #: ninguna linea.
+    market_in_transition: bool = False
     #: True mientras la casa ensena un conjunto de lineas distinto al
     #: publicado y todavia se esta confirmando.
     market_under_review: bool = False
@@ -94,7 +102,21 @@ class LiveReader:
         self.event_name = event_name
 
         self.state = GameState(rules=rules)
-        self.market_tracker = MarketTracker(required=max(2, required_confirmations - 1))
+        #: Registro de TODOS los mercados observados del evento. La casa los
+        #: reparte en pestanas y solo se puede leer la visible; el resto
+        #: conserva su ultima lectura con su marca de tiempo.
+        self.markets = EventMarkets()
+        self._market_required = max(2, required_confirmations - 1)
+        #: Un tracker independiente por mercado. Al ser independientes, un
+        #: fotograma rezagado de la pestana anterior no puede confirmarse solo
+        #: dentro del mercado nuevo: es la salvaguarda contra mezclar lineas.
+        self._trackers: Dict[MarketKey, MarketTracker] = {}
+        #: Mercado que el usuario fuerza a mano cuando el titulo no se lee.
+        self.manual_visible_key: Optional[MarketKey] = None
+        #: Ultima clave leida EN BRUTO del titulo (sin estabilizar). Sirve de
+        #: compuerta durante los cambios de pestana.
+        self._raw_label_key: Optional[MarketKey] = None
+        self._in_transition: bool = False
 
         req = max(1, int(required_confirmations))
         self.clock = Stabilizer[int](
@@ -130,6 +152,19 @@ class LiveReader:
         self.last_snapshot: Optional[ReaderSnapshot] = None
 
     # ------------------------------------------------------------- utilidades
+    def tracker_for(self, key: MarketKey) -> MarketTracker:
+        tracker = self._trackers.get(key)
+        if tracker is None:
+            tracker = MarketTracker(required=self._market_required)
+            self._trackers[key] = tracker
+        return tracker
+
+    def set_manual_visible_market(self, key: Optional[MarketKey]) -> None:
+        """Fuerza que mercado se considera visible (respaldo del titulo OCR)."""
+        self.manual_visible_key = key
+        if key is not None:
+            self.markets.set_visible(key)
+
     def _current_period_seconds(self) -> Optional[int]:
         period = self.period.confirmed.usable_value()
         return self.rules.period_seconds(period) if period else self.rules.quarter_seconds
@@ -267,26 +302,30 @@ class LiveReader:
         # --- estado del partido ------------------------------------------
         self._sync_state(now)
 
-        # --- mercado ------------------------------------------------------
-        market_raw = self.market_tracker.last_raw
+        # --- mercado visible ----------------------------------------------
+        market_raw = None
         if self._market_is_due(now):
             self._last_market_read = now
-            market_raw = self._read_market(frames, now) or market_raw
-        confirmed_market = self.market_tracker.current(now)
+            market_raw = self._read_market(frames, now)
+
+        visible_state = self.markets.visible
+        confirmed_market = visible_state.snapshot if visible_state else None
 
         snapshot = ReaderSnapshot(
             state=self.state,
+            markets=self.markets,
             market=confirmed_market,
             market_raw=market_raw,
-            market_key=confirmed_market.key if confirmed_market else None,
+            market_key=self.markets.visible_key,
             cycle_ms=(time.perf_counter() - start) * 1000.0,
             ocr_ms=ocr_ms,
             reads=reads,
             errors=errors,
             needs_period_baseline=self._needs_baseline(),
             market_from_label=self.market_key_from_ocr,
-            market_under_review=self.market_tracker.under_review,
-            market_pending_lines=self.market_tracker.pending_lines,
+            market_in_transition=self._in_transition,
+            market_under_review=bool(visible_state and visible_state.under_review),
+            market_pending_lines=visible_state.pending_lines if visible_state else (),
             field_status=self._field_status(),
             ts=now,
         )
@@ -313,6 +352,53 @@ class LiveReader:
         for index, (pa, pb) in enumerate(zip(parsed_a.value, parsed_b.value), start=1):
             self.state.tracker.set_breakdown(index, pa, pb)
 
+    def _resolve_visible_key(self, now: float) -> Optional[MarketKey]:
+        """Decide a QUE mercado pertenece lo que se esta viendo en pantalla.
+
+        Prioridad acordada: automatico cuando es fiable, manual como respaldo,
+        y jamas adivinar.
+
+        1. Titulo del mercado leido y confirmado por OCR.
+        2. Mercado que el usuario ha fijado a mano como visible.
+        3. Mercado por defecto del perfil (eleccion explicita del usuario).
+
+        Si nada de eso resuelve, no se publica ninguna linea: es preferible
+        quedarse sin datos a atribuirlos a un mercado equivocado.
+        """
+        leido = self.market_label.current(now).usable_value()
+        self.market_key_from_ocr = leido is not None
+        if leido is not None:
+            return leido
+
+        if self.manual_visible_key is not None:
+            return self.manual_visible_key
+
+        key = resolve_default_market(
+            getattr(self.roi_manager.profile, "default_market", "GAME"),
+            self.state.period_value)
+        if key is None:
+            self.log.warn(
+                "No se puede atribuir el mercado: falta el titulo, no hay mercado "
+                "elegido a mano y el de por defecto depende del cuarto, que aun "
+                "no se conoce",
+                region=RoiKind.MARKET_BLOCK.value)
+        return key
+
+    def _publish(self, key: MarketKey, snapshot: Optional[MarketSnapshot],
+                 now: float) -> Optional[MarketSnapshot]:
+        """Entrega la lectura al tracker del mercado y actualiza el registro."""
+        tracker = self.tracker_for(key)
+        tracker.submit(snapshot, now)
+        confirmado = tracker.current(now)
+        self.markets.observe(
+            key, confirmado,
+            confirmed=confirmado is not None,
+            under_review=tracker.under_review,
+            pending_lines=tracker.pending_lines,
+            now=now,
+        )
+        return snapshot
+
     def _market_is_due(self, now: float) -> bool:
         if self.market_reads_per_second <= 0:
             return True
@@ -321,27 +407,34 @@ class LiveReader:
     def _read_market(self, frames: Dict[RoiKind, RoiFrame], now: float) -> Optional[MarketSnapshot]:
         # Etiqueta del mercado: define a QUE cuarto pertenecen las lineas.
         frame = frames.get(RoiKind.MARKET_LABEL)
-        if frame and frame.ok:
+        has_label_roi = bool(frame and frame.ok)
+        if has_label_roi:
             result = self._recognize(frame, self._hints_for(RoiKind.MARKET_LABEL))
             parsed = market_parser.parse_market_label(result.text, confidence=result.confidence)
+            self._raw_label_key = parsed.value
             self.market_label.submit(parsed, now)
             self._log_reading(RoiKind.MARKET_LABEL, result, parsed, self.market_label)
 
-        key = self.market_label.current(now).usable_value()
-        from_ocr = key is not None
+        key = self._resolve_visible_key(now)
         if key is None:
-            # Sin titulo legible se usa el mercado por defecto QUE EL USUARIO
-            # eligio en el perfil. Nunca se supone "partido" por comodidad.
-            key = resolve_default_market(
-                getattr(self.roi_manager.profile, "default_market", "GAME"),
-                self.state.period_value)
-            if key is None:
-                self.log.warn(
-                    "No se puede atribuir el mercado: falta el titulo y el mercado "
-                    "por defecto depende del cuarto, que aun no se conoce",
-                    region=RoiKind.MARKET_BLOCK.value)
-                return None
-        self.market_key_from_ocr = from_ocr
+            return None
+
+        # COMPUERTA DE TRANSICION.
+        # Al cambiar de pestana, el titulo tarda unas lecturas en confirmarse:
+        # durante ese hueco el titulo confirmado aun dice "Q2" mientras el
+        # bloque ya ensena las lineas de "Partido". Publicarlas ahi las
+        # atribuiria al mercado equivocado, que es justo lo que no puede pasar.
+        # Mientras el titulo en bruto discrepe del confirmado, no se publica
+        # nada y el mercado anterior conserva intacta su ultima lectura.
+        self._in_transition = bool(
+            has_label_roi and self._raw_label_key is not None and self._raw_label_key != key)
+        if self._in_transition:
+            self.log.debug(
+                f"Cambio de pestana en curso: el titulo ya dice "
+                f"{self._raw_label_key.label!r} pero aun no esta confirmado; "
+                "no se atribuyen lineas",
+                region=RoiKind.MARKET_LABEL.value)
+            return None
 
         block = frames.get(RoiKind.MARKET_BLOCK)
         if block and block.ok:
@@ -355,16 +448,15 @@ class LiveReader:
                              value=", ".join(f"{ln.line:g}" for ln in snapshot.lines),
                              status="RAW", reason="suspendido" if snapshot.suspended else "",
                              elapsed_ms=result.elapsed_ms)
-            self.market_tracker.submit(snapshot, now)
-            return snapshot
+            return self._publish(key, snapshot, now)
 
         # Modo por columnas: lineas / cuotas OVER / cuotas UNDER en ROIs aparte.
         lines_frame = frames.get(RoiKind.LINES)
         if lines_frame and lines_frame.ok:
             snapshot = self._read_market_columns(frames, key)
             if snapshot is not None:
-                self.market_tracker.submit(snapshot, now)
-            return snapshot
+                return self._publish(key, snapshot, now)
+            return None
         return None
 
     def _read_market_columns(self, frames: Dict[RoiKind, RoiFrame],
@@ -523,6 +615,11 @@ class LiveReader:
                 self._last_market_signature = sig
 
     # ------------------------------------------------------------------ hilo
+    @property
+    def in_market_transition(self) -> bool:
+        """True mientras se esta cambiando de pestana y no se atribuye nada."""
+        return self._in_transition
+
     @property
     def is_running(self) -> bool:
         return self._running.is_set()

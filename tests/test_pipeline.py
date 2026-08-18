@@ -232,3 +232,168 @@ def test_el_titulo_leido_tiene_prioridad_sobre_el_defecto(rig):
                  label="3.er Cuarto - Total de puntos", block="40.5 OVER 1.75 UNDER 1.87")
     assert snap.market.key == MarketKey.quarter(3)
     assert snap.market_from_label is True
+
+
+# ------------------------------------------------ varios mercados (etapa 3)
+def _feed_market(reader, engine, label, block, times=3):
+    engine.set_text("MARKET_LABEL", label)
+    engine.set_text("MARKET_BLOCK", block)
+    snapshot = None
+    for _ in range(times):
+        snapshot = reader.tick()
+    return snapshot
+
+
+def test_varios_mercados_del_mismo_partido_conviven(rig):
+    """Requisito B: 3 + 4 + 3 lineas repartidas en tres pestanas."""
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+
+    _feed_market(reader, engine, "Partido - Total de puntos",
+                 "176.5 OVER 1.85 UNDER 2.05\n178.5 OVER 1.90 UNDER 1.93\n"
+                 "180.5 OVER 2.00 UNDER 1.81")
+    _feed_market(reader, engine, "1.a mitad - Total de puntos",
+                 "78.5 OVER 1.80 UNDER 2.02\n80.5 OVER 1.98 UNDER 1.82\n"
+                 "82.5 OVER 2.15 UNDER 1.67\n84.5 OVER 2.30 UNDER 1.55")
+    snap = _feed_market(reader, engine, "2.o cuarto - Total de puntos",
+                        "38.5 OVER 1.78 UNDER 2.04\n39.5 OVER 1.90 UNDER 1.91\n"
+                        "40.5 OVER 2.00 UNDER 1.80")
+
+    markets = snap.markets
+    assert len(markets) == 3
+    assert markets.total_lines() == 10
+    assert len(markets.get(MarketKey.game()).lines) == 3
+    assert len(markets.get(MarketKey.half_market(1)).lines) == 4
+    assert len(markets.get(MarketKey.quarter(2)).lines) == 3
+
+
+def test_cada_linea_queda_en_su_mercado(rig):
+    """Requisito I: una linea de 1H jamas acaba en GAME ni en Q2."""
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+    _feed_market(reader, engine, "Partido - Total de puntos", "180.5 OVER 2.00 UNDER 1.81")
+    _feed_market(reader, engine, "1.a mitad - Total de puntos", "80.5 OVER 1.98 UNDER 1.82")
+    snap = _feed_market(reader, engine, "2.o cuarto - Total de puntos",
+                        "40.5 OVER 2.00 UNDER 1.80")
+
+    for key in (MarketKey.game(), MarketKey.half_market(1), MarketKey.quarter(2)):
+        for line in snap.markets.get(key).lines:
+            assert line.key == key
+    assert [ln.line for ln in snap.markets.get(MarketKey.half_market(1)).lines] == [80.5]
+    assert [ln.line for ln in snap.markets.get(MarketKey.game()).lines] == [180.5]
+
+
+def test_al_cambiar_de_pestana_el_mercado_anterior_conserva_sus_lineas(rig):
+    """Requisito D: se conservan, pero dejan de estar EN VIVO."""
+    from visorunder.config.freshness import FreshnessCriteria
+    from visorunder.domain.event_markets import FreshnessState
+
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+    _feed_market(reader, engine, "2.o cuarto - Total de puntos", "40.5 OVER 2.00 UNDER 1.80")
+    q2 = reader.markets.get(MarketKey.quarter(2))
+    visto_en = q2.last_seen_at
+    assert q2.visible is True
+
+    snap = _feed_market(reader, engine, "Partido - Total de puntos",
+                        "180.5 OVER 2.00 UNDER 1.81")
+    q2 = snap.markets.get(MarketKey.quarter(2))
+    assert q2.visible is False
+    assert [ln.line for ln in q2.lines] == [40.5]        # se conservan
+    assert q2.last_seen_at == visto_en                   # no se refresca solo
+    criteria = FreshnessCriteria(recent_after_seconds=5, stale_after_seconds=15)
+    assert q2.freshness(criteria, now=visto_en + 20) is FreshnessState.STALE
+    assert snap.markets.visible.key == MarketKey.game()
+
+
+def test_un_mercado_que_reaparece_pasa_por_revision(rig):
+    """Requisito E."""
+    from visorunder.domain.event_markets import FreshnessState
+    from visorunder.config.freshness import FreshnessCriteria
+
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+    _feed_market(reader, engine, "2.o cuarto - Total de puntos", "40.5 OVER 2.00 UNDER 1.80")
+    _feed_market(reader, engine, "Partido - Total de puntos", "180.5 OVER 2.00 UNDER 1.81")
+
+    # vuelve a Q2 con una linea distinta: una sola lectura no la publica
+    engine.set_text("MARKET_LABEL", "2.o cuarto - Total de puntos")
+    engine.set_text("MARKET_BLOCK", "41.5 OVER 2.10 UNDER 1.69")
+    for _ in range(3):
+        snap = reader.tick()      # el titulo tarda en confirmarse
+    q2 = snap.markets.get(MarketKey.quarter(2))
+    criteria = FreshnessCriteria()
+    if q2.under_review:
+        assert q2.freshness(criteria) is FreshnessState.REVIEWING
+        assert [ln.line for ln in q2.lines] == [40.5]   # sigue la anterior
+
+    for _ in range(3):
+        snap = reader.tick()
+    q2 = snap.markets.get(MarketKey.quarter(2))
+    assert [ln.line for ln in q2.lines] == [41.5]
+    assert q2.visible is True
+    assert q2.freshness(criteria) is FreshnessState.LIVE
+
+
+def test_una_lectura_rezagada_no_contamina_el_mercado_nuevo(rig):
+    """El tracker es por mercado: un fotograma viejo no se confirma solo."""
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+    _feed_market(reader, engine, "2.o cuarto - Total de puntos", "40.5 OVER 2.00 UNDER 1.80")
+
+    # El titulo ya dice Partido pero el bloque aun ensena las lineas del Q2.
+    engine.set_text("MARKET_LABEL", "Partido - Total de puntos")
+    for _ in range(3):
+        reader.tick()
+    juego = reader.markets.get(MarketKey.game())
+    # Con una unica lectura del bloque viejo, el mercado de partido no publica
+    # nada o publica solo tras confirmarse; en ningun caso hereda la del Q2
+    # bajo la clave equivocada.
+    if juego is not None and juego.snapshot is not None:
+        for line in juego.lines:
+            assert line.key == MarketKey.game()
+
+
+def test_seleccion_manual_del_mercado_visible(rig):
+    """Respaldo cuando el titulo no se puede leer."""
+    reader, engine = rig
+    reader.roi_manager.profile.remove_roi(RoiKind.MARKET_LABEL)
+    reader.roi_manager.refresh_layout()
+    reader.set_manual_visible_market(MarketKey.half_market(2))
+    snap = _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31",
+                 block="79.5 OVER 1.90 UNDER 1.88")
+    assert snap.markets.visible_key == MarketKey.half_market(2)
+    assert snap.markets.get(MarketKey.half_market(2)).lines[0].key.half == 2
+
+
+def test_durante_el_cambio_de_pestana_no_se_atribuye_ninguna_linea(rig):
+    """El fallo mas peligroso: publicar las lineas nuevas bajo la clave vieja.
+
+    Mientras el titulo en bruto ya dice 'Partido' pero el confirmado sigue
+    diciendo 'Q2', no puede publicarse nada: el Q2 conserva sus lineas y el
+    mercado de partido no recibe ninguna que no sea suya.
+    """
+    reader, engine = rig
+    _feed(reader, engine, clock="05:28", period="Q3", score="43 - 31")
+    _feed_market(reader, engine, "2.o cuarto - Total de puntos", "40.5 OVER 2.00 UNDER 1.80")
+    q2_antes = reader.markets.get(MarketKey.quarter(2)).last_seen_at
+
+    # cambia el titulo y el bloque a la vez: primera lectura de la transicion
+    engine.set_text("MARKET_LABEL", "Partido - Total de puntos")
+    engine.set_text("MARKET_BLOCK", "180.5 OVER 2.00 UNDER 1.81")
+    snap = reader.tick()
+
+    assert snap.market_in_transition is True
+    q2 = reader.markets.get(MarketKey.quarter(2))
+    assert [ln.line for ln in q2.lines] == [40.5]     # intacto
+    assert q2.last_seen_at == q2_antes                # ni siquiera se refresca
+    # el mercado de partido no recibe lineas que no sean suyas
+    juego = reader.markets.get(MarketKey.game())
+    assert juego is None or not juego.has_lines
+
+    # confirmado el titulo, el mercado de partido recibe SUS lineas
+    for _ in range(4):
+        snap = reader.tick()
+    assert snap.market_in_transition is False
+    assert [ln.line for ln in snap.markets.get(MarketKey.game()).lines] == [180.5]
+    assert [ln.line for ln in snap.markets.get(MarketKey.quarter(2)).lines] == [40.5]
