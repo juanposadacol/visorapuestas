@@ -137,7 +137,22 @@ class PeriodPointsTracker:
             pa, pb, src = self.closed_periods[period]
             return PeriodScore(period, pa, pb, src, True)
 
-        # 3. Periodo en curso con baseline conocido.
+        # 3. Periodo pasado del que se conocen los marcadores de inicio y de
+        #    fin: la diferencia entre dos bases consecutivas son exactamente
+        #    los puntos de ese periodo. Es un hecho, no una inferencia, y es
+        #    lo que permite evaluar el mercado de la 2.a mitad cuando ya se
+        #    juega el Q4 habiendo entrado a mitad del Q3.
+        if current_period is not None and period < current_period:
+            base = self.baselines.get(period)
+            siguiente = self.baselines.get(period + 1)
+            if base is not None and siguiente is not None:
+                order = [PointsSource.BREAKDOWN, PointsSource.HISTORY,
+                         PointsSource.MANUAL, PointsSource.UNKNOWN]
+                peor = base[2] if order.index(base[2]) >= order.index(siguiente[2]) else siguiente[2]
+                return PeriodScore(period, siguiente[0] - base[0], siguiente[1] - base[1],
+                                   peor, True)
+
+        # 4. Periodo en curso con baseline conocido.
         if current_period is not None and period == current_period:
             entry = self.baselines.get(period)
             if entry is not None and score_a is not None and score_b is not None:
@@ -145,7 +160,7 @@ class PeriodPointsTracker:
                 return PeriodScore(period, int(score_a) - base_a, int(score_b) - base_b, src, False)
             return PeriodScore(period)
 
-        # 4. Periodo futuro: todavia no se ha jugado, 0 puntos es un hecho.
+        # 5. Periodo futuro: todavia no se ha jugado, 0 puntos es un hecho.
         if current_period is not None and period > current_period:
             return PeriodScore(period, 0, 0, PointsSource.HISTORY, False)
 

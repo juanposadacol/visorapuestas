@@ -52,6 +52,7 @@ class LineEvaluation:
     # --- comparaciones
     margin_vs_reference: Optional[float] = None
     margin_vs_period_pace: Optional[float] = None
+    margin_vs_half_pace: Optional[float] = None
     margin_vs_game_pace: Optional[float] = None
 
     # --- lectura rapida
@@ -96,7 +97,7 @@ def _unavailable_reason(key: MarketKey, m: BetMetrics, state: GameState) -> str:
                 return "FALTA CONFIRMAR EL CUARTO EN JUEGO"
             return f"FALTA MARCADOR INICIAL {rules.label(key.period)}"
         if key.market_type is MarketType.HALF_TOTAL:
-            return f"FALTAN PUNTOS DE LA {key.half}.a MITAD"
+            return f"FALTA MARCADOR INICIAL {key.half}H"
         return "MARCADOR NO CONFIRMADO"
     if m.scope_remaining_seconds is None:
         return "RELOJ NO CONFIRMADO"
@@ -117,11 +118,14 @@ def evaluate_line(state: GameState, line: MarketLine, criteria: EntryCriteria,
 
     margin_reference: Optional[float] = None
     margin_period: Optional[float] = None
+    margin_half: Optional[float] = None
     margin_game: Optional[float] = None
     if pace is not None:
         margin_reference = pace - criteria.reference_pace
         if general is not None and general.period_pace is not None:
             margin_period = pace - general.period_pace
+        if general is not None and general.half_pace is not None:
+            margin_half = pace - general.half_pace
         if general is not None and general.game_pace is not None:
             margin_game = pace - general.game_pace
 
@@ -144,6 +148,7 @@ def evaluate_line(state: GameState, line: MarketLine, criteria: EntryCriteria,
         exceeded=m.exceeded,
         margin_vs_reference=margin_reference,
         margin_vs_period_pace=margin_period,
+        margin_vs_half_pace=margin_half,
         margin_vs_game_pace=margin_game,
         signal=signal,
         unavailable_reason=reason if reason else ("LINEA EN REVISION" if under_review else ""),
