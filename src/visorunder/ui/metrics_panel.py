@@ -200,11 +200,11 @@ class MetricsPanel(QWidget):
         layout.addLayout(limit_row)
 
         layout.addWidget(_title("FALTAN PARA PERDER"))
-        self.points_to_lose_label = QLabel(fmt.UNKNOWN)
-        self.points_to_lose_label.setObjectName("hugeValue")
-        self.points_to_lose_label.setAlignment(Qt.AlignCenter)
-        self.points_to_lose_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout.addWidget(self.points_to_lose_label)
+        self.points_to_exceed_label = QLabel(fmt.UNKNOWN)
+        self.points_to_exceed_label.setObjectName("hugeValue")
+        self.points_to_exceed_label.setAlignment(Qt.AlignCenter)
+        self.points_to_exceed_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(self.points_to_exceed_label)
 
         self.exceeded_label = QLabel("")
         self.exceeded_label.setObjectName("danger")
@@ -301,22 +301,22 @@ class MetricsPanel(QWidget):
 
         if m is None:
             self.threshold_label.setText(fmt.UNKNOWN)
-            self.points_to_lose_label.setText(fmt.UNKNOWN)
+            self.points_to_exceed_label.setText(fmt.UNKNOWN)
             self.required_pace_label.setText(fmt.UNKNOWN)
             self.exceeded_label.setText("")
             self.scope_label.setText("")
             return
 
-        self.threshold_label.setText(fmt.integer(m.loss_threshold))
-        if m.points_to_lose is None:
-            self.points_to_lose_label.setText(fmt.UNKNOWN)
-            self.points_to_lose_label.setStyleSheet(f"color: {COLOR_MUTED};")
+        self.threshold_label.setText(fmt.integer(m.exceed_threshold))
+        if m.points_to_exceed is None:
+            self.points_to_exceed_label.setText(fmt.UNKNOWN)
+            self.points_to_exceed_label.setStyleSheet(f"color: {COLOR_MUTED};")
             self.exceeded_label.setText("PUNTOS DEL AMBITO NO CONFIRMADOS")
         else:
-            self.points_to_lose_label.setText(f"{m.points_to_lose} PUNTOS")
+            self.points_to_exceed_label.setText(f"{m.points_to_exceed} PUNTOS")
             color = COLOR_DANGER if m.exceeded else (
-                COLOR_WARN if m.points_to_lose <= 6 else COLOR_OK)
-            self.points_to_lose_label.setStyleSheet(f"color: {color};")
+                COLOR_WARN if m.points_to_exceed <= 6 else COLOR_OK)
+            self.points_to_exceed_label.setStyleSheet(f"color: {color};")
             self.exceeded_label.setText("UNDER SUPERADO" if m.exceeded else "")
 
         self.required_pace_label.setText(fmt.pace(m.required_pace))

@@ -9,13 +9,13 @@ from visorunder.calculations.metrics import (
     IMPOSSIBLE,
     compute_bet_metrics,
     compute_general_metrics,
-    loss_threshold,
+    exceed_threshold,
     points_per_minute,
-    points_to_lose,
-    required_pace_to_lose,
+    points_to_exceed,
+    required_pace_to_exceed,
     seconds_to_game_end,
     seconds_to_halftime,
-    under_exceeded,
+    line_exceeded,
 )
 from visorunder.domain.game_state import GameState, PointsSource
 from visorunder.domain.market import MarketKey, Side
@@ -27,52 +27,52 @@ from visorunder.domain.values import Observed
 # --------------------------------------------------------------- requisito 12
 def test_under_40_5_con_19_puntos():
     """UNDER 40.5, puntos actuales 19 -> limite 41, faltan 22."""
-    assert loss_threshold(40.5) == 41
-    assert points_to_lose(40.5, 19) == 22
+    assert exceed_threshold(40.5) == 41
+    assert points_to_exceed(40.5, 19) == 22
 
 
 def test_under_ya_superado():
-    assert points_to_lose(40.5, 41) == 0
-    assert points_to_lose(40.5, 55) == 0
-    assert under_exceeded(40.5, 41) is True
-    assert under_exceeded(40.5, 40) is False
+    assert points_to_exceed(40.5, 41) == 0
+    assert points_to_exceed(40.5, 55) == 0
+    assert line_exceeded(40.5, 41) is True
+    assert line_exceeded(40.5, 40) is False
 
 
 def test_linea_entera_pierde_al_superarla():
     # UNDER 40.0: 40 exactos seria empate (push); pierde en 41.
-    assert loss_threshold(40.0) == 41
+    assert exceed_threshold(40.0) == 41
 
 
 def test_mercado_de_partido_under_153_5():
     """Requisito 30: UNDER 153.5 con 116 puntos -> limite 154, faltan 38."""
-    assert loss_threshold(153.5) == 154
-    assert points_to_lose(153.5, 116) == 38
+    assert exceed_threshold(153.5) == 154
+    assert points_to_exceed(153.5, 116) == 38
 
 
 def test_puntos_desconocidos_no_se_inventan():
-    assert points_to_lose(40.5, None) is None
-    assert under_exceeded(40.5, None) is None
+    assert points_to_exceed(40.5, None) is None
+    assert line_exceeded(40.5, None) is None
 
 
 # --------------------------------------------------------------- requisito 13
 def test_ritmo_necesario_para_perder():
     """22 puntos en 5:28 restantes -> 4.02 pts/min."""
-    pace = required_pace_to_lose(22, 328)
+    pace = required_pace_to_exceed(22, 328)
     assert pace == pytest.approx(4.02, abs=0.01)
 
 
 def test_ritmo_cuando_ya_esta_perdido():
-    assert required_pace_to_lose(0, 328) == 0.0
+    assert required_pace_to_exceed(0, 328) == 0.0
 
 
 def test_ritmo_sin_tiempo_restante_es_imposible():
-    assert required_pace_to_lose(22, 0) == IMPOSSIBLE
-    assert math.isinf(required_pace_to_lose(5, 0))
+    assert required_pace_to_exceed(22, 0) == IMPOSSIBLE
+    assert math.isinf(required_pace_to_exceed(5, 0))
 
 
 def test_ritmo_sin_datos_es_none():
-    assert required_pace_to_lose(None, 328) is None
-    assert required_pace_to_lose(22, None) is None
+    assert required_pace_to_exceed(None, 328) is None
+    assert required_pace_to_exceed(22, None) is None
 
 
 # --------------------------------------------------------------- requisito 11
@@ -167,8 +167,8 @@ def test_metricas_de_apuesta_de_cuarto():
     # puntos del Q3 = (43-34) + (31-21) = 19
     m = compute_bet_metrics(state, MarketKey.quarter(3), 40.5, 1.87, Side.UNDER)
     assert m.scope_points == 19
-    assert m.loss_threshold == 41
-    assert m.points_to_lose == 22
+    assert m.exceed_threshold == 41
+    assert m.points_to_exceed == 22
     assert m.scope_remaining_seconds == 328
     assert m.required_pace == pytest.approx(4.02, abs=0.01)
     assert m.exceeded is False
@@ -182,8 +182,8 @@ def test_metricas_de_apuesta_de_partido_usan_total_y_tiempo_total():
     state.clock_seconds = Observed.confirmed(510)  # 8:30
     m = compute_bet_metrics(state, MarketKey.game(), 153.5, 1.80, Side.UNDER)
     assert m.scope_points == 116
-    assert m.loss_threshold == 154
-    assert m.points_to_lose == 38
+    assert m.exceed_threshold == 154
+    assert m.points_to_exceed == 38
     assert m.scope_remaining_seconds == 510
     assert m.required_pace == pytest.approx(38 / 8.5, abs=1e-6)
 
@@ -199,7 +199,7 @@ def test_linea_de_cuarto_futuro_no_usa_los_puntos_del_cuarto_actual():
     m = compute_bet_metrics(state, MarketKey.quarter(3), 40.5, 1.87)
     # El Q3 no ha empezado: 0 puntos y el cuarto completo por delante.
     assert m.scope_points == 0
-    assert m.points_to_lose == 41
+    assert m.points_to_exceed == 41
     assert m.scope_remaining_seconds == 600
     assert m.started is False
     # Y NO usa los 39 puntos del Q2 en curso.

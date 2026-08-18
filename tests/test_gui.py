@@ -99,7 +99,7 @@ def test_v1_flujo_completo(window):
     _pump(win, controller, 1)
 
     # 16-17: metricas contra la linea fijada
-    assert win.metrics_panel.points_to_lose_label.text() == "22 PUNTOS"
+    assert win.metrics_panel.points_to_exceed_label.text() == "22 PUNTOS"
     assert win.metrics_panel.required_pace_label.text() == "4.02 pts/min"
     assert win.metrics_panel.threshold_label.text() == "41"
 
@@ -135,7 +135,7 @@ def test_under_superado_se_marca(window):
     # el cuarto se dispara hasta superar la linea
     game.score_a += 30
     _pump(win, controller, 6)
-    assert win.metrics_panel.points_to_lose_label.text() == "0 PUNTOS"
+    assert win.metrics_panel.points_to_exceed_label.text() == "0 PUNTOS"
     assert win.metrics_panel.exceeded_label.text() == "UNDER SUPERADO"
     assert win.metrics_panel.required_pace_label.text() == "0.00 pts/min"
 

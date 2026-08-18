@@ -64,7 +64,7 @@ def text(value: Optional[str]) -> str:
     return value if value else UNKNOWN
 
 
-def points_to_lose(value: Optional[int], exceeded: Optional[bool]) -> str:
+def points_to_exceed(value: Optional[int], exceeded: Optional[bool]) -> str:
     if value is None:
         return UNKNOWN
     if exceeded:

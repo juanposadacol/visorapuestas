@@ -77,70 +77,79 @@ def points_per_minute(points: Optional[int], seconds_played: Optional[int]) -> O
 
 
 # --------------------------------------------------------------------------
-# Bloque 12: puntos que faltan para perder el UNDER
+# Bloque 12: cuanto falta para SUPERAR la linea
 # --------------------------------------------------------------------------
-def loss_threshold(line: float, side: Side = Side.UNDER) -> int:
-    """Requisito 12 -- total de puntos con el que la apuesta pierde.
+# VOCABULARIO: el dominio habla de "superar la linea", nunca de "perder".
+# Superar la linea es un hecho del partido, independiente del lado apostado:
+# para un UNDER superarla significa perder y para un OVER significa ganar.
+# La traduccion a "faltan para perder" ocurre solo en la interfaz y solo
+# cuando existe una apuesta UNDER fijada. Asi el motor sirve igual para OVER
+# el dia que haga falta, sin reescribir nada.
+# --------------------------------------------------------------------------
+def exceed_threshold(line: float, side: Side = Side.UNDER) -> int:
+    """Total de puntos con el que la linea queda SUPERADA.
 
-    Para un UNDER, la apuesta pierde cuando el total ALCANZA:
+        limite = floor(linea) + 1
 
-        limite_perdida = floor(linea) + 1
-
-    >>> loss_threshold(40.5)
+    >>> exceed_threshold(40.5)
     41
-    >>> loss_threshold(153.5)
+    >>> exceed_threshold(153.5)
     154
-    >>> loss_threshold(40.0)     # linea entera: 40 seria empate, 41 pierde
+    >>> exceed_threshold(40.0)     # linea entera: 40 es empate, 41 la supera
     41
 
-    Para un OVER el concepto simetrico es el total con el que ya no puede
-    perder; se devuelve floor(linea)+1 igualmente como umbral de resolucion.
+    El umbral no depende del lado: es el mismo numero para UNDER y para OVER.
+    `side` se acepta para que la firma sea estable si en el futuro algun
+    mercado necesita resolverse de otra forma.
     """
     return math.floor(float(line)) + 1
 
 
-def points_to_lose(line: float, current_points: Optional[int], side: Side = Side.UNDER) -> Optional[int]:
-    """Requisito 12 -- cuantos puntos faltan para que el UNDER pierda.
+def points_to_exceed(line: float, current_points: Optional[int], side: Side = Side.UNDER) -> Optional[int]:
+    """Puntos que faltan, DESDE AHORA, para que la linea quede superada.
 
-    >>> points_to_lose(40.5, 19)
+    >>> points_to_exceed(40.5, 19)
     22
-    >>> points_to_lose(153.5, 116)
+    >>> points_to_exceed(153.5, 116)
     38
-    >>> points_to_lose(40.5, 41)    # ya superado
+    >>> points_to_exceed(40.5, 41)    # ya superada
     0
-    >>> points_to_lose(40.5, None) is None
+    >>> points_to_exceed(40.5, None) is None
     True
     """
     if current_points is None:
         return None
-    threshold = loss_threshold(line, side)
+    threshold = exceed_threshold(line, side)
     return max(0, threshold - int(current_points))
 
 
-def under_exceeded(line: float, current_points: Optional[int]) -> Optional[bool]:
-    """True si el total ya alcanzo o supero el limite de perdida."""
+def line_exceeded(line: float, current_points: Optional[int]) -> Optional[bool]:
+    """True si el total del ambito ya alcanzo o supero el limite."""
     if current_points is None:
         return None
-    return int(current_points) >= loss_threshold(line)
+    return int(current_points) >= exceed_threshold(line)
 
 
 # --------------------------------------------------------------------------
-# Bloque 13: ritmo necesario para perder
+# Bloque 13: ritmo necesario para superar la linea
 # --------------------------------------------------------------------------
-def required_pace_to_lose(points_needed: Optional[int],
-                          remaining_seconds: Optional[int]) -> Optional[float]:
-    """Requisito 13 -- puntos por minuto necesarios durante TODO el tiempo
-    restante para que el UNDER pierda.
+def required_pace_to_exceed(points_needed: Optional[int],
+                            remaining_seconds: Optional[int]) -> Optional[float]:
+    """Puntos por minuto que harian falta durante TODO el tiempo restante
+    para que la linea quede superada.
 
-        ritmo = puntos_para_perder / minutos_restantes
+    Es el nucleo de la deteccion de entrada: responde a "que ritmo tendrian
+    que mantener desde este instante para superar esta linea".
 
-    >>> round(required_pace_to_lose(22, 328), 2)   # 22 pts en 5:28
+        ritmo = puntos_que_faltan / minutos_restantes
+
+    >>> round(required_pace_to_exceed(22, 328), 2)   # 22 pts en 5:28
     4.02
-    >>> required_pace_to_lose(0, 328)              # ya perdido
+    >>> required_pace_to_exceed(0, 328)              # ya superada
     0.0
-    >>> required_pace_to_lose(22, 0) == IMPOSSIBLE  # no queda tiempo
+    >>> required_pace_to_exceed(22, 0) == IMPOSSIBLE  # no queda tiempo
     True
-    >>> required_pace_to_lose(22, None) is None
+    >>> required_pace_to_exceed(22, None) is None
     True
     """
     if points_needed is None:
@@ -220,8 +229,8 @@ class BetMetrics:
     scope_points: Optional[int] = None
     scope_remaining_seconds: Optional[int] = None
     scope_points_source: PointsSource = PointsSource.UNKNOWN
-    loss_threshold: Optional[int] = None
-    points_to_lose: Optional[int] = None
+    exceed_threshold: Optional[int] = None
+    points_to_exceed: Optional[int] = None
     required_pace: Optional[float] = None
     exceeded: Optional[bool] = None
     settled: bool = False
@@ -257,8 +266,8 @@ def compute_bet_metrics(state: GameState, key: MarketKey, line: float,
     funcion no sabe si es un cuarto, una mitad o el partido entero.
     """
     resolution = market_scope.resolve(state, key)
-    threshold = loss_threshold(line, side)
-    needed = points_to_lose(line, resolution.points, side)
+    threshold = exceed_threshold(line, side)
+    needed = points_to_exceed(line, resolution.points, side)
     return BetMetrics(
         key=key,
         line=line,
@@ -267,10 +276,10 @@ def compute_bet_metrics(state: GameState, key: MarketKey, line: float,
         scope_points=resolution.points,
         scope_remaining_seconds=resolution.remaining_seconds,
         scope_points_source=resolution.points_source,
-        loss_threshold=threshold,
-        points_to_lose=needed,
-        required_pace=required_pace_to_lose(needed, resolution.remaining_seconds),
-        exceeded=under_exceeded(line, resolution.points),
+        exceed_threshold=threshold,
+        points_to_exceed=needed,
+        required_pace=required_pace_to_exceed(needed, resolution.remaining_seconds),
+        exceeded=line_exceeded(line, resolution.points),
         settled=resolution.settled,
         started=resolution.started,
     )

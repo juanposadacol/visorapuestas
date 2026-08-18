@@ -132,8 +132,8 @@ def test_mercado_de_partido(rig):
                  label="Partido - Total de puntos", block="153.5 OVER 1.85 UNDER 1.80")
     linea = snap.market.sorted_lines()[0]
     m = compute_bet_metrics(snap.state, linea.key, linea.line, linea.under_odds)
-    assert m.loss_threshold == 154
-    assert m.points_to_lose == 38
+    assert m.exceed_threshold == 154
+    assert m.points_to_exceed == 38
     assert m.scope_remaining_seconds == 510
     assert m.required_pace == pytest.approx(38 / 8.5, abs=1e-6)
 

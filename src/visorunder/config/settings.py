@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .criteria import EntryCriteria
 from .paths import settings_path
 
 
@@ -24,6 +25,8 @@ class AppSettings:
     })
     window_geometry: Optional[list] = None
     log_to_file: bool = True
+    #: Criterios de entrada (ritmo de referencia, cuota objetivo, umbrales).
+    entry: EntryCriteria = field(default_factory=EntryCriteria)
 
     def save(self, path: Optional[Path] = None) -> None:
         target = Path(path) if path else settings_path()
@@ -41,6 +44,8 @@ class AppSettings:
             return AppSettings()
         settings = AppSettings()
         for key, value in data.items():
-            if hasattr(settings, key):
+            if key == "entry":
+                settings.entry = EntryCriteria.from_dict(value)
+            elif hasattr(settings, key):
                 setattr(settings, key, value)
         return settings
