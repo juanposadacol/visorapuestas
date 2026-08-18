@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .criteria import EntryCriteria
+from .freshness import FreshnessCriteria
 from .paths import settings_path
 
 
@@ -27,6 +28,8 @@ class AppSettings:
     log_to_file: bool = True
     #: Criterios de entrada (ritmo de referencia, cuota objetivo, umbrales).
     entry: EntryCriteria = field(default_factory=EntryCriteria)
+    #: Umbrales de frescura de los mercados no visibles.
+    freshness: FreshnessCriteria = field(default_factory=FreshnessCriteria)
 
     def save(self, path: Optional[Path] = None) -> None:
         target = Path(path) if path else settings_path()
@@ -46,6 +49,8 @@ class AppSettings:
         for key, value in data.items():
             if key == "entry":
                 settings.entry = EntryCriteria.from_dict(value)
+            elif key == "freshness":
+                settings.freshness = FreshnessCriteria.from_dict(value)
             elif hasattr(settings, key):
                 setattr(settings, key, value)
         return settings
