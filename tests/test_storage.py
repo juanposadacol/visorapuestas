@@ -147,11 +147,11 @@ def test_observaciones_ocr_para_diagnostico(db):
 
 
 # --------------------------------------- criterios de la sesion (migracion 002)
-def test_migracion_002_actualiza_una_base_de_la_version_1(tmp_path):
+def test_las_migraciones_actualizan_una_base_de_la_version_1(tmp_path):
     """Una base ya existente debe subir de version sin perder el historial."""
     import sqlite3
 
-    from visorunder.storage.database import _migration_001
+    from visorunder.storage.database import SCHEMA_VERSION, _migration_001
 
     path = tmp_path / "vieja.db"
     cx = sqlite3.connect(path)
@@ -162,11 +162,13 @@ def test_migracion_002_actualiza_una_base_de_la_version_1(tmp_path):
     cx.close()
 
     db = Database(path)
-    assert db.version == 2
+    assert db.version == SCHEMA_VERSION
     fila = db.query_one("SELECT started_at, status, entry_criteria FROM sessions")
     assert fila["started_at"] == 1000.0     # el historial anterior sigue ahi
     assert fila["status"] == "FINISHED"
     assert fila["entry_criteria"] == "{}"   # sin criterios registrados
+    # y la tabla nueva de la migracion 003 existe
+    assert db.query("SELECT name FROM sqlite_master WHERE name='market_observations'")
     db.close()
 
 
@@ -203,3 +205,51 @@ def test_no_se_persisten_datos_derivados(db):
     assert "line_evaluations" not in tablas
     columnas = {r["name"] for r in db.query("PRAGMA table_info(market_snapshots)")}
     assert not columnas & {"signal", "margin", "required_pace", "points_to_exceed"}
+
+
+# ------------------------------------------- observaciones de mercado (003)
+def test_se_registra_cuando_se_miro_cada_mercado(db):
+    from visorunder.domain.market import MarketKey
+
+    sessions = SessionRepository(db)
+    history = HistoryRepository(db)
+    session_id = sessions.start(None, None)
+
+    history.record_market_observation(session_id, MarketKey.game(), 1000.0, 1000.0)
+    history.record_market_observation(session_id, MarketKey.quarter(2), 1005.0, 1005.0)
+    history.record_market_observation(session_id, MarketKey.game(), 1010.0, None)
+
+    filas = {(r["market_type"], r["period"], r["half"]): r
+             for r in history.market_observations(session_id)}
+    juego = filas[("GAME_TOTAL", None, None)]
+    assert juego["first_seen_at"] == 1000.0
+    assert juego["last_seen_at"] == 1010.0          # se actualiza
+    assert juego["last_confirmed_at"] == 1000.0     # no se pierde al no confirmar
+    assert juego["observations"] == 2
+    assert ("QUARTER_TOTAL", 2, None) in filas
+
+
+def test_las_lineas_se_guardan_con_su_mercado(db):
+    from visorunder.domain.market import MarketKey, MarketLine, MarketSnapshot
+
+    sessions = SessionRepository(db)
+    history = HistoryRepository(db)
+    session_id = sessions.start(None, None)
+
+    for key, valores in ((MarketKey.game(), [180.5]),
+                         (MarketKey.half_market(1), [80.5]),
+                         (MarketKey.quarter(2), [40.5])):
+        snapshot = MarketSnapshot(key=key, lines=[
+            MarketLine("BetPlay", "A vs B", key, v, 1.9, 1.85) for v in valores])
+        history.save_market_snapshot(session_id, snapshot)
+
+    filas = history.market_history(session_id)
+    por_tipo = {(r["market_type"], r["period"]): r["line"] for r in filas}
+    assert por_tipo[("GAME_TOTAL", None)] == 180.5
+    assert por_tipo[("HALF_TOTAL", None)] == 80.5
+    assert por_tipo[("QUARTER_TOTAL", 2)] == 40.5
+
+
+def test_no_se_persisten_senales_ni_margenes(db):
+    columnas = {r["name"] for r in db.query("PRAGMA table_info(market_observations)")}
+    assert not columnas & {"signal", "freshness", "margin", "required_pace"}

@@ -119,6 +119,35 @@ del usuario siempre manda sobre el enfoque automático.
 
 ---
 
+## 3.ter Radar multi-mercado
+
+`EVENTO -> MERCADOS -> LÍNEAS`, nunca una lista plana. `EventMarkets` indexa un
+`MarketState` por `MarketKey`; cada uno guarda su última lectura, `last_seen_at`,
+`last_confirmed_at` y si está visible.
+
+**La frescura se deriva, no se almacena.** `MarketState.freshness(criteria, now)` la
+calcula de la visibilidad y la antigüedad, así que no puede quedar desincronizada de los
+datos que la producen.
+
+Tres salvaguardas que no conviene tocar:
+
+1. **Un `MarketTracker` por mercado.** Al ser independientes, la confirmación de un
+   mercado no puede alimentarse con lecturas de otro.
+2. **Compuerta de transición.** Al cambiar de pestaña el título tarda unas lecturas en
+   confirmarse; en ese hueco el título confirmado todavía dice `Q2` mientras el bloque ya
+   muestra las líneas de `Partido`. Mientras el título **en bruto** discrepe del
+   confirmado, no se publica nada y el mercado anterior conserva intacta su última lectura
+   —ni siquiera se refresca su `last_seen_at`—. Sin esto, las líneas acabarían atribuidas
+   al mercado equivocado, que es el peor fallo posible de esta herramienta.
+3. **Una lectura sin confirmar nunca sustituye a la publicada.** `EventMarkets.observe`
+   solo reemplaza el snapshot cuando la lectura está confirmada.
+
+La detección del mercado visible sigue esta prioridad: título confirmado por OCR →
+mercado forzado a mano por el usuario → mercado por defecto del perfil. Si nada resuelve,
+no se publica ninguna línea.
+
+---
+
 ## 4. Puntos técnicamente delicados
 
 ### 4.1 Que la línea visible no es la del cuarto en juego
@@ -189,11 +218,18 @@ Versión del esquema en `PRAGMA user_version`, migraciones numeradas en
 | `market_snapshots` | una fila por línea: tipo, cuarto, línea, cuotas, contexto |
 | `bets` | apuesta fijada con el estado del partido en ese instante |
 | `sessions.entry_criteria` | criterios usados en la sesión (migración 002) |
+| `market_observations` | cuándo se vio cada mercado por última vez (migración 003) |
 
 `bets` guarda `line` y `odds` **congeladas**: `LockedBet` es una dataclass `frozen`, así
 que es imposible mutarla por accidente.
 
-**No se persisten datos derivados.** Márgenes, ritmos necesarios y señales no se guardan:
+> Detalle de SQLite que costó un fallo: en un `UNIQUE`, dos `NULL` son **distintos** entre
+> sí, así que `UNIQUE(session_id, market_type, period, half)` no agrupaba el mercado de
+> partido (que lleva `period` y `half` a `NULL`) y creaba una fila por observación. Se
+> indexa por expresión con `COALESCE(period, -1)`.
+
+**No se persisten datos derivados.** Márgenes, ritmos necesarios, señales y estados de
+frescura no se guardan:
 con el marcador, el reloj, las líneas, las cuotas, los timestamps y los criterios de la
 sesión se recalculan exactamente igual. Duplicarlos crearía dos versiones de la verdad que
 podrían discrepar tras un cambio de fórmula.
@@ -224,6 +260,8 @@ lectura del mercado → cálculo → interfaz**.
 - Nuevos mercados: añadir un caso en `market_scope.resolve`.
 - Nuevos niveles o criterios de señal: `signals.py` y `EntryCriteria`.
 - Soporte de OVER: el motor ya es neutro; queda la traducción en la interfaz.
+- Más mercados (hándicaps, totales por equipo): un caso en `market_scope.resolve` y una
+  entrada en el orden de presentación de `EventMarkets`.
 - Nuevos motores OCR: implementar `OcrEngine` y registrarlo.
 - Nuevas reglas de juego: crear un `GameRules` (la prórroga ya está contemplada).
 - Gráficas del historial: los datos ya están en `market_snapshots` y `score_snapshots`.

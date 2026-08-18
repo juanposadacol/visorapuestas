@@ -295,3 +295,112 @@ def test_toda_senal_tiene_etiqueta_textual():
     for level in SignalLevel:
         assert level.label
         assert level.explanation
+
+
+# ------------------------------------------- mercados de mitad y de partido
+def _fiba_state(period, clock, score_a, score_b, baselines=None):
+    s = GameState(rules=FIBA)
+    s.period = Observed.confirmed(period)
+    s.clock_seconds = Observed.confirmed(clock)
+    s.score_a = Observed.confirmed(score_a)
+    s.score_b = Observed.confirmed(score_b)
+    for p, (a, b) in (baselines or {}).items():
+        s.tracker.set_manual_baseline(p, a, b)
+    return s
+
+
+def _market_line(key, value, under=1.85, over=1.90):
+    return MarketLine(sportsbook="BetPlay", event="A vs B", key=key,
+                      line=value, over_odds=over, under_odds=under)
+
+
+def test_caso_f_primera_mitad():
+    """1H: 02:00 jugados, 10 puntos, UNDER 79.5 -> faltan 70, 18:00, 3.8889."""
+    state = _fiba_state(1, 480, 6, 4, {1: (0, 0)})
+    e = evaluate_line(state, _market_line(MarketKey.half_market(1), 79.5), EntryCriteria())
+    assert e.scope_points == 10
+    assert e.exceed_threshold == 80
+    assert e.points_to_exceed == 70
+    assert e.scope_remaining_seconds == 18 * 60
+    assert e.required_pace == pytest.approx(3.8889, abs=0.0001)
+
+
+def test_caso_g_partido_completo():
+    """Partido: 22:00 jugados, 100 puntos, UNDER 179.5 -> 80, 18:00, 4.4444."""
+    state = _fiba_state(3, 480, 52, 48)
+    e = evaluate_line(state, _market_line(MarketKey.game(), 179.5), EntryCriteria())
+    assert state.elapsed_game_seconds == 22 * 60
+    assert e.scope_points == 100
+    assert e.exceed_threshold == 180
+    assert e.points_to_exceed == 80
+    assert e.scope_remaining_seconds == 18 * 60
+    assert e.required_pace == pytest.approx(4.4444, abs=0.0001)
+
+
+def test_caso_h_segunda_mitad_desde_q3():
+    """2H = Q3 + Q4. Con 04:00 jugados del Q3 quedan 6:00 + 10:00."""
+    state = _fiba_state(3, 360, 55, 48, {3: (50, 44)})
+    general = compute_general_metrics(state)
+    e = evaluate_line(state, _market_line(MarketKey.half_market(2), 39.5),
+                      EntryCriteria(reference_pace=4.00), general)
+
+    assert e.scope_points == 9                       # (55-50) + (48-44)
+    assert e.scope_remaining_seconds == 16 * 60      # 06:00 del Q3 + 10:00 del Q4
+    assert e.points_to_exceed == 31                  # 40 - 9
+    assert e.required_pace == pytest.approx(31 / 16, abs=1e-6)
+    assert general.half_number == 2
+    assert general.half_pace == pytest.approx(9 / 4, abs=1e-6)
+    assert e.margin_vs_half_pace == pytest.approx(31 / 16 - 9 / 4, abs=1e-6)
+
+
+def test_segunda_mitad_desde_q4_solo_cuenta_el_cuarto_actual():
+    state = _fiba_state(4, 300, 70, 62, {3: (50, 44), 4: (62, 55)})
+    e = evaluate_line(state, _market_line(MarketKey.half_market(2), 39.5), EntryCriteria())
+    assert e.scope_remaining_seconds == 300          # solo lo que queda del Q4
+    assert e.scope_points == (70 - 50) + (62 - 44)
+
+
+def test_segunda_mitad_sin_marcador_inicial_no_es_evaluable():
+    state = _fiba_state(3, 360, 55, 48)   # sin baseline del Q3
+    e = evaluate_line(state, _market_line(MarketKey.half_market(2), 79.5), EntryCriteria())
+    assert e.signal is SignalLevel.NO_EVALUABLE
+    assert e.unavailable_reason == "FALTA MARCADOR INICIAL 2H"
+    assert e.points_to_exceed is None
+
+
+def test_caso_a_partido_evaluable_y_cuarto_no_evaluable_a_la_vez():
+    """GAME actualizado y Q3 sin marcador inicial conviven correctamente."""
+    state = _fiba_state(3, 480, 52, 48)
+    criteria = EntryCriteria()
+    juego = evaluate_line(state, _market_line(MarketKey.game(), 179.5), criteria)
+    cuarto = evaluate_line(state, _market_line(MarketKey.quarter(3), 40.5), criteria)
+
+    assert juego.signal.is_evaluable
+    assert juego.points_to_exceed == 80
+    assert cuarto.signal is SignalLevel.NO_EVALUABLE
+    assert cuarto.unavailable_reason == "FALTA MARCADOR INICIAL Q3"
+
+
+def test_los_cuatro_margenes_conviven():
+    state = _fiba_state(3, 360, 55, 48, {3: (50, 44)})
+    general = compute_general_metrics(state)
+    e = evaluate_line(state, _market_line(MarketKey.game(), 179.5),
+                      EntryCriteria(reference_pace=4.00), general)
+    assert e.margin_vs_reference is not None
+    assert e.margin_vs_period_pace is not None
+    assert e.margin_vs_half_pace is not None
+    assert e.margin_vs_game_pace is not None
+    # cada margen se mide contra su propio ritmo
+    assert e.margin_vs_reference == pytest.approx(e.required_pace - 4.00, abs=1e-9)
+    assert e.margin_vs_half_pace == pytest.approx(e.required_pace - general.half_pace, abs=1e-9)
+
+
+def test_en_prorroga_no_hay_mitad_en_curso():
+    state = _fiba_state(5, 120, 90, 88, {5: (88, 86)})
+    general = compute_general_metrics(state)
+    assert general.half_number is None
+    assert general.half_pace is None
+    e = evaluate_line(state, _market_line(MarketKey.quarter(5), 20.5),
+                      EntryCriteria(), general)
+    assert e.margin_vs_half_pace is None          # no se inventa
+    assert e.margin_vs_reference is not None      # el resto sigue funcionando

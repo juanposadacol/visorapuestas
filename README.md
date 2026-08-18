@@ -17,17 +17,23 @@ real a una sola pregunta:
 
 ## 1. Qué muestra
 
-El modo principal es **BUSCANDO ENTRADA**: todas las líneas que la casa ofrece ahora
-mismo, evaluadas a la vez.
+El modo principal es **BUSCANDO ENTRADA**: un radar con **todos los mercados del partido
+a la vez**, cada uno con todas sus líneas, aunque la casa los reparta en pestañas
+distintas.
 
 ```
-MERCADO: Q3 - Total de puntos                        BUSCANDO ENTRADA
+Partido - Total de puntos                              RECIENTE · hace 6 s
+ LÍNEA  CUOTA U  PUNTOS  RITMO NEC.  VS REF.  VS Q   VS MITAD  VS PARTIDO  SEÑAL
+ 176.5   2.25      74       4.62      +0.62  +2.38    +2.38      +0.33     EXIGENTE
+ 180.5   1.91      78       4.88      +0.88  +2.62    +2.62      +0.58     EXIGENTE
+ 182.5   1.74      80       5.00      +1.00  +2.75    +2.75      +0.71     MUY EXIGENTE
 
- LÍNEA  CUOTA U  PUNTOS  RITMO NEC.  VS REF.  VS Q   VS PARTIDO   SEÑAL
- 37.5    2.25      18       4.50      +0.50  +1.17     +1.62      EXIGENTE
- 38.5    2.08      19       4.75      +0.75  +1.42     +1.87      EXIGENTE
- 39.5    1.91      20       5.00      +1.00  +1.67     +2.12      MUY EXIGENTE
- 40.5    1.74      21       5.25      +1.25  +1.92     +2.37      MUY EXIGENTE
+1.ª mitad - Total de puntos                       DESACTUALIZADO · hace 22 s
+  78.5   2.25      --        --        --      --       --         --      FALTA MARCADOR INICIAL 1H
+
+Q3 - Total de puntos                                            EN VIVO
+  39.5   1.91      31       5.17      +1.17  +2.92    +2.92      +0.88     MUY EXIGENTE
+  40.5   1.74      32       5.33      +1.33  +3.08    +3.08      +1.04     MUY EXIGENTE
 ```
 
 Y a la izquierda, el contexto más la línea enfocada:
@@ -150,12 +156,58 @@ Consejos para que el OCR acierte:
    fijada ya no cambia** aunque la casa mueva la suya.
 6. Al terminar, **FINALIZAR PARTIDO** guarda la sesión en la base de datos.
 
+### Mercados soportados
+
+| Mercado | Puntos que usa | Tiempo que le queda |
+|---|---|---|
+| **Partido** | total del partido | resto del cuarto + cuartos sin jugar |
+| **1.ª mitad** | Q1 + Q2 | lo que falte de la primera mitad |
+| **2.ª mitad** | Q3 + Q4 | lo que falte de la segunda mitad |
+| **Q1 … Q4** | puntos de ese cuarto | lo que quede de ese cuarto |
+
+Cada línea se calcula **contra su propio mercado**. Una línea del Q3 nunca se compara con
+los puntos del Q2, y una de 1.ª mitad nunca acaba mezclada con las del partido.
+
+### Varios mercados a la vez y frescura
+
+La aplicación lee **la pantalla**, así que solo puede observar la pestaña que la casa está
+mostrando. Los demás mercados conservan su última lectura, **con su antigüedad siempre a
+la vista**:
+
+| Estado | Significa |
+|---|---|
+| **EN VIVO** | visible ahora y confirmado |
+| **RECIENTE** | no visible, leído hace pocos segundos |
+| **DESACTUALIZADO** | hace demasiado que no se observa |
+| **EN REVISIÓN** | visible, con una lectura nueva pendiente de confirmar |
+| **NO DISPONIBLE** | sin datos suficientes |
+
+Los umbrales (5 s y 15 s por defecto) se configuran en **CRITERIOS**.
+
+**Limitación inherente, dicha sin rodeos:** un mercado que no está visible **no puede
+considerarse actualizado**. La aplicación nunca lo disimula. Para refrescar un mercado
+desactualizado basta con **volver a mostrar su pestaña** en el navegador unos segundos.
+
+### Navegación entre pestañas
+
+Navegas **tú**, a mano. No hay automatización de clics, ni Selenium, ni lectura del DOM.
+La aplicación detecta qué mercado estás viendo por el ROI del **título del mercado**; si tu
+casa no muestra un título legible, elígelo en el desplegable **Mercado visible**.
+
+Durante el cambio de pestaña, mientras el título nuevo aún no está confirmado, la
+aplicación **no atribuye ninguna línea a ningún mercado** y lo avisa. Es la salvaguarda
+que impide que las líneas del Partido acaben registradas como si fueran del Q2.
+
 ### Los dos modos
 
 | Modo | Cuándo | Qué muestra |
 |---|---|---|
 | **BUSCANDO ENTRADA** | todavía no has apostado | todas las líneas con sus señales; es el modo principal |
 | **APUESTA FIJADA** | tras pulsar `F9` | lo mismo **más** el seguimiento de tu línea congelada |
+
+Tu apuesta queda atada a **su** mercado: si fijas `Partido UNDER 180.5` y luego te vas a
+mirar el Q3, la apuesta se sigue calculando contra el mercado de partido. El mercado
+visible y la apuesta fijada son cosas distintas.
 
 ### Tus criterios (botón **CRITERIOS**)
 
@@ -165,6 +217,7 @@ Consejos para que el OCR acierte:
 | Cuota UNDER objetivo | 1.80 | qué línea se enfoca sola en la tarjeta grande |
 | Umbrales de señal | +1.00 / +0.30 / −0.30 | dónde empieza cada nivel de la escala |
 | Tramo final | 60 s | aviso independiente; **no** altera ningún cálculo |
+| Frescura | 5 s / 15 s | cuándo un mercado pasa a RECIENTE y a DESACTUALIZADO |
 | Colores | verde/amarillo/rojo | paleta invertible; la etiqueta de texto siempre se muestra |
 
 Ninguno está escrito a fuego. El ritmo de referencia es **tu** criterio operativo, no una
@@ -297,8 +350,9 @@ settings.json      preferencias y tus criterios de entrada
 logs\              registro de diagnóstico
 ```
 
-Se guardan los datos **originales** (marcador, reloj, líneas, cuotas, timestamps) junto a
-los criterios usados en cada sesión. Los márgenes y las señales no se guardan: son datos
+Se guardan los datos **originales**: marcador, reloj, líneas y cuotas **por mercado**,
+timestamps, cuándo se observó cada mercado por última vez, y los criterios usados en la
+sesión. Los márgenes, las señales y los estados de frescura **no** se guardan: son datos
 derivados y se recalculan exactamente igual a partir de lo anterior.
 
 No hay servidor, ni nube, ni cuenta, ni suscripción.
@@ -309,7 +363,7 @@ No hay servidor, ni nube, ni cuenta, ni suscripción.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest          # 199 tests
+python -m pytest          # 238 tests
 ```
 
 La arquitectura y las decisiones técnicas están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).

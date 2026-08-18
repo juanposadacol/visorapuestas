@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from ..config.criteria import EntryCriteria
 from ..domain.bet import LockedBet
+from ..domain.event_markets import EventMarkets, FreshnessState, MarketState
 from ..domain.game_state import GameState, PointsSource
 from ..domain.market import MarketKey, MarketLine, MarketSnapshot, MarketType, Side
 from ..domain.rules import GameRules
@@ -52,6 +53,7 @@ class LineEvaluation:
     # --- comparaciones
     margin_vs_reference: Optional[float] = None
     margin_vs_period_pace: Optional[float] = None
+    margin_vs_half_pace: Optional[float] = None
     margin_vs_game_pace: Optional[float] = None
 
     # --- lectura rapida
@@ -96,7 +98,7 @@ def _unavailable_reason(key: MarketKey, m: BetMetrics, state: GameState) -> str:
                 return "FALTA CONFIRMAR EL CUARTO EN JUEGO"
             return f"FALTA MARCADOR INICIAL {rules.label(key.period)}"
         if key.market_type is MarketType.HALF_TOTAL:
-            return f"FALTAN PUNTOS DE LA {key.half}.a MITAD"
+            return f"FALTA MARCADOR INICIAL {key.half}H"
         return "MARCADOR NO CONFIRMADO"
     if m.scope_remaining_seconds is None:
         return "RELOJ NO CONFIRMADO"
@@ -117,11 +119,14 @@ def evaluate_line(state: GameState, line: MarketLine, criteria: EntryCriteria,
 
     margin_reference: Optional[float] = None
     margin_period: Optional[float] = None
+    margin_half: Optional[float] = None
     margin_game: Optional[float] = None
     if pace is not None:
         margin_reference = pace - criteria.reference_pace
         if general is not None and general.period_pace is not None:
             margin_period = pace - general.period_pace
+        if general is not None and general.half_pace is not None:
+            margin_half = pace - general.half_pace
         if general is not None and general.game_pace is not None:
             margin_game = pace - general.game_pace
 
@@ -144,6 +149,7 @@ def evaluate_line(state: GameState, line: MarketLine, criteria: EntryCriteria,
         exceeded=m.exceeded,
         margin_vs_reference=margin_reference,
         margin_vs_period_pace=margin_period,
+        margin_vs_half_pace=margin_half,
         margin_vs_game_pace=margin_game,
         signal=signal,
         unavailable_reason=reason if reason else ("LINEA EN REVISION" if under_review else ""),
@@ -224,3 +230,73 @@ def summarize(evaluations: List[LineEvaluation]) -> str:
             "INF" if math.isinf(e.required_pace) else f"{e.required_pace:.2f}")
         partes.append(f"{e.line_value:g}:{pace}/{e.signal.value}")
     return " ".join(partes)
+
+
+@dataclass(frozen=True)
+class MarketEvaluation:
+    """Un mercado del evento con todas sus lineas evaluadas.
+
+    Es el bloque que la interfaz pinta: cabecera con el estado de frescura y
+    debajo tantas filas como lineas ofrezca la casa en ese mercado.
+    """
+
+    state: "MarketState"
+    evaluations: List[LineEvaluation] = field(default_factory=list)
+    freshness: "FreshnessState" = None
+    focus: Optional[LineEvaluation] = None
+
+    @property
+    def key(self) -> MarketKey:
+        return self.state.key
+
+    @property
+    def label(self) -> str:
+        return self.state.key.label
+
+    @property
+    def is_live(self) -> bool:
+        return bool(self.freshness and self.freshness.is_trustworthy_now)
+
+    def age_text(self, now: Optional[float] = None) -> str:
+        return self.state.describe_age(now)
+
+
+def evaluate_event(state: GameState, markets: "EventMarkets", criteria: EntryCriteria,
+                   freshness_criteria, general: Optional[GeneralMetrics] = None,
+                   now: Optional[float] = None) -> List[MarketEvaluation]:
+    """Evalua TODOS los mercados del evento, cada uno con sus propias lineas.
+
+    Reune en un solo radar lo que la casa reparte en pestanas, pero sin
+    disimular la frescura: cada bloque lleva su estado y su antiguedad.
+    """
+    if markets is None:
+        return []
+    resultado: List[MarketEvaluation] = []
+    for market_state in markets.all_states():
+        if not market_state.has_lines:
+            continue
+        estado = market_state.freshness(freshness_criteria, now)
+        evaluaciones = [
+            evaluate_line(state, line, criteria, general,
+                          under_review=market_state.under_review)
+            for line in market_state.lines
+        ]
+        resultado.append(MarketEvaluation(
+            state=market_state,
+            evaluations=evaluaciones,
+            freshness=estado,
+            focus=choose_focus(evaluaciones, criteria),
+        ))
+    return resultado
+
+
+def find_evaluation(blocks: List[MarketEvaluation], key: MarketKey,
+                    line_value: float) -> Optional[LineEvaluation]:
+    """Localiza una linea concreta dentro del radar completo."""
+    for block in blocks:
+        if block.key != key:
+            continue
+        for evaluation in block.evaluations:
+            if abs(evaluation.line_value - line_value) < 1e-6:
+                return evaluation
+    return None

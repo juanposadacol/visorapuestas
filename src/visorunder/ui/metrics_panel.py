@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..calculations.entry import LineEvaluation
 from ..calculations.metrics import GeneralMetrics
 from ..calculations.signals import SignalLevel
+from ..domain.event_markets import FreshnessState
 from ..config.criteria import EntryCriteria
 from ..domain.bet import LockedBet
 from ..domain.game_state import GamePhase, GameState, PointsSource
@@ -200,11 +201,14 @@ class MetricsPanel(QWidget):
         self.bet_market_label.setObjectName("status")
         self.market_now_label = QLabel("")
         self.market_now_label.setObjectName("status")
+        self.freshness_label = QLabel("")
+        self.freshness_label.setObjectName("status")
 
         layout.addWidget(self.bet_title)
         layout.addWidget(self.bet_label)
         layout.addWidget(self.bet_market_label)
         layout.addWidget(self.market_now_label)
+        layout.addWidget(self.freshness_label)
         return card
 
     def _build_critical(self) -> QFrame:
@@ -299,7 +303,9 @@ class MetricsPanel(QWidget):
                     evaluation: Optional[LineEvaluation] = None,
                     current_market_line: Optional[MarketLine] = None,
                     criteria: Optional[EntryCriteria] = None,
-                    needs_baseline: bool = False) -> None:
+                    needs_baseline: bool = False,
+                    focus_freshness: Optional[FreshnessState] = None,
+                    focus_age_text: str = "") -> None:
         """Vuelca un ciclo completo de datos en la interfaz."""
         self.team_a_label.setText(fmt.text(state.team_a.usable_value()) or "EQUIPO A")
         self.team_b_label.setText(fmt.text(state.team_b.usable_value()) or "EQUIPO B")
@@ -327,8 +333,17 @@ class MetricsPanel(QWidget):
             self.target_odds_label.setText(f"{criteria.target_under_odds:.2f}")
 
         self._update_bet(bet, evaluation, current_market_line, criteria)
+        self._update_market_state(focus_freshness, focus_age_text)
         self.halftime_label.setText(fmt.halftime(general.seconds_to_halftime))
         self.end_label.setText(fmt.clock(general.remaining_game_seconds))
+
+    def _update_market_state(self, estado, edad: str) -> None:
+        texto = _freshness_text(estado, edad)
+        self.freshness_label.setText(texto)
+        if estado is not None and not estado.is_trustworthy_now:
+            self.freshness_label.setStyleSheet(f"color: {COLOR_WARN};")
+        else:
+            self.freshness_label.setStyleSheet("")
 
     def _update_bet(self, bet: Optional[LockedBet], m: Optional[LineEvaluation],
                     current_line: Optional[MarketLine],
@@ -402,6 +417,15 @@ class MetricsPanel(QWidget):
         self.margin_game_label.setText(_margin(m.margin_vs_game_pace))
         self.margin_reference_label.setText(_margin(m.margin_vs_reference))
         self.scope_label.setText(_scope_text(m))
+
+
+def _freshness_text(estado: Optional[FreshnessState], edad: str) -> str:
+    """La tarjeta nunca oculta cuando se leyo por ultima vez ese mercado."""
+    if estado is None:
+        return ""
+    if estado.is_trustworthy_now:
+        return f"ESTADO DEL MERCADO: {estado.label}"
+    return f"ESTADO DEL MERCADO: {estado.label}   ·   ultima lectura {edad}"
 
 
 def _phase_text(phase: GamePhase) -> str:

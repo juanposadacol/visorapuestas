@@ -216,6 +216,11 @@ class GeneralMetrics:
     seconds_to_halftime: Optional[int] = None
     period_pace: Optional[float] = None
     game_pace: Optional[float] = None
+    #: Ritmo real de la mitad en curso (Q1+Q2 o Q3+Q4).
+    half_pace: Optional[float] = None
+    half_points: Optional[int] = None
+    half_number: Optional[int] = None
+    half_elapsed_seconds: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -237,12 +242,49 @@ class BetMetrics:
     started: bool = True
 
 
+def current_half(rules, period: Optional[int]) -> Optional[int]:
+    """Mitad a la que pertenece el periodo en curso. None en prorroga."""
+    if period is None:
+        return None
+    if rules.is_overtime(period):
+        return None
+    per_half = rules.regulation_quarters // 2
+    return 1 + (period - 1) // per_half
+
+
+def elapsed_half_seconds(rules, period: Optional[int],
+                         remaining_seconds: Optional[int]) -> Optional[int]:
+    """Tiempo de juego transcurrido dentro de la mitad en curso."""
+    half = current_half(rules, period)
+    if half is None or remaining_seconds is None:
+        return None
+    per_half = rules.regulation_quarters // 2
+    first = 1 + (half - 1) * per_half
+    previos = sum(rules.period_seconds(p) for p in range(first, period))
+    return previos + max(0, rules.period_seconds(period) - remaining_seconds)
+
+
 def compute_general_metrics(state: GameState) -> GeneralMetrics:
     """Calcula el bloque de metricas generales a partir del estado observado."""
     ps = state.current_period_score()
     elapsed_q = state.elapsed_period_seconds
     elapsed_game = state.elapsed_game_seconds
+
+    # Ritmo de la mitad en curso: se reutiliza half_score, que ya sabe sumar
+    # los cuartos de la mitad y devolver UNKNOWN si falta alguno.
+    half = current_half(state.rules, state.period_value)
+    half_points = None
+    half_elapsed = None
+    if half is not None:
+        hs = state.half_score(half)
+        half_points = hs.total
+        half_elapsed = elapsed_half_seconds(state.rules, state.period_value, state.clock_value)
+
     return GeneralMetrics(
+        half_pace=points_per_minute(half_points, half_elapsed),
+        half_points=half_points,
+        half_number=half,
+        half_elapsed_seconds=half_elapsed,
         total_points=state.total_points,
         period_points=ps.total,
         period_points_a=ps.points_a,
