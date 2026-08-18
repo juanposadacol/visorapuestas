@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "VisorApuestas DOM Diagnostic",
+  "version": "0.1.0",
+  "description": "Herramienta de diagnostico de solo lectura: comprueba que mercados de BetPlay siguen existiendo en el DOM cuando no estan a la vista. No apuesta ni modifica la pagina.",
+  "icons": {},
+
+  "// permisos": "Minimo privilegio: solo los dominios de BetPlay y ningun permiso adicional. No se piden cookies, ni historial, ni almacenamiento de otras paginas, ni descargas (el JSON se genera con un blob en el propio popup).",
+  "host_permissions": [
+    "https://*.betplay.com.co/*"
+  ],
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.betplay.com.co/*"
+      ],
+      "js": [
+        "src/lib/text.js",
+        "src/lib/markets.js",
+        "src/lib/lines.js",
+        "src/lib/dedupe.js",
+        "src/lib/visibility.js",
+        "src/lib/report.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "action": {
+    "default_title": "VisorApuestas DOM Diagnostic",
+    "default_popup": "src/popup.html"
+  }
+}
