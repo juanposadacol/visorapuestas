@@ -77,12 +77,17 @@
       for (const token of tokenize(row)) {
         rawCandidates += 1;
         if (isLineShaped(token.value, token.decimals) && !isOddsShaped(token.value, token.decimals)) {
-          current = { line: token.value, overOdds: null, underOdds: null, raw: row.trim() };
+          // La pista viaja con el grupo: en el DOM, "Menos de 140.5" y "2.85"
+          // suelen ser nodos distintos, asi que la cuota llega sin palabra y
+          // solo la cabecera de su linea sabe de que lado es.
+          current = { line: token.value, overOdds: null, underOdds: null,
+                      raw: row.trim(), hint: token.hint };
           groups.push(current);
         } else if (isOddsShaped(token.value, token.decimals)) {
           if (!current) { unassigned += 1; continue; }
-          if (token.hint === 'under') current.underOdds = token.value;
-          else if (token.hint === 'over') current.overOdds = token.value;
+          const hint = token.hint || current.hint;
+          if (hint === 'under' && current.underOdds === null) current.underOdds = token.value;
+          else if (hint === 'over' && current.overOdds === null) current.overOdds = token.value;
           else if (current.overOdds === null) current.overOdds = token.value;
           else if (current.underOdds === null) current.underOdds = token.value;
           else unassigned += 1;
