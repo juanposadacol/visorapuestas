@@ -60,6 +60,12 @@ class Verdict:
 
 Validator = Callable[[Any, Optional[Any]], Verdict]
 
+#: Atajo de "confianza temporal": (candidato, confirmado, segundos transcurridos)
+#: -> True si el valor es COHERENTE con la evolucion esperada y puede
+#: confirmarse sin esperar repeticiones. Lo usa el reloj, que por naturaleza
+#: cambia en cada lectura y nunca se repetiria lo suficiente.
+FastPath = Callable[[Any, Any, float], bool]
+
 
 @dataclass
 class StabilizerStats:
@@ -77,13 +83,15 @@ class Stabilizer(Generic[T]):
 
     def __init__(self, name: str, *, required: int = 3, ttl: float = 3.0,
                  validator: Optional[Validator] = None, stubborn_extra: int = 6,
-                 min_confidence: float = 0.0) -> None:
+                 min_confidence: float = 0.0,
+                 fast_path: Optional[FastPath] = None) -> None:
         self.name = name
         self.required = max(1, int(required))
         self.ttl = float(ttl)
         self.validator = validator
         self.stubborn_extra = int(stubborn_extra)
         self.min_confidence = float(min_confidence)
+        self.fast_path = fast_path
 
         self._confirmed: Observed[T] = Observed.unknown()
         self._pending: Optional[T] = None
@@ -169,6 +177,22 @@ class Stabilizer(Generic[T]):
             self._pending = None
             self._pending_count = 0
             self.stats.last_reason = ""
+            return self._confirmed
+
+        # Confianza temporal: un valor coherente con la evolucion esperada del
+        # dato ya confirmado se acepta sin exigir repeticiones. Sin esto el
+        # reloj no podria refrescarse segundo a segundo (requisito 4).
+        if (self.fast_path is not None and confirmed_value is not None
+                and self.fast_path(candidate, confirmed_value,
+                                   now - self._confirmed.updated_at)):
+            self._confirmed = Observed(
+                value=candidate, status=ValueStatus.CONFIRMED,
+                confidence=result.confidence, raw_text=result.raw,
+                updated_at=now, source=self.name)
+            self.stats.confirmations += 1
+            self.stats.last_reason = ""
+            self._pending = None
+            self._pending_count = 0
             return self._confirmed
 
         verdict = self.validator(candidate, confirmed_value) if self.validator else Verdict.accept()
@@ -282,3 +306,26 @@ def line_validator(max_move: float = 20.0) -> Validator:
         return Verdict.accept()
 
     return _validate
+
+
+def clock_fast_path(tolerance_seconds: float = 3.0) -> FastPath:
+    """Confianza temporal del reloj (requisito 20).
+
+    El reloj de un partido no se repite entre lecturas: baja continuamente.
+    Exigirle N lecturas identicas lo dejaria congelado. En su lugar se acepta
+    de inmediato la lectura que sea COHERENTE con el tiempo real transcurrido:
+
+        confirmado - transcurrido - tolerancia  <=  candidato  <=  confirmado
+
+    Un reloj parado (tiempo muerto, falta) tambien encaja, porque el candidato
+    puede ser igual al confirmado. Cualquier lectura fuera de esa ventana cae
+    en el camino lento y necesita repetirse para confirmarse.
+    """
+
+    def _coherent(candidate: int, confirmed: int, elapsed: float) -> bool:
+        if candidate > confirmed:
+            return False  # subir es cosa del cambio de cuarto: camino lento
+        expected_min = confirmed - elapsed - tolerance_seconds
+        return candidate >= expected_min
+
+    return _coherent

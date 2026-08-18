@@ -32,6 +32,7 @@ from ..ocr import preprocessing
 from ..ocr.base import OcrEngine, OcrResult
 from ..ocr.stabilization import (
     Stabilizer,
+    clock_fast_path,
     clock_validator,
     period_validator,
     score_validator,
@@ -85,7 +86,8 @@ class LiveReader:
         req = max(1, int(required_confirmations))
         self.clock = Stabilizer[int](
             "CLOCK", required=max(2, req - 1), ttl=value_ttl,
-            validator=clock_validator(self._current_period_seconds))
+            validator=clock_validator(self._current_period_seconds),
+            fast_path=clock_fast_path())
         self.period = Stabilizer[int](
             "PERIOD", required=req, ttl=value_ttl * 4,
             validator=period_validator(rules.regulation_quarters))

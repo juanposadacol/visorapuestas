@@ -146,3 +146,52 @@ def test_estadisticas_para_diagnostico():
     assert s.stats.confirmations == 1
     assert s.stats.rejections == 1
     assert "bajaria" in s.stats.last_reason
+
+
+# --------------------------------------- confianza temporal del reloj (req. 20)
+def test_reloj_avanza_segundo_a_segundo_sin_repetir_lecturas():
+    """A 2-4 lecturas/s el reloj casi nunca repite valor: debe seguir vivo."""
+    from visorunder.ocr.stabilization import clock_fast_path
+
+    s = Stabilizer("reloj", required=3, ttl=30,
+                   validator=clock_validator(lambda: 600),
+                   fast_path=clock_fast_path())
+    # arranque: hacen falta las lecturas normales
+    t = 1000.0
+    for _ in range(3):
+        s.submit(_r(328), now=t)
+    assert s.confirmed.value == 328
+    # a partir de aqui cada segundo entra directo
+    for expected in (327, 326, 325, 324):
+        t += 1.0
+        obs = s.submit(_r(expected), now=t)
+        assert obs.value == expected
+
+
+def test_reloj_parado_tambien_es_coherente():
+    from visorunder.ocr.stabilization import clock_fast_path
+
+    s = Stabilizer("reloj", required=3, ttl=30, fast_path=clock_fast_path())
+    t = 1000.0
+    for _ in range(3):
+        s.submit(_r(328), now=t)
+    t += 5.0
+    assert s.submit(_r(328), now=t).value == 328  # tiempo muerto
+
+
+def test_la_via_rapida_no_acepta_saltos_incoherentes():
+    from visorunder.ocr.stabilization import clock_fast_path
+
+    s = Stabilizer("reloj", required=3, ttl=30,
+                   validator=clock_validator(lambda: 600),
+                   fast_path=clock_fast_path())
+    t = 1000.0
+    for _ in range(3):
+        s.submit(_r(328), now=t)
+    t += 1.0
+    # un salto de 100 segundos en 1 segundo real no es coherente
+    s.submit(_r(228), now=t)
+    assert s.confirmed.value == 328
+    # y subir tampoco entra por la via rapida
+    s.submit(_r(500), now=t)
+    assert s.confirmed.value == 328
