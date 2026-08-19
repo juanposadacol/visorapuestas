@@ -13,7 +13,7 @@
 (function () {
   'use strict';
 
-  const { text, markets, lines: linesLib, dedupe, visibility, report } = globalThis.VDIAG;
+  const { text, markets, lines: linesLib, dedupe, visibility, scan: scanLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -217,8 +217,7 @@
       candidatos.push({ element, identified: identificado });
     }
     // Si un candidato contiene a otro, el bueno es el interno.
-    return candidatos.filter(
-      (a) => !candidatos.some((b) => b !== a && a.element.contains(b.element)));
+    return scanLib.pickInnermost(candidatos, (a, b) => a.contains(b));
   }
 
   /**
@@ -230,9 +229,10 @@
     let mejor = { container: header.element, parsed: linesLib.parseLines(extractText(header.element)) };
     for (let i = 0; i < MAX_CLIMB && node.parentElement; i += 1) {
       node = node.parentElement;
-      const invadeOtro = todasLasCabeceras.some(
-        (otra) => otra !== header && node.contains(otra.element));
-      if (invadeOtro) break;      // subir mas mezclaria mercados
+      if (scanLib.wouldInvadeAnotherMarket(node, header, todasLasCabeceras,
+                                            (a, b) => a.contains(b))) {
+        break;                    // subir mas mezclaria mercados distintos
+      }
       const parsed = linesLib.parseLines(extractText(node));
       if (parsed.lines.length > mejor.parsed.lines.length) {
         mejor = { container: node, parsed };
@@ -314,12 +314,9 @@
         // Si el mismo mercado aparece dos veces (movil y escritorio), se queda
         // la lectura mas completa, pero se anota que habia mas de una.
         const previo = encontrados.get(clave);
-        if (!previo || registro.lines.length > previo.lines.length) {
-          registro.occurrences = (previo ? previo.occurrences : 0) + 1;
-          encontrados.set(clave, registro);
-        } else {
-          previo.occurrences += 1;
-        }
+        const elegido = scanLib.preferReading(previo, registro);
+        elegido.occurrences = (previo ? previo.occurrences : 0) + 1;
+        encontrados.set(clave, elegido);
       }
     }
 

@@ -1,0 +1,54 @@
+:root {
+  --bg: #11151c;
+  --card: #1a1f29;
+  --border: #2b3444;
+  --text: #e6ebf2;
+  --muted: #8b97a8;
+  --ok: #3ddc84;
+  --warn: #ffbf3f;
+  --bad: #ff5c5c;
+  --accent: #3fa7ff;
+}
+* { box-sizing: border-box; }
+body {
+  width: 460px;
+  max-height: 600px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+}
+h1 { font-size: 13px; margin: 0; letter-spacing: 0.5px; }
+h2 { font-size: 10px; margin: 0 0 6px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+.sub { margin: 2px 0 8px; color: var(--muted); font-size: 10px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.fila { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+.etiqueta { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; flex: 0 0 auto; }
+.valor { text-align: right; word-break: break-all; }
+.mono { font-family: Consolas, "Courier New", monospace; }
+.pequeno { font-size: 10px; line-height: 1.45; white-space: pre-wrap; max-height: 170px; overflow-y: auto; }
+.mercado { border-top: 1px solid var(--border); padding: 6px 0; }
+.mercado:first-child { border-top: none; }
+.mercado .titulo { font-weight: 700; display: flex; justify-content: space-between; gap: 8px; }
+.mercado .detalle { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.si { color: var(--ok); }
+.no { color: var(--bad); }
+.oculto { color: var(--warn); }
+.dudoso { color: var(--muted); font-style: italic; }
+table { width: 100%; border-collapse: collapse; font-family: Consolas, monospace; font-size: 11px; }
+th { color: var(--muted); font-weight: 600; text-align: right; font-size: 9px; text-transform: uppercase; }
+th:first-child, td:first-child { text-align: left; }
+td { text-align: right; padding: 1px 0; }
+button {
+  background: #212836; color: var(--text); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 8px; font-size: 10px; font-weight: 700; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primario { background: var(--accent); color: #06101c; border-color: var(--accent); }
+.botones { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.check { color: var(--muted); font-size: 10px; display: flex; align-items: center; gap: 4px; }
+.aviso { color: var(--ok); font-size: 10px; min-height: 12px; margin: 6px 0 0; }
+.aviso.error { color: var(--bad); }
