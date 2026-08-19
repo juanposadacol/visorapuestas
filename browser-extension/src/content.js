@@ -14,7 +14,8 @@
   'use strict';
 
   const { text, markets, lines: linesLib, dedupe, visibility,
-          scan: scanLib, options: optionsLib, payload: payloadLib } = globalThis.VDIAG;
+          scan: scanLib, options: optionsLib, payload: payloadLib,
+          gamestate: gamestateLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -30,6 +31,9 @@
     lastScanMs: 0,
     visibleMarket: null,
     markets: new Map(),     // key -> registro del mercado
+    gameState: null,        // marcador, cuarto y reloj si el DOM los da
+    gameDiagnostics: null,
+    gameMemory: null,
     history: [],
     environment: null,
     errors: [],
@@ -303,6 +307,18 @@
       }
     }
 
+    // Marcador, cuarto y reloj desde el DOM, si es que estan. Si no hay
+    // confianza suficiente, no se envia nada y la aplicacion usara OCR.
+    try {
+      const descubierto = gamestateLib.extractGameState(
+        document.body || document.documentElement, DOM_ADAPTER, state.gameMemory);
+      state.gameState = descubierto.gameState;
+      state.gameDiagnostics = descubierto.diagnostics;
+      state.gameMemory = descubierto.memory;
+    } catch (error) {
+      state.errors.push({ ts: now(), message: `estado del partido: ${error.message}` });
+    }
+
     mergeIntoState(encontrados);
     state.payload = buildVisiblePayload();
     // El envio lo decide el service worker: aqui solo se le entrega lo ultimo.
@@ -401,6 +417,7 @@
       lines: registro.strictLines || registro.lines,
       sideMarkers: registro.sideMarkers,
       observedAt: registro.lastSeenAt || now(),
+      gameState: state.gameState || null,
     });
   }
 
@@ -479,6 +496,8 @@
         .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key)),
       history: state.history.slice(-200),
       errors: state.errors.slice(-20),
+      gameState: state.gameState,
+      gameDiagnostics: state.gameDiagnostics,
       payload: state.payload ? state.payload.payload : null,
       payloadRejected: state.payload ? state.payload.rejected : ['todavia sin escaneo'],
     };

@@ -11,12 +11,20 @@
     <p class="sub">Solo lectura. No apuesta, no navega y no modifica la pagina.</p>
   </header>
 
+  <section class="card" id="tarjeta-puente">
+    <div class="fila"><span class="etiqueta">App local</span><span id="app-local" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Enviando</span><span id="enviando" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Ultimo envio</span><span id="ultimo-envio" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Puerto</span><span id="puerto" class="valor mono">--</span></div>
+  </section>
+
   <section id="estado" class="card">
     <div class="fila"><span class="etiqueta">Sitio</span><span id="sitio" class="valor">--</span></div>
     <div class="fila"><span class="etiqueta">URL</span><span id="url" class="valor mono">--</span></div>
     <div class="fila"><span class="etiqueta">Mercado visualmente activo</span><span id="visible" class="valor">--</span></div>
     <div class="fila"><span class="etiqueta">Ultimo escaneo</span><span id="escaneo" class="valor mono">--</span></div>
     <div class="fila"><span class="etiqueta">Entorno</span><span id="entorno" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Marcador/reloj DOM</span><span id="estado-partido" class="valor mono">--</span></div>
   </section>
 
   <section class="card">
@@ -58,6 +66,7 @@
   <script src="lib/options.js"></script>
   <script src="lib/scan.js"></script>
   <script src="lib/report.js"></script>
+  <script src="lib/gamestate.js"></script>
   <script src="lib/payload.js"></script>
   <script src="popup.js"></script>
 </body>

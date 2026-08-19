@@ -24,6 +24,35 @@
     return tab;
   }
 
+  /** Estado del enlace con la aplicacion local, que lo lleva el service worker. */
+  async function pedirEstadoDelPuente() {
+    try {
+      const respuesta = await chrome.runtime.sendMessage({ type: 'VDIAG_BRIDGE_STATE' });
+      return respuesta && respuesta.ok ? respuesta.bridge : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function pintarPuente(puente) {
+    if (!puente) {
+      $('app-local').textContent = 'sin respuesta del service worker';
+      return;
+    }
+    const conectada = puente.link === 'CONNECTED';
+    $('app-local').textContent = conectada
+      ? `CONECTADA ✓${puente.appVersion ? `  (v${puente.appVersion})` : ''}`
+      : 'DESCONECTADA';
+    $('app-local').className = conectada ? 'valor si' : 'valor no';
+    $('enviando').textContent = puente.hasPayload
+      ? `${puente.sent} envio(s), ${puente.failed} fallo(s)`
+      : 'todavia sin mercado que enviar';
+    $('ultimo-envio').textContent = puente.lastSentAt
+      ? `hace ${((Date.now() - puente.lastSentAt) / 1000).toFixed(1)} s`
+      : '--';
+    $('puerto').textContent = String(puente.port);
+  }
+
   async function pedirEstado() {
     const tab = await pestanaActiva();
     if (!tab || tab.id === undefined) throw new Error('no hay pestana activa');
@@ -52,6 +81,20 @@
       `${report.formatClock(estado.lastScanAt)}  (${estado.lastScanMs} ms, ${estado.scanCount})`;
     const pistas = (estado.environment && estado.environment.hints) || [];
     $('entorno').textContent = pistas.length ? pistas.join(' · ') : 'sin pistas claras';
+
+    const partido = estado.gameState;
+    if (partido) {
+      const partes = [];
+      if (partido.scoreA !== undefined) partes.push(`${partido.scoreA}-${partido.scoreB}`);
+      if (partido.period !== undefined) partes.push(`Q${partido.period}`);
+      if (partido.clock) partes.push(partido.clock);
+      $('estado-partido').textContent = partes.join('  ');
+    } else {
+      const diag = estado.gameDiagnostics;
+      $('estado-partido').textContent = diag
+        ? `no disponible (${diag.score.reason || diag.clock.reason || 'sin datos'})`
+        : 'no disponible';
+    }
   }
 
   function pintarMercados(estado) {
@@ -207,6 +250,7 @@
   }
 
   async function refrescar() {
+    pintarPuente(await pedirEstadoDelPuente());
     try {
       pintar(await pedirEstado());
     } catch (error) {
