@@ -305,6 +305,9 @@
 
     mergeIntoState(encontrados);
     state.payload = buildVisiblePayload();
+    // El envio lo decide el service worker: aqui solo se le entrega lo ultimo.
+    // Si la aplicacion esta cerrada, el no envia nada y no pasa nada.
+    enviarAlPuente(state.payload.payload);
     state.lastScanAt = now();
     state.scanCount += 1;
     state.lastScanMs = performance.now() - inicio;
@@ -444,6 +447,19 @@
       attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'aria-selected', 'data-state'],
     });
     pushHistory('observerStarted', {});
+  }
+
+  /** Entrega el payload al service worker. Nunca lanza si el no responde. */
+  function enviarAlPuente(payload) {
+    try {
+      chrome.runtime.sendMessage({ type: 'VDIAG_PAYLOAD', payload }, () => {
+        // Leer lastError evita el aviso "Unchecked runtime.lastError" cuando
+        // el service worker esta dormido. No es un fallo que deba salir.
+        void chrome.runtime.lastError;
+      });
+    } catch (error) {
+      // La extension se recargo: la pagina seguira funcionando igualmente.
+    }
   }
 
   // ------------------------------------------------------------- mensajeria

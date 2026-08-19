@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "VisorApuestas DOM Diagnostic",
-  "version": "0.1.0",
-  "description": "Herramienta de diagnostico de solo lectura: comprueba que mercados de BetPlay siguen existiendo en el DOM cuando no estan a la vista. No apuesta ni modifica la pagina.",
+  "name": "VisorApuestas Bridge",
+  "version": "0.2.0",
+  "description": "Lee de solo lectura el mercado visible de BetPlay y lo envia a la aplicacion local VisorApuestas. No apuesta, no navega y no modifica la pagina.",
   "icons": {},
-  "// permisos": "Minimo privilegio: solo los dominios de BetPlay y ningun permiso adicional. No se piden cookies, ni historial, ni almacenamiento de otras paginas, ni descargas (el JSON se genera con un blob en el propio popup).",
+  "// permisos": "Minimo privilegio. betplay.com.co para leer el DOM del partido; 127.0.0.1 y localhost para hablar con la aplicacion local (las reglas de coincidencia de Chrome no incluyen el puerto, por eso no se puede acotar a 8765); 'storage' solo para recordar el puerto elegido. Sin cookies, sin historial, sin pestanas y sin descargas.",
   "host_permissions": [
-    "https://*.betplay.com.co/*"
+    "https://*.betplay.com.co/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "content_scripts": [
     {
@@ -23,6 +25,7 @@
         "src/lib/scan.js",
         "src/lib/report.js",
         "src/lib/payload.js",
+        "src/lib/bridge_client.js",
         "src/content.js"
       ],
       "run_at": "document_idle",
@@ -32,5 +35,11 @@
   "action": {
     "default_title": "VisorApuestas DOM Diagnostic",
     "default_popup": "src/popup.html"
-  }
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "permissions": [
+    "storage"
+  ]
 }
