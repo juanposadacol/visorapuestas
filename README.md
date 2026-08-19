@@ -58,7 +58,50 @@ Si un dato no se puede leer con seguridad, aparece `--`. **Nunca** un número in
 
 ---
 
-## 2. Instalación
+## 2. Uso diario (con la extensión)
+
+Este es el flujo recomendado. **Se instala una vez y luego te olvidas de ella.**
+
+```
+1. Abrir VisorApuestas
+2. Abrir BetPlay en Chrome o Edge
+3. Entrar al partido
+   ↓
+   BETPLAY CONECTADO ✓
+   ↓
+   El radar arranca solo
+```
+
+**No hay que pulsar INICIAR. No hay que dibujar regiones. No hay que abrir el
+popup de la extensión.** Si cambias de partido, la aplicación lo detecta y empieza
+una sesión nueva (te pregunta antes si tienes una apuesta fijada).
+
+El panel **CONEXIÓN**, arriba a la izquierda, dice de dónde sale cada dato:
+
+```
+EXTENSIÓN              BETPLAY CONECTADO
+ÚLTIMO DATO            hace 0.3 s  (120 ms)
+MERCADO                DOM ✓
+LÍNEAS Y CUOTAS        DOM ✓
+MARCADOR               DOM ✓   (o OCR ✓, o --)
+CUARTO                 DOM ✓
+RELOJ                  DOM ✓
+```
+
+Instalación de la extensión: ver [`browser-extension/README.md`](browser-extension/README.md).
+
+### Qué pasa si algo no está
+
+| Situación | Qué ocurre |
+|---|---|
+| VisorApuestas cerrado | la extensión reintenta sola; al abrir la app conecta sin recargar BetPlay |
+| Chrome cerrado | la app abre igual y muestra `EXTENSIÓN DESCONECTADA`; puedes usar OCR, perfil manual o modo demo |
+| El DOM no da marcador/reloj | esos campos pasan a OCR si tienes ROIs; si no, aparecen como `--` |
+| Dejan de llegar datos | `DATOS DOM DESACTUALIZADOS`, y las líneas dejan de presentarse como actuales |
+
+---
+
+## 3. Instalación
 
 Requisitos: **Windows 10/11** y **Python 3.10 o superior** (recomendado 3.12).
 
@@ -89,7 +132,7 @@ primera vez.
 
 ---
 
-## 3. Ejecución
+## 4. Ejecución
 
 ```bat
 python run.py
@@ -104,7 +147,15 @@ python run.py --demo
 
 ---
 
-## 4. Configuración inicial: crear un perfil
+## 5. Configuración manual de regiones (solo si hace falta)
+
+> **Esto ya no es el flujo normal.** Con la extensión conectada, el mercado, las
+> líneas y las cuotas llegan solos, y el marcador, el cuarto y el reloj también si
+> BetPlay los expone en el DOM. Dibuja regiones **solo** para lo que no llegue por
+> ahí, o si no quieres usar la extensión.
+
+Al pulsar INICIAR, la aplicación comprueba qué falta contando **todas** las
+fuentes. Si un dato ya lo entrega el DOM, su región deja de ser obligatoria.
 
 Un **perfil** guarda dónde mirar en tu pantalla para una casa concreta. Vienen preparados
 los nombres de Sportium, BetPlay, Wplay, RushBet y Codere, pero **las regiones las dibujas
@@ -144,7 +195,7 @@ Consejos para que el OCR acierte:
 
 ---
 
-## 5. Uso durante el partido
+## 6. Durante el partido
 
 1. Elige el perfil y pulsa **INICIAR** (o `F8`).
 2. En unos segundos aparecen reloj, cuarto, marcador y **todas** las líneas evaluadas.
@@ -255,7 +306,7 @@ funcionando cuando la ventana del visor tiene el foco.
 
 ---
 
-## 6. La línea que ves NO es siempre la del cuarto que se juega
+## 7. La línea que ves NO es siempre la del cuarto que se juega
 
 Es el error más caro y la aplicación lo evita explícitamente.
 
@@ -269,7 +320,7 @@ que es la verdad.
 
 ---
 
-## 7. Puntos del cuarto al arrancar a mitad
+## 8. Puntos del cuarto al arrancar a mitad
 
 La aplicación **nunca** supone que el marcador que ve al abrirse son los puntos del cuarto.
 Los obtiene, por orden de prioridad:
@@ -284,7 +335,7 @@ partido sigue funcionando con normalidad en el mismo tablero.
 
 ---
 
-## 8. Fiabilidad de las lecturas
+## 9. Fiabilidad de las lecturas
 
 - Cada dato pasa de **RAW** a **CONFIRMED** solo tras varias lecturas coherentes.
 - Reglas de validación: el marcador no baja, el reloj no sube dentro del cuarto, el cuarto
@@ -302,7 +353,7 @@ confianza, valor confirmado, estado, motivo del rechazo y milisegundos. Se puede
 
 ---
 
-## 9. Generar el .exe
+## 10. Generar el .exe
 
 ```bat
 construir_exe.bat
@@ -321,7 +372,7 @@ entera**, no solo el .exe, porque incluye los modelos del OCR.
 
 ---
 
-## 10. Solución de problemas de OCR
+## 11. Solución de problemas
 
 | Síntoma | Causa habitual | Solución |
 |---|---|---|
@@ -331,7 +382,9 @@ entera**, no solo el .exe, porque incluye los modelos del OCR.
 | Cuotas absurdas (`187`) | el punto decimal no se ve | amplía un poco la región y aumenta el zoom |
 | Lee líneas de otro mercado | falta el *Título del mercado* | defínelo |
 | Se descuadró todo al mover el navegador | coordenadas desplazadas | define un **Ancla** o vuelve a dibujar las regiones |
-| `No hay ningún motor OCR instalado` | falta RapidOCR | `pip install rapidocr-onnxruntime` |
+| `No hay ningún motor OCR instalado` | falta RapidOCR | `pip install rapidocr-onnxruntime` (no hace falta si usas solo la extensión) |
+| `EXTENSIÓN DESCONECTADA` con Chrome abierto | la extensión no está cargada, o el puerto no coincide | recarga la extensión en `chrome://extensions`; comprueba el puerto en su popup |
+| El puente no arranca | el puerto 8765 está ocupado | cambia `bridge.port` en `settings.json` y el puerto en el popup de la extensión |
 | Va lento / mucha CPU | frecuencia alta o regiones enormes | baja a 2 lecturas/s y recorta las regiones |
 | Nada funciona y no sé por qué | — | pestaña **Diagnóstico** → *Exportar log* |
 
@@ -340,7 +393,7 @@ Ajustes útiles en el perfil: **frecuencia de lectura** (2–4/s es lo recomenda
 
 ---
 
-## 11. Dónde se guardan las cosas
+## 12. Dónde se guardan las cosas
 
 Todo en tu equipo, en `%APPDATA%\VisorUnder`:
 
@@ -359,18 +412,19 @@ No hay servidor, ni nube, ni cuenta, ni suscripción.
 
 ---
 
-## 12. Desarrollo
+## 13. Desarrollo
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest          # 238 tests
+python -m pytest                              # 307 tests de Python
+cd browser-extension && node --test tests/*.test.js   # 128 tests de JavaScript
 ```
 
 La arquitectura y las decisiones técnicas están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 
 ---
 
-## 13. Aviso
+## 14. Aviso
 
 Herramienta de **lectura y cálculo**. No garantiza que el OCR lea siempre bien: comprueba
 los datos importantes contra la pantalla. Apostar conlleva riesgo de pérdida económica.

@@ -22,18 +22,27 @@ Esto importa tanto como lo que hace:
 - **No automatiza la navegación.** Los clics entre mercados los haces tú.
 - **No usa Selenium ni Playwright**, ni ninguna forma de automatización del navegador.
 - **No lee credenciales, cookies, tokens ni almacenamiento** de ninguna página.
-- **No llama a ninguna API** de la casa ni envía nada a ningún servidor. Todo se queda en
-  la memoria de tu navegador.
-- **No se conecta todavía con la aplicación Python.** Eso es la etapa siguiente, y solo si
-  este diagnóstico dice que merece la pena.
+- **No llama a ninguna API de la casa** ni envía nada fuera de tu equipo. El único destino
+  es `127.0.0.1`.
 
-### Permisos que pide
+### Permisos y por qué
 
-Solo `https://*.betplay.com.co/*`. Ni un dominio más, y **ningún permiso adicional**: sin
-`cookies`, sin `storage`, sin `history`, sin `tabs`, sin `downloads`. La descarga del JSON
-se hace con un blob generado en el propio popup, precisamente para no pedir ese permiso.
+| Permiso | Para qué |
+|---|---|
+| `https://*.betplay.com.co/*` | leer el DOM del partido que tienes abierto |
+| `http://127.0.0.1/*`, `http://localhost/*` | hablar con VisorApuestas en tu propio equipo. Las reglas de coincidencia de Chrome **no incluyen el puerto**, por eso no se puede acotar a 8765 |
+| `storage` | recordar el puerto que elijas, nada más |
 
-No hay service worker en segundo plano: no hace falta, y menos superficie es mejor.
+Sigue sin pedir `cookies`, `history`, `tabs` ni `downloads`.
+
+### Por qué ahora sí hay service worker
+
+En la versión de diagnóstico no había, y era lo correcto. Ahora sí, por una razón concreta
+de seguridad: un `fetch` hecho desde el content script sale con el origen de **BetPlay**, y
+para aceptarlo el servidor local tendría que abrir la puerta a esa web entera —con lo que
+cualquier script suyo podría hablar con el puente—. Desde el service worker el origen es
+`chrome-extension://<id>`, que es justo lo que el servidor acepta. Además centraliza la
+reconexión y el latido en un sitio, en vez de una copia por pestaña abierta.
 
 ---
 
@@ -52,7 +61,28 @@ Debe aparecer *VisorApuestas DOM Diagnostic*. Ancla su icono a la barra para ten
 
 ---
 
-## El experimento, paso a paso
+## Cómo funciona el puente
+
+```
+content script  ──►  service worker  ──►  http://127.0.0.1:8765  ──►  VisorApuestas
+   (lee el DOM)        (decide y envía)        (solo loopback)
+```
+
+- Se envía cuando **cambia** el mercado o una cuota, con un tope de **4 envíos útiles por
+  segundo**.
+- Se manda un **latido cada segundo** aunque nada cambie: es lo que distingue "la casa no
+  movió nada" de "se cortó la conexión".
+- Si VisorApuestas no está abierto, **no pasa nada**: la extensión reintenta cada pocos
+  segundos (hasta 15 s como máximo) y conecta sola cuando abras la aplicación, **sin
+  recargar BetPlay**.
+- Nunca se envía una línea sin confianza suficiente: el mercado necesita 0.90, las líneas
+  tienen que tener forma `.5` y al menos una cuota.
+
+El puerto se cambia desde el popup si 8765 estuviera ocupado.
+
+---
+
+## El experimento de diagnóstico, paso a paso
 
 Esta es la parte importante. Hazlo con un partido **en directo**, que es cuando las cuotas
 se mueven.
@@ -135,7 +165,7 @@ pégamelo. Si prefieres, **DESCARGAR JSON** genera el fichero
 
 ```bash
 cd browser-extension
-node --test tests/*.test.js     # 57 tests, sin dependencias
+node --test tests/*.test.js     # 128 tests, sin dependencias
 ```
 
 Se usa el runner incorporado de Node (18+), así que **no hay `node_modules`, ni
@@ -150,7 +180,11 @@ La lógica pura vive en `src/lib/` para poder probarla sin navegador:
 | `lines.js` | extracción de líneas y cuotas |
 | `dedupe.js` | fusión de duplicados y comparación entre lecturas |
 | `visibility.js` | existe / oculto / no existe |
-| `scan.js` | parte pura del recorrido (cabecera más interna, no invadir vecinos) |
+| `scan.js` | recorrido completo: cabeceras, contenedor por mercado, frontera con el vecino |
+| `options.js` | emparejamiento **OVER/UNDER por estructura** del árbol |
+| `gamestate.js` | descubrimiento de marcador, cuarto y reloj con validación fuerte |
+| `payload.js` | **contrato** con Python: construcción y validación del envío |
+| `bridge_client.js` | política de envío: cambios, latido, reintento |
 | `report.js` | informe legible, JSON y **redacción de datos personales** |
 
 `src/content.js` es lo único que toca el DOM; `src/popup.*` solo pinta.

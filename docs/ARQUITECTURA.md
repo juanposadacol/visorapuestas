@@ -23,6 +23,51 @@ Orden de prioridades del sistema:
 
 ---
 
+## 0.bis Fuentes de datos
+
+A partir de la integración con la extensión, el mismo dato puede venir de sitios
+distintos. La **capa de adquisición** sabe de dónde viene cada uno; el dominio no, y no
+debe saberlo.
+
+| Fuente | Aporta | Prioridad |
+|---|---|---|
+| `BrowserSource` (extensión → puente local) | mercado, líneas, cuotas y, si BetPlay los expone, marcador, cuarto y reloj | 1 |
+| OCR de pantalla | lo que no llegue por DOM | 2 |
+| Manual (ROI, marcador inicial) | último recurso | 3 |
+
+Reglas que no conviene romper:
+
+- **DOM confirmado por encima de OCR confirmado**, porque el DOM viene estructurado de la
+  propia página y no de una lectura de imagen. Pero cuando discrepan **no se elige en
+  silencio**: queda un `CONFLICTO DE FUENTES` en el log y en el panel.
+- **Una región deja de ser obligatoria en cuanto otra fuente entrega ese dato.**
+  `AppController.missing_requirements` mira todas las fuentes, no solo el perfil.
+- **Sin regiones no se captura pantalla en absoluto**, así que el modo solo-extensión
+  funciona aunque el equipo no pueda capturar ni tenga OCR instalado.
+- Lo que llega por el puente se convierte a los `MarketKey`, `MarketLine` y
+  `MarketSnapshot` que ya existían. **No hay modelo paralelo.**
+
+### El puente
+
+`http.server` de la librería estándar, escuchando **solo en 127.0.0.1**. Va en un único
+sentido: extensión → datos → aplicación. No hay ningún endpoint que ejecute comandos, abra
+ficheros, apueste ni controle el navegador, y esa ausencia está cubierta por un test.
+
+La cabecera `X-VisorApuestas-Bridge` no es seguridad criptográfica: al ser personalizada
+obliga al navegador a hacer *preflight*, de modo que una página cualquiera no puede colar
+peticiones sin que el servidor apruebe antes su origen. El CORS devuelve el origen concreto
+de la extensión, **nunca `*`**. El ID de una extensión sin empaquetar depende de la ruta de
+instalación y no se puede fijar de antemano; por eso se acepta cualquier origen
+`chrome-extension://` y se deja `pinned_origin` para cerrarlo del todo una vez instalada.
+
+### Lo que el DOM NO puede dar
+
+El experimento real lo dejó claro: **los mercados que dejas de ver desaparecen del DOM**.
+No se simulan. La aplicación puede conservar la última línea observada de otro mercado,
+pero la presenta como `ÚLTIMA LÍNEA OBSERVADA` con su hora, nunca como línea actual.
+
+---
+
 ## 1. Principio rector
 
 > Es preferible mostrar `--` durante 500 ms que mostrar un número incorrecto y calcular
