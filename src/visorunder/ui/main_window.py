@@ -36,6 +36,7 @@ from .diagnostics_panel import DiagnosticsPanel
 from .hotkeys import HotkeyManager
 from .entry_board import EntryBoard
 from .metrics_panel import MetricsPanel
+from .connection_panel import ConnectionPanel
 from .criteria_dialog import CriteriaDialog
 from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
@@ -51,11 +52,14 @@ class MainWindow(QMainWindow):
         self.resize(1040, 780)
         self._asked_baselines: Set[int] = set()
         self._panel_visible = True
+        self._autostart_blocked = False
 
         self._build_ui()
         self._build_hotkeys()
         self._refresh_profiles()
         self._apply_always_on_top(self.controller.settings.always_on_top)
+
+        self.controller.start_bridge()
 
         self.timer = QTimer(self)
         self.timer.setInterval(250)  # 4 refrescos por segundo
@@ -73,13 +77,20 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         self.metrics_panel = MetricsPanel()
         self.metrics_panel.baselineRequested.connect(lambda: self._ask_baseline(force=True))
+        self.connection_panel = ConnectionPanel()
         self.entry_board = EntryBoard()
         self.entry_board.lineSelected.connect(self._on_line_selected)
         self.entry_board.lockRequested.connect(self.lock_bet)
         self.entry_board.unlockRequested.connect(self.unlock_bet)
         self.entry_board.autoFocusRequested.connect(self._on_auto_focus)
         self.entry_board.visibleMarketChanged.connect(self.controller.set_visible_market)
-        splitter.addWidget(self.metrics_panel)
+        izquierda = QWidget()
+        columna = QVBoxLayout(izquierda)
+        columna.setContentsMargins(0, 0, 0, 0)
+        columna.setSpacing(8)
+        columna.addWidget(self.connection_panel)
+        columna.addWidget(self.metrics_panel, 1)
+        splitter.addWidget(izquierda)
         splitter.addWidget(self.entry_board)
         # El tablero de lineas es el elemento dominante: es donde se detecta
         # el momento de entrada, que es la funcion principal del programa.
@@ -302,7 +313,30 @@ class MainWindow(QMainWindow):
         self.entry_board.set_locked(False)
 
     # ------------------------------------------------------------- refresco
+    def _maybe_autostart(self) -> None:
+        """Arranca sola la sesion en cuanto la extension trae lo necesario.
+
+        Es lo que convierte el uso diario en 'abrir las dos cosas y ya': no hay
+        que pulsar INICIAR ni definir regiones si el DOM cubre los datos.
+        """
+        if self.controller.reader is not None or self._autostart_blocked:
+            return
+        if not self.controller.browser.is_live:
+            return
+        if self.controller.missing_requirements(self.controller.profile):
+            return
+        reader = self.controller.start_session(self.controller.profile)
+        if reader is None:
+            # No se reintenta en bucle: si fallo, hara falta accion del usuario.
+            self._autostart_blocked = True
+            return
+        self.start_button.setText("PAUSAR (F8)")
+        self.finish_button.setEnabled(True)
+        self.status_label.setText(
+            "BETPLAY CONECTADO. Radar activo sin regiones manuales.")
+
     def _refresh(self) -> None:
+        self._maybe_autostart()
         reader = self.controller.reader
         snapshot = reader.last_snapshot if reader else None
         view = self.controller.build_view_model(snapshot)
@@ -318,12 +352,37 @@ class MainWindow(QMainWindow):
             focus_freshness=view.focus_freshness,
             focus_age_text=view.focus_age_text,
         )
+        self.connection_panel.update_view(
+            link_state=view.link_state, age_seconds=view.link_age_seconds,
+            field_sources=view.field_sources, latency_ms=view.link_latency_ms,
+            conflicts=view.source_conflicts,
+        )
         self.entry_board.update_board(
             blocks=view.blocks, criteria=view.criteria, focus=view.focus,
             in_transition=view.snapshot.market_in_transition,
             now=view.snapshot.ts,
         )
         self._update_status(view)
+        self._check_event_change()
+
+    def _check_event_change(self) -> None:
+        """La extension cambio de partido: no se mezclan eventos."""
+        cambio = self.controller.browser.clear_event_change()
+        if cambio is None:
+            return
+        if self.controller.locked_bet is not None:
+            respuesta = QMessageBox.question(
+                self, "Cambio de partido",
+                f"La extension esta viendo otro partido ({cambio['name'] or cambio['to']}).\n\n"
+                "Tienes una apuesta fijada. ¿Cerrar la sesion actual y empezar una nueva?")
+            if respuesta != QMessageBox.Yes:
+                return
+        self.controller.finish_game()
+        self._autostart_blocked = False
+        self.start_button.setText("INICIAR (F8)")
+        self.finish_button.setEnabled(False)
+        self.status_label.setText(
+            f"Nuevo partido detectado: {cambio['name'] or cambio['to']}")
 
     def _update_status(self, view) -> None:
         snapshot = view.snapshot

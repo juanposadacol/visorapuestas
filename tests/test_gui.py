@@ -380,3 +380,135 @@ def test_el_selector_manual_de_mercado_visible(window):
     # volver a automatico limpia la eleccion manual
     win.entry_board.select_visible_market(None)
     assert controller.reader.manual_visible_key is None
+
+
+# ------------------------------------------------- conexion con la extension
+def _enviar_al_puente(controller, cuerpo):
+    import json
+    import urllib.request
+
+    from visorunder.bridge.server import BRIDGE_HEADER
+
+    peticion = urllib.request.Request(
+        f"{controller.bridge.url}/v1/browser-state",
+        data=json.dumps(cuerpo).encode("utf-8"), method="POST")
+    peticion.add_header("Content-Type", "application/json")
+    peticion.add_header(BRIDGE_HEADER, "1")
+    with urllib.request.urlopen(peticion, timeout=5) as respuesta:
+        return respuesta.status
+
+
+def _payload_betplay(**cambios):
+    base = {
+        "protocol": 1, "source": "betplay", "observedAt": "2026-08-19T02:00:00.000Z",
+        "event": {"id": "9876543", "name": "Equipo A vs Equipo B"},
+        "visibleMarket": {"marketType": "QUARTER_TOTAL", "period": 4, "half": None,
+                          "confidence": 0.95, "rawTitle": "Total de puntos - Cuarto 4",
+                          "sidesConfirmed": True},
+        "lines": [{"line": 44.5, "overOdds": 1.75, "underOdds": 1.90}],
+        "gameState": {"scoreA": 58, "scoreB": 52, "period": 4, "clock": "06:24"},
+    }
+    base.update(cambios)
+    return base
+
+
+@pytest.fixture()
+def window_bridge(qapp, tmp_path):
+    from visorunder.app import AppController
+    from visorunder.bridge.server import BridgeSettings
+
+    controller = AppController(db_path=str(tmp_path / "bridge.db"))
+    controller.settings.log_to_file = False
+    controller.settings.bridge = BridgeSettings(port=0)
+    controller.bridge.settings = controller.settings.bridge
+    win = MainWindow(controller)
+    yield win, controller
+    controller.finish_game()
+    win.timer.stop()
+    win.hotkeys.stop()
+    controller.shutdown()
+
+
+def test_sin_extension_el_panel_dice_desconectada(window_bridge):
+    from visorunder.bridge.source import LinkState
+
+    win, controller = window_bridge
+    win._refresh()
+    assert win.connection_panel.state_label.text() == LinkState.DISCONNECTED.label
+    assert controller.reader is None       # no arranca solo sin datos
+
+
+def test_la_sesion_arranca_sola_al_conectar_la_extension(window_bridge):
+    """Criterio de exito: abrir las dos cosas y que el radar empiece solo."""
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+
+    win._refresh()
+    assert controller.reader is not None, "no arranco la sesion sola"
+    controller.reader.stop()
+    assert "CONECTADO" in win.status_label.text()
+
+
+def test_el_panel_dice_de_donde_sale_cada_dato(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    panel = win.connection_panel
+    assert "BETPLAY CONECTADO" in panel.state_label.text()
+    for campo in ("market", "lines", "score_a", "period", "clock_seconds"):
+        assert panel.field_labels[campo].text() == "DOM ✓", campo
+
+
+def test_las_lineas_del_DOM_llegan_al_tablero(window_bridge):
+    from visorunder.domain.market import MarketKey
+
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    bloque = win.entry_board.block_for(MarketKey.quarter(4))
+    assert bloque is not None, "el mercado del DOM no aparece en el tablero"
+    assert bloque.table.rowCount() == 1
+    assert bloque.table.item(0, 0).text() == "44.5"
+    assert bloque.table.item(0, 1).text() == "1.90"      # cuota UNDER
+
+
+def test_un_cambio_de_cuota_se_refleja_sin_tocar_nada(window_bridge):
+    from visorunder.domain.market import MarketKey
+
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    _enviar_al_puente(controller, _payload_betplay(
+        lines=[{"line": 44.5, "overOdds": 1.68, "underOdds": 2.05}]))
+    controller.reader.tick()
+    win._refresh()
+
+    bloque = win.entry_board.block_for(MarketKey.quarter(4))
+    assert bloque.table.item(0, 1).text() == "2.05"
+
+
+def test_cambiar_de_partido_cierra_la_sesion_anterior(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    primera = controller.session_id
+
+    _enviar_al_puente(controller, _payload_betplay(
+        event={"id": "1111111", "name": "Equipo C vs Equipo D"}))
+    win._refresh()
+
+    assert controller.session_id != primera
+    assert "Nuevo partido" in win.status_label.text() or controller.reader is not None

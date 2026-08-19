@@ -310,8 +310,19 @@ class AppController:
             engine = StubEngine()
 
         rules = rules_from_name(profile.rules_name)
-        manager = RoiManager(profile, self.capture, screen=self.screen_context())
-        manager.learn_anchor()
+        if necesita_ocr:
+            captura = self.capture
+            pantalla = self.screen_context()
+        else:
+            # Sin regiones no se captura nada, asi que tampoco hace falta un
+            # backend de pantalla: la aplicacion debe poder trabajar solo con
+            # la extension aunque este equipo no pueda capturar.
+            from .capture.screen_capture import NullCapture
+            captura = NullCapture()
+            pantalla = None
+        manager = RoiManager(profile, captura, screen=pantalla)
+        if necesita_ocr:
+            manager.learn_anchor()
 
         self.event_id = self.sessions.create_event(profile.sportsbook, "", "", rules.name)
         self.session_id = self.sessions.start(self.event_id, profile.profile_id, self.criteria)
