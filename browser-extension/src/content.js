@@ -13,7 +13,8 @@
 (function () {
   'use strict';
 
-  const { text, markets, lines: linesLib, dedupe, visibility, scan: scanLib } = globalThis.VDIAG;
+  const { text, markets, lines: linesLib, dedupe, visibility,
+          scan: scanLib, payload: payloadLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -286,6 +287,12 @@
       for (const header of cabeceras) {
         const { container, parsed } = findMarketContainer(header, cabeceras);
         const fundidas = dedupe.dedupeLines(parsed.lines);
+        // Lectura estricta, la unica que puede viajar a la aplicacion: exige
+        // lineas .5 con al menos una cuota, para que los numeros sueltos del
+        // marcador no acaben convertidos en apuestas.
+        const contenedorTexto = extractText(container);
+        const estricta = linesLib.parseLinesStrict(contenedorTexto);
+        const estrictasFundidas = dedupe.dedupeLines(estricta.lines);
         const visible = measureVisibility(container);
         const clave = header.identified.key;
 
@@ -303,6 +310,9 @@
           inViewport: visible.inViewport,
           visibilityReasons: visible.reasons,
           lines: fundidas.lines,
+          strictLines: estrictasFundidas.lines,
+          rejectedNumbers: estricta.rejected.slice(0, 12),
+          sideMarkers: estricta.sideMarkers,
           rawCandidates: parsed.rawCandidates,
           rawLineCount: fundidas.rawCount,
           duplicates: fundidas.duplicates,
@@ -331,9 +341,12 @@
   function mergeIntoState(encontrados) {
     const visto = now();
 
-    // Mercado visible: el unico que esta realmente a la vista.
-    const visibles = Array.from(encontrados.values()).filter((m) => m.isVisible && m.lines.length);
-    const nuevoVisible = visibles.length ? visibles[0].key : null;
+    // Mercado visible: manda la confianza, no el orden de aparicion. Si no,
+    // la pestana "Cuarto 3" (0.55) le gana al titulo "Total de puntos -
+    // Cuarto 3" (0.95) y el panel acaba diciendo DESCONOCIDO.
+    const elegido = scanLib.chooseVisibleMarket(Array.from(encontrados.values()),
+                                                markets.CONFIDENCE_THRESHOLD);
+    const nuevoVisible = elegido ? elegido.key : null;
     if (nuevoVisible && nuevoVisible !== state.visibleMarket) {
       pushHistory('marketVisibleChanged', { from: state.visibleMarket, to: nuevoVisible });
       state.visibleMarket = nuevoVisible;

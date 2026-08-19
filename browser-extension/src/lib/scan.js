@@ -52,5 +52,30 @@
     return previous;
   }
 
-  return { pickInnermost, wouldInvadeAnotherMarket, preferReading };
+  /**
+   * Elige que mercado se considera "el que estoy viendo".
+   *
+   * En la prueba real sobre BetPlay ganaba la pestana ("Cuarto 3", confianza
+   * 0.55) en lugar del titulo del mercado ("Total de puntos - Cuarto 3",
+   * confianza 0.95), y el panel acababa diciendo DESCONOCIDO. La regla es:
+   * manda el candidato con mas confianza, no el primero que aparezca.
+   *
+   * @param {Array} records  mercados detectados
+   * @param {number} minConfidence  confianza minima para considerarlo
+   */
+  function chooseVisibleMarket(records, minConfidence) {
+    const minimo = minConfidence === undefined ? 0.9 : minConfidence;
+    const candidatos = (records || []).filter(
+      (r) => r.isVisible && r.existsInDom && (r.lines || []).length &&
+             (r.confidence || 0) >= minimo);
+    if (!candidatos.length) return null;
+    candidatos.sort((a, b) => {
+      const porConfianza = (b.confidence || 0) - (a.confidence || 0);
+      if (Math.abs(porConfianza) > 1e-9) return porConfianza;
+      return (b.lines || []).length - (a.lines || []).length;
+    });
+    return candidatos[0];
+  }
+
+  return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket };
 });

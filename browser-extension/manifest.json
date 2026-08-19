@@ -21,6 +21,7 @@
         "src/lib/visibility.js",
         "src/lib/scan.js",
         "src/lib/report.js",
+        "src/lib/payload.js",
         "src/content.js"
       ],
       "run_at": "document_idle",
