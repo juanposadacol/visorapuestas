@@ -10,8 +10,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .bridge.server import BridgeServer
+from .bridge.source import BrowserSource, LinkState, SourceKind
 from .calculations import entry as entry_mod
 from .calculations import metrics as metrics_mod
 from .calculations.entry import LineEvaluation, MarketEvaluation
@@ -57,6 +59,10 @@ class AppMode(str, Enum):
                 "APUESTA_FIJADA": "APUESTA FIJADA"}[self.value]
 
 
+#: Version que anuncia el puente en /health.
+APP_VERSION = "1.1.0"
+
+
 @dataclass
 class ViewModel:
     """Todo lo que la interfaz necesita para pintar un ciclo."""
@@ -80,6 +86,12 @@ class ViewModel:
     current_market_line: Optional[MarketLine] = None
     criteria: EntryCriteria = field(default_factory=EntryCriteria)
     freshness: FreshnessCriteria = field(default_factory=FreshnessCriteria)
+    #: Estado del enlace con la extension y de donde viene cada dato.
+    link_state: LinkState = LinkState.DISCONNECTED
+    link_age_seconds: Optional[float] = None
+    link_latency_ms: Optional[float] = None
+    field_sources: Dict[str, str] = field(default_factory=dict)
+    source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class AppController:
@@ -99,6 +111,12 @@ class AppController:
         self.bets = BetRepository(self.db)
 
         self._capture = capture
+        #: Fuente DOM y puente local. Se arrancan al abrir la aplicacion para
+        #: que la extension pueda conectarse sola en cuanto abras BetPlay.
+        self.browser = BrowserSource(self.settings.browser)
+        self.bridge = BridgeServer(
+            self.settings.bridge, on_payload=self._on_browser_payload,
+            version=APP_VERSION, log=lambda nivel, mensaje: self.log.log(nivel, mensaje))
         self.engine: Optional[OcrEngine] = None
         self.profile: Optional[SportsbookProfile] = None
         self.reader: Optional[LiveReader] = None
@@ -139,6 +157,86 @@ class AppController:
         if monitor is None:
             return ScreenContext()
         return ScreenContext(width=monitor.width, height=monitor.height)
+
+    # ------------------------------------------------------------------ puente
+    def start_bridge(self) -> bool:
+        """Arranca el puente local. Si el puerto esta ocupado, lo dice y sigue."""
+        if not self.settings.bridge.enabled:
+            self.log.info("Puente local desactivado en las preferencias")
+            return False
+        if self.bridge.start():
+            self.log.info(f"Puente local escuchando en {self.bridge.url} "
+                          "(solo 127.0.0.1)")
+            return True
+        self.log.warn(f"No se pudo arrancar el puente: {self.bridge.stats.last_error}. "
+                      "La aplicacion funciona igual con OCR.")
+        return False
+
+    def _on_browser_payload(self, payload: Dict[str, Any]) -> None:
+        """Llega desde el hilo del puente: solo guarda, no toca la interfaz."""
+        paquete = self.browser.accept(payload)
+        cambio = self.browser.pending_event_change
+        if cambio:
+            self.log.info(f"La extension cambio de partido: {cambio['from']} -> {cambio['to']}",
+                          region="BRIDGE")
+        del paquete
+
+    @property
+    def link_state(self) -> LinkState:
+        return self.browser.link_state()
+
+    def dom_fields(self) -> List[str]:
+        return self.browser.available_fields()
+
+    # ---------------------------------------------------------------- requisitos
+    def missing_requirements(self, profile: Optional[SportsbookProfile] = None) -> List[str]:
+        """Que falta para poder empezar, contando TODAS las fuentes.
+
+        Una region deja de ser obligatoria en cuanto otra fuente entrega ese
+        mismo dato. Es lo que permite abrir un partido sin dibujar nada cuando
+        la extension esta conectada.
+        """
+        from .capture.roi import RoiKind
+
+        perfil = profile or self.profile
+        dom = set(self.dom_fields())
+        faltan: List[str] = []
+
+        tiene_mercado = "market" in dom or (perfil is not None and perfil.has(RoiKind.MARKET_BLOCK))
+        if not tiene_mercado:
+            faltan.append("mercado y lineas")
+
+        tiene_reloj = "clock_seconds" in dom or (perfil is not None and perfil.has(RoiKind.CLOCK))
+        if not tiene_reloj:
+            faltan.append("reloj")
+
+        tiene_cuarto = "period" in dom or (perfil is not None and perfil.has(RoiKind.PERIOD))
+        if not tiene_cuarto:
+            faltan.append("cuarto")
+
+        marcador_dom = {"score_a", "score_b"} <= dom
+        marcador_roi = perfil is not None and (
+            perfil.has(RoiKind.SCORE_PAIR) or
+            (perfil.has(RoiKind.SCORE_A) and perfil.has(RoiKind.SCORE_B)))
+        if not (marcador_dom or marcador_roi):
+            faltan.append("marcador")
+
+        return faltan
+
+    def browser_profile(self) -> SportsbookProfile:
+        """Perfil implicito para trabajar solo con la extension, sin regiones.
+
+        No se le pide al usuario que dibuje nada: si el DOM trae el mercado,
+        no hay ninguna region que definir.
+        """
+        from .capture.roi import Rect
+
+        perfil = SportsbookProfile(name="BetPlay (extension)", sportsbook="BetPlay",
+                                   frame=Rect(0, 0, 1920, 1080))
+        perfil.engine = "stub"
+        perfil.notes = ("Perfil automatico: los datos llegan por la extension del "
+                        "navegador y no hacen falta regiones.")
+        return perfil
 
     def enable_demo(self, game=None) -> SportsbookProfile:
         """Activa el partido simulado: ni captura de pantalla ni OCR reales."""
@@ -187,17 +285,29 @@ class AppController:
     def start_session(self, profile: Optional[SportsbookProfile] = None) -> Optional[LiveReader]:
         """Crea el lector y arranca la lectura en vivo."""
         profile = profile or self.profile
+        if profile is None and self.browser.is_live:
+            # Con la extension conectada no hace falta perfil: se usa el
+            # implicito y no se pide dibujar ninguna region.
+            profile = self.browser_profile()
         if profile is None:
             self.log.error("No hay perfil seleccionado")
             return None
-        missing = profile.missing_required()
-        if missing:
-            names = ", ".join(k.display_name for k in missing)
-            self.log.error(f"Faltan regiones imprescindibles: {names}")
+
+        faltan = self.missing_requirements(profile)
+        if faltan:
+            self.log.error("Faltan datos para empezar: " + ", ".join(faltan) +
+                           ". Conecta la extension o define esas regiones.")
             return None
-        engine = self.ensure_engine(profile.engine)
+
+        necesita_ocr = bool(profile.rois)
+        engine = self.ensure_engine(profile.engine) if necesita_ocr else self.engine
+        if engine is None and necesita_ocr:
+            return None
         if engine is None:
-            return None
+            # Sin regiones no se llama al OCR en ningun momento; el motor
+            # simulado basta para satisfacer la interfaz del lector.
+            from .ocr.engines.stub_engine import StubEngine
+            engine = StubEngine()
 
         rules = rules_from_name(profile.rules_name)
         manager = RoiManager(profile, self.capture, screen=self.screen_context())
@@ -212,6 +322,7 @@ class AppController:
             required_confirmations=profile.stabilization_required,
             value_ttl=profile.value_ttl_seconds,
             sportsbook=profile.sportsbook or profile.name,
+            browser_source=self.browser,
         )
         self.reader.market_reads_per_second = profile.market_reads_per_second
         self.reader.start(profile.reads_per_second)
@@ -247,6 +358,12 @@ class AppController:
         self.selected_line = None
 
     def shutdown(self) -> None:
+        # El puente se cierra siempre, aunque algo mas falle: no puede quedar
+        # el puerto ocupado ni un hilo suelto.
+        try:
+            self.bridge.stop()
+        except Exception:  # pragma: no cover
+            pass
         if self.reader is not None:
             self.reader.stop()
         if self.session_id is not None:
@@ -343,7 +460,8 @@ class AppController:
         menor cadencia: lo que se mueve rapido es el reloj.
         """
         if snapshot is None:
-            return ViewModel(criteria=self.criteria)
+            return ViewModel(criteria=self.criteria, link_state=self.browser.link_state(),
+                             link_age_seconds=self.browser.age_seconds())
         state = snapshot.state
         criteria = self.criteria
         general = metrics_mod.compute_general_metrics(state)
@@ -390,7 +508,13 @@ class AppController:
                     current_line = min(bet_market.lines,
                                        key=lambda ln: abs(ln.line - bet.line))
 
+        paquete = self.browser.last_packet
         return ViewModel(
+            link_state=self.browser.link_state(),
+            link_age_seconds=self.browser.age_seconds(),
+            link_latency_ms=paquete.latency_ms if paquete else None,
+            field_sources=dict(snapshot.field_sources or {}),
+            source_conflicts=list(snapshot.source_conflicts or []),
             snapshot=snapshot, general=general, mode=self.mode,
             blocks=blocks, evaluations=evaluations, focus=focus,
             focus_freshness=focus_block.freshness if focus_block else None,

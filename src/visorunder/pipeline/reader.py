@@ -25,6 +25,7 @@ from ..capture.roi import OcrHints, RoiKind
 from ..capture.roi_manager import RoiFrame, RoiManager
 from ..config.profiles import resolve_default_market
 from ..diagnostics.logbus import LogBus
+from ..bridge.source import BrowserSource, SourceKind
 from ..domain.event_markets import EventMarkets, MarketState
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, MarketSnapshot
@@ -81,6 +82,10 @@ class ReaderSnapshot:
     #: Lineas pendientes de confirmacion, para poder mostrarlas como aviso.
     market_pending_lines: tuple = ()
     field_status: Dict[str, str] = field(default_factory=dict)
+    #: De donde salio cada dato en este ciclo.
+    field_sources: Dict[str, str] = field(default_factory=dict)
+    #: Discrepancias DOM/OCR sin resolver en silencio.
+    source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
     ts: float = field(default_factory=time.time)
 
 
@@ -91,7 +96,8 @@ class LiveReader:
                  rules: GameRules = FIBA, logbus: Optional[LogBus] = None,
                  history=None, session_id: Optional[int] = None,
                  required_confirmations: int = 3, value_ttl: float = 3.0,
-                 sportsbook: str = "", event_name: str = "") -> None:
+                 sportsbook: str = "", event_name: str = "",
+                 browser_source: Optional[BrowserSource] = None) -> None:
         self.roi_manager = roi_manager
         self.engine = engine
         self.rules = rules
@@ -100,6 +106,15 @@ class LiveReader:
         self.session_id = session_id
         self.sportsbook = sportsbook
         self.event_name = event_name
+        #: Fuente DOM. Cuando esta viva, manda sobre el OCR para los datos que
+        #: aporta, porque viene estructurada de la propia pagina.
+        self.browser_source = browser_source
+        #: De donde salio cada dato. Lo sabe la capa de adquisicion; el dominio
+        #: sigue recibiendo solo estados normalizados.
+        self.field_sources: Dict[str, SourceKind] = {}
+        #: Discrepancias entre fuentes, para poder verlas en diagnostico en vez
+        #: de resolverlas en silencio.
+        self.source_conflicts: List[Dict[str, Any]] = []
 
         self.state = GameState(rules=rules)
         #: Registro de TODOS los mercados observados del evento. La casa los
@@ -301,6 +316,7 @@ class LiveReader:
 
         # --- estado del partido ------------------------------------------
         self._sync_state(now)
+        self._apply_browser_source(now)
 
         # --- mercado visible ----------------------------------------------
         market_raw = None
@@ -327,6 +343,8 @@ class LiveReader:
             market_under_review=bool(visible_state and visible_state.under_review),
             market_pending_lines=visible_state.pending_lines if visible_state else (),
             field_status=self._field_status(),
+            field_sources={k: v.value for k, v in self.field_sources.items()},
+            source_conflicts=list(self.source_conflicts[-5:]),
             ts=now,
         )
         self._persist(snapshot, now)
@@ -547,6 +565,66 @@ class LiveReader:
 
         self._previous_period = period
         self._try_history_baseline(period)
+
+    def _apply_browser_source(self, now: float) -> None:
+        """Incorpora lo que aporta la extension.
+
+        Orden de preferencia acordado: DOM confirmado por encima de OCR
+        confirmado, porque el DOM viene estructurado de la propia pagina y no
+        de una lectura de imagen. Cuando las dos fuentes discrepan NO se elige
+        en silencio: se registra el conflicto y se deja ver en diagnostico.
+        """
+        fuente = self.browser_source
+        if fuente is None:
+            return
+
+        # Los datos que no aporta el DOM conservan la fuente que los trajo.
+        for campo, valor in (("market", self.markets.visible_key),
+                             ("lines", self.markets.visible_key)):
+            if valor is not None and campo not in self.field_sources:
+                self.field_sources[campo] = SourceKind.OCR
+
+        snapshot = fuente.snapshot(now)
+        if snapshot is not None and snapshot.lines:
+            tracker_key = snapshot.key
+            self.markets.observe(tracker_key, snapshot, confirmed=True, now=now)
+            self.field_sources["market"] = SourceKind.BROWSER_DOM
+            self.field_sources["lines"] = SourceKind.BROWSER_DOM
+
+        estado = fuente.game_state(now)
+        if not estado:
+            return
+
+        self._apply_browser_field("score_a", estado.get("score_a"),
+                                  self.state.score_a, now)
+        self._apply_browser_field("score_b", estado.get("score_b"),
+                                  self.state.score_b, now)
+        self._apply_browser_field("period", estado.get("period"),
+                                  self.state.period, now)
+        self._apply_browser_field("clock_seconds", estado.get("clock_seconds"),
+                                  self.state.clock_seconds, now)
+
+    def _apply_browser_field(self, campo: str, valor: Any, actual: Observed, now: float) -> None:
+        """Aplica un dato del DOM al estado, anotando la fuente y el conflicto."""
+        if valor is None:
+            if actual.is_usable and campo not in self.field_sources:
+                self.field_sources[campo] = SourceKind.OCR
+            return
+
+        anterior = actual.usable_value()
+        if anterior is not None and anterior != valor:
+            conflicto = {"field": campo, "dom": valor, "ocr": anterior, "ts": now}
+            self.source_conflicts.append(conflicto)
+            self.source_conflicts = self.source_conflicts[-20:]
+            self.log.warn(
+                f"CONFLICTO DE FUENTES en {campo}: DOM dice {valor} y OCR dice {anterior}. "
+                "Se usa el DOM por venir estructurado de la pagina.",
+                region="BRIDGE")
+
+        observado = Observed(value=valor, status=ValueStatus.CONFIRMED, confidence=1.0,
+                             raw_text="", updated_at=now, source="BROWSER_DOM")
+        setattr(self.state, campo if campo != "clock_seconds" else "clock_seconds", observado)
+        self.field_sources[campo] = SourceKind.BROWSER_DOM
 
     def _try_history_baseline(self, period: int) -> None:
         """Prioridad 2 del requisito 9: recuperar el baseline del historial."""
