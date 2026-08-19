@@ -19,6 +19,7 @@
         "src/lib/lines.js",
         "src/lib/dedupe.js",
         "src/lib/visibility.js",
+        "src/lib/options.js",
         "src/lib/scan.js",
         "src/lib/report.js",
         "src/lib/payload.js",

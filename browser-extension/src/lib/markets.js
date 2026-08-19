@@ -40,6 +40,14 @@
   const CONFIDENCE_THRESHOLD = 0.7;
 
   const TOTAL_WORDS = ['total de puntos', 'total puntos', 'totales', 'total'];
+  //: Marcas de un total POR EQUIPO. Es otro mercado: sus lineas no son el
+  //: total del partido y confundirlos daria numeros sin sentido.
+  const TEAM_TOTAL_WORDS = ['equipo', 'local', 'visitante', 'casa', 'fuera',
+                            'jugador', 'team'];
+  //: Mercados que tambien llevan numeros pero no son totales.
+  const OTHER_MARKET_WORDS = ['handicap', 'handicap asiatico', 'ganador', 'ganara',
+                              'linea de dinero', 'moneyline', 'diferencia',
+                              'margen', 'primer', 'ambos'];
   const GAME_WORDS = ['partido', 'encuentro', 'juego completo', 'tiempo reglamentario', 'match'];
   const QUARTER_PATTERNS = [
     /\bq\s*([1-4])\b/,
@@ -72,6 +80,17 @@
 
     const isTotal = hasAny(normalized, TOTAL_WORDS);
     if (isTotal) reasons.push('menciona total de puntos');
+
+    // Un total POR EQUIPO o un handicap no son el total del partido. Se
+    // descartan de forma explicita, no por casualidad de la puntuacion.
+    if (hasAny(normalized, TEAM_TOTAL_WORDS)) {
+      return { key: KEYS.UNKNOWN, confidence: 0, normalized, isTotal,
+               candidate: null, reasons: [...reasons, 'parece un total por equipo'] };
+    }
+    if (hasAny(normalized, OTHER_MARKET_WORDS)) {
+      return { key: KEYS.UNKNOWN, confidence: 0, normalized, isTotal,
+               candidate: null, reasons: [...reasons, 'parece otro mercado, no un total'] };
+    }
 
     // Banderas explicitas. Deducir la confianza buscando subcadenas dentro de
     // los motivos era fragil: "total sin periodo explicito" contiene

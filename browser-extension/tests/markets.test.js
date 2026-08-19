@@ -32,10 +32,27 @@ test('"Total de puntos" a secas NO se clasifica en silencio', () => {
 });
 
 test('un periodo sin "total" no basta: podria ser otro mercado', () => {
-  const r = identifyMarket('3er cuarto - Handicap');
+  const r = identifyMarket('3er cuarto - Puntos');
   assert.equal(r.key, KEYS.UNKNOWN);
   assert.equal(r.candidate, KEYS.Q3);
   assert.ok(r.reasons.some((x) => x.includes('cuarto 3 indicado')));
+});
+
+test('un handicap se descarta de forma explicita, no por casualidad', () => {
+  const r = identifyMarket('3er cuarto - Handicap');
+  assert.equal(r.key, KEYS.UNKNOWN);
+  assert.equal(r.candidate, null);
+  assert.ok(r.reasons.some((x) => x.includes('otro mercado')));
+});
+
+test('un total POR EQUIPO no es el total del partido', () => {
+  for (const etiqueta of ['Total de puntos - Equipo A', 'Total de puntos Local',
+                          'Total de puntos - Visitante']) {
+    const r = identifyMarket(etiqueta);
+    assert.equal(r.key, KEYS.UNKNOWN, etiqueta);
+    assert.equal(r.candidate, null, etiqueta);
+    assert.ok(r.reasons.some((x) => x.includes('por equipo')), etiqueta);
+  }
 });
 
 test('"Descanso" queda como ambiguo', () => {

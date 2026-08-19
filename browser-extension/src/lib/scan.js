@@ -8,10 +8,12 @@
  * poder probarlas con `node --test` sin montar un DOM.
  */
 (function (root, factory) {
-  const api = factory();
+  const api = factory(
+    typeof require === 'function' ? require('./options.js') : root.VDIAG.options
+  );
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.VDIAG = Object.assign(root.VDIAG || {}, { scan: api });
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (optionsLib) {
   'use strict';
 
   /**
@@ -77,5 +79,103 @@
     return candidatos[0];
   }
 
-  return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket };
+  //: Profundidad maxima al subir de la cabecera hacia el contenedor del mercado.
+  const MAX_CLIMB = 8;
+
+  /**
+   * Cabeceras que nombran un mercado dentro de un arbol.
+   *
+   * Se recorre con el adaptador, asi que sirve igual para el DOM y para un
+   * arbol de prueba. Se queda con las mas internas para no confundir la
+   * tarjeta entera con su titulo.
+   */
+  function findMarketHeaders(root, adapter, identify, options) {
+    const opciones = options || {};
+    const maxTexto = opciones.maxHeaderLength || 160;
+    const candidatos = [];
+    const visitar = (node, chain) => {
+      const hijos = adapter.children(node);
+      if (hijos.length > (opciones.maxHeaderChildren || 3)) return;
+      const contenido = adapter.text(node);
+      if (!contenido || contenido.length > maxTexto) return;
+      const identificado = identify(contenido);
+      if (!identificado.candidate) return;
+      candidatos.push({ element: node, chain, identified: identificado });
+    };
+    walkTree(root, adapter, visitar, []);
+    const contiene = (a, b) => descendants(a, adapter).has(b);
+    return pickInnermost(candidatos, contiene);
+  }
+
+  function walkTree(node, adapter, visit, chain) {
+    visit(node, chain);
+    for (const hijo of adapter.children(node)) {
+      walkTree(hijo, adapter, visit, [node, ...chain]);
+    }
+  }
+
+  function descendants(node, adapter) {
+    const conjunto = new Set();
+    const pila = [...adapter.children(node)];
+    while (pila.length) {
+      const actual = pila.pop();
+      conjunto.add(actual);
+      pila.push(...adapter.children(actual));
+    }
+    return conjunto;
+  }
+
+  /**
+   * Contenedor de un mercado: se sube desde su cabecera hasta que aparecen sus
+   * lineas, sin llegar nunca a abarcar la cabecera de otro mercado. Esa
+   * frontera es lo que impide que en la pestana TODO se mezclen el total del
+   * partido, el de la mitad y el del cuarto.
+   */
+  function findMarketContainer(header, allHeaders, adapter, extract) {
+    let mejor = { container: header.element, result: extract(header.element) };
+    let node = header.element;
+    const cadena = header.chain || [];
+    for (let i = 0; i < MAX_CLIMB && i < cadena.length; i += 1) {
+      node = cadena[i];
+      if (wouldInvadeAnotherMarket(node, header, allHeaders,
+                                   (a, b) => descendants(a, adapter).has(b))) {
+        break;
+      }
+      const resultado = extract(node);
+      if (resultado.lines.length > mejor.result.lines.length) {
+        mejor = { container: node, result: resultado };
+      }
+    }
+    return mejor;
+  }
+
+  /**
+   * Escaneo completo: devuelve un registro por mercado reconocido, cada uno
+   * con SUS lineas, extraidas solo de SU contenedor.
+   */
+  function scanMarkets(root, adapter, deps) {
+    const identify = deps.identify;
+    const extract = deps.extract ||
+      ((node) => optionsLib.extractMarketLines(node, adapter, deps.extractOptions));
+    const cabeceras = findMarketHeaders(root, adapter, identify, deps.headerOptions);
+    const registros = [];
+    for (const header of cabeceras) {
+      const { container, result } = findMarketContainer(header, cabeceras, adapter, extract);
+      registros.push({
+        key: header.identified.key,
+        candidate: header.identified.candidate,
+        confidence: header.identified.confidence,
+        headerText: adapter.text(header.element),
+        reasons: header.identified.reasons,
+        container,
+        lines: result.lines,
+        rejected: result.rejected,
+        sideMarkers: result.sideMarkers,
+      });
+    }
+    return registros;
+  }
+
+  return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket,
+           findMarketHeaders, findMarketContainer, scanMarkets, descendants };
 });

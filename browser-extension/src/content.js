@@ -14,7 +14,7 @@
   'use strict';
 
   const { text, markets, lines: linesLib, dedupe, visibility,
-          scan: scanLib, payload: payloadLib } = globalThis.VDIAG;
+          scan: scanLib, options: optionsLib, payload: payloadLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -164,6 +164,22 @@
     };
   }
 
+  /**
+   * Adaptador del DOM para el escaneo estructural.
+   *
+   * `text` usa textContent y NO innerText: innerText devuelve cadena vacia en
+   * los elementos ocultos, y aqui hay que poder leerlos.
+   */
+  const DOM_ADAPTER = {
+    children: (node) => Array.from(node.children || []),
+    text: (node) => extractText(node),
+    ownText: (node) => Array.from(node.childNodes || [])
+      .filter((n) => n.nodeType === 3)
+      .map((n) => (n.nodeValue || '').trim())
+      .filter(Boolean)
+      .join(' '),
+  };
+
   // ------------------------------------------------------- recorrido del DOM
 
   /** Documento principal, shadow roots abiertos e iframes del mismo origen. */
@@ -198,48 +214,6 @@
       node = walker.nextNode();
     }
     return { roots, shadow, frames };
-  }
-
-  /** Cabeceras que nombran un mercado, quedandose con las mas internas. */
-  function findMarketHeaders(root) {
-    const candidatos = [];
-    let elementos;
-    try {
-      elementos = root.querySelectorAll('*');
-    } catch (error) {
-      return [];
-    }
-    for (const element of elementos) {
-      if (element.children.length > 3) continue;      // una cabecera tiene pocos hijos
-      const contenido = element.textContent || '';
-      if (!contenido || contenido.length > 160) continue;
-      const identificado = markets.identifyMarket(contenido);
-      if (!identificado.candidate) continue;
-      candidatos.push({ element, identified: identificado });
-    }
-    // Si un candidato contiene a otro, el bueno es el interno.
-    return scanLib.pickInnermost(candidatos, (a, b) => a.contains(b));
-  }
-
-  /**
-   * Contenedor que agrupa la cabecera con sus lineas.
-   * Se sube por el arbol hasta encontrar lineas, sin invadir otro mercado.
-   */
-  function findMarketContainer(header, todasLasCabeceras) {
-    let node = header.element;
-    let mejor = { container: header.element, parsed: linesLib.parseLines(extractText(header.element)) };
-    for (let i = 0; i < MAX_CLIMB && node.parentElement; i += 1) {
-      node = node.parentElement;
-      if (scanLib.wouldInvadeAnotherMarket(node, header, todasLasCabeceras,
-                                            (a, b) => a.contains(b))) {
-        break;                    // subir mas mezclaria mercados distintos
-      }
-      const parsed = linesLib.parseLines(extractText(node));
-      if (parsed.lines.length > mejor.parsed.lines.length) {
-        mejor = { container: node, parsed };
-      }
-    }
-    return mejor;
   }
 
   /** Pistas sobre como esta construida la pagina (sin tocar el mundo de la pagina). */
@@ -282,55 +256,55 @@
     let cabecerasTotales = 0;
 
     for (const { root, kind, label } of roots) {
-      const cabeceras = findMarketHeaders(root);
-      cabecerasTotales += cabeceras.length;
-      for (const header of cabeceras) {
-        const { container, parsed } = findMarketContainer(header, cabeceras);
-        const fundidas = dedupe.dedupeLines(parsed.lines);
-        // Lectura estricta, la unica que puede viajar a la aplicacion: exige
-        // lineas .5 con al menos una cuota, para que los numeros sueltos del
-        // marcador no acaben convertidos en apuestas.
-        const contenedorTexto = extractText(container);
-        const estricta = linesLib.parseLinesStrict(contenedorTexto);
-        const estrictasFundidas = dedupe.dedupeLines(estricta.lines);
-        const visible = measureVisibility(container);
-        const clave = header.identified.key;
+      let registros = [];
+      try {
+        registros = scanLib.scanMarkets(root, DOM_ADAPTER, { identify: markets.identifyMarket });
+      } catch (error) {
+        state.errors.push({ ts: now(), message: `escaneo: ${error.message}` });
+        continue;
+      }
+      cabecerasTotales += registros.length;
 
-        const registro = {
+      for (const registro of registros) {
+        const visible = measureVisibility(registro.container);
+        const clave = registro.key;
+
+        const record = {
           key: clave,
-          candidate: header.identified.candidate,
-          confidence: header.identified.confidence,
-          headerText: text.truncate(header.element.textContent, 120),
-          normalized: header.identified.normalized,
-          reasons: header.identified.reasons,
+          candidate: registro.candidate,
+          confidence: registro.confidence,
+          headerText: text.truncate(registro.headerText, 120),
+          normalized: markets.identifyMarket(registro.headerText).normalized,
+          reasons: registro.reasons,
           rootKind: kind,
           rootLabel: label,
           existsInDom: visible.existsInDom,
           isVisible: visible.isVisible,
           inViewport: visible.inViewport,
           visibilityReasons: visible.reasons,
-          lines: fundidas.lines,
-          strictLines: estrictasFundidas.lines,
-          rejectedNumbers: estricta.rejected.slice(0, 12),
-          sideMarkers: estricta.sideMarkers,
-          rawCandidates: parsed.rawCandidates,
-          rawLineCount: fundidas.rawCount,
-          duplicates: fundidas.duplicates,
-          unassigned: parsed.unassigned,
-          debug: describeElement(container),
-          headerDebug: describeElement(header.element),
+          // Las lineas salen del emparejamiento POR ESTRUCTURA: cada opcion
+          // se ata a su linea por el arbol, no por el orden del texto.
+          lines: registro.lines,
+          strictLines: registro.lines,
+          rejectedNumbers: (registro.rejected || []).slice(0, 12),
+          sideMarkers: registro.sideMarkers,
+          rawCandidates: (registro.lines || []).length + (registro.rejected || []).length,
+          rawLineCount: (registro.lines || []).length,
+          duplicates: 0,
+          unassigned: (registro.rejected || []).length,
+          debug: describeElement(registro.container),
+          headerDebug: describeElement(registro.container),
         };
 
-        // Si el mismo mercado aparece dos veces (movil y escritorio), se queda
-        // la lectura mas completa, pero se anota que habia mas de una.
         const previo = encontrados.get(clave);
-        const elegido = scanLib.preferReading(previo, registro);
+        const elegido = scanLib.preferReading(previo, record);
         elegido.occurrences = (previo ? previo.occurrences : 0) + 1;
         encontrados.set(clave, elegido);
       }
     }
 
     mergeIntoState(encontrados);
+    state.payload = buildVisiblePayload();
     state.lastScanAt = now();
     state.scanCount += 1;
     state.lastScanMs = performance.now() - inicio;
@@ -406,6 +380,33 @@
     }
   }
 
+  /**
+   * Payload del mercado VISIBLE, listo para enviarse a la aplicacion.
+   * Devuelve null (con su motivo) si no hay confianza suficiente.
+   */
+  function buildVisiblePayload() {
+    const clave = state.visibleMarket;
+    if (!clave) return { payload: null, rejected: ['no hay mercado visible identificado'] };
+    const registro = state.markets.get(clave);
+    if (!registro) return { payload: null, rejected: ['el mercado visible no tiene registro'] };
+    return payloadLib.buildPayload({
+      marketKey: registro.key,
+      confidence: registro.confidence,
+      rawTitle: registro.headerText,
+      eventId: payloadLib.eventIdFromUrl(location.href),
+      eventName: eventName(),
+      lines: registro.strictLines || registro.lines,
+      sideMarkers: registro.sideMarkers,
+      observedAt: registro.lastSeenAt || now(),
+    });
+  }
+
+  /** Nombre del evento, sin arrastrar datos de la cuenta. */
+  function eventName() {
+    const titulo = (document.title || '').split('|')[0].trim();
+    return titulo ? text.truncate(titulo, 120) : null;
+  }
+
   // ------------------------------------------------------- observer y arranque
 
   let pendiente = null;
@@ -462,6 +463,8 @@
         .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key)),
       history: state.history.slice(-200),
       errors: state.errors.slice(-20),
+      payload: state.payload ? state.payload.payload : null,
+      payloadRejected: state.payload ? state.payload.rejected : ['todavia sin escaneo'],
     };
   }
 
