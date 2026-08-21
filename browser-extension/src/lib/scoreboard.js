@@ -184,10 +184,23 @@
     return index < regulation ? `Q${index + 1}` : `OT${index - regulation + 1}`;
   }
 
-  function periodsFromPartials(partials, regulationPeriods) {
+  function periodsFromPartials(partials, regulationPeriods, observedPeriod) {
     const periods = {};
+    const regulation = Number.isInteger(regulationPeriods) ? regulationPeriods : 4;
+    // Las cuatro primeras columnas de la rejilla son Q1..Q4. Una columna
+    // posterior solo puede publicarse como OT si el bloque de estado confirma
+    // que ese overtime ya existe. Asi una columna auxiliar de Kambi (mitad,
+    // faltas, etc.) nunca se convierte en OT solo por estar en quinta posicion.
+    const lastObserved = Number.isInteger(observedPeriod) ? observedPeriod : regulation;
     (partials || []).forEach((value, index) => {
-      periods[periodLabel(index, regulationPeriods)] = value;
+      if (index < regulation) {
+        periods[periodLabel(index, regulation)] = value;
+        return;
+      }
+      const absolutePeriod = index + 1;
+      if (lastObserved > regulation && absolutePeriod <= lastObserved) {
+        periods[periodLabel(index, regulation)] = value;
+      }
     });
     return periods;
   }
@@ -238,6 +251,8 @@
   function periodFromText(valor) {
     const normalizado = text.normalizeOrdinals(valor || '');
     if (!normalizado || normalizado.length > 24) return null;
+    const overtime = normalizado.match(/^(?:ot|overtime|prorroga)\s*([1-9])?$/);
+    if (overtime) return 4 + Number(overtime[1] || 1);
     const directo = normalizado.match(/^q\s*([1-9])$/) ||
                     normalizado.match(/^([1-9])\s*q$/) ||
                     normalizado.match(/\b([1-9])\s+(?:cuarto|periodo|parcial|quarter)\b/) ||
@@ -336,21 +351,28 @@
                reasons: ['las dos filas nombran al mismo equipo'] };
     }
 
+    const estado = readClockBlock(marcador.node, adapter);
+    const periodsA = periodsFromPartials(filaA.partials, 4, estado.period);
+    const periodsB = periodsFromPartials(filaB.partials, 4, estado.period);
+
     // Coherencia: los parciales deberian sumar el total. Refuerza la lectura,
     // pero NO manda: con prorroga, cuartos incompletos o celdas vacias la suma
     // puede no cuadrar y la clase del total sigue siendo la evidencia buena.
-    for (const fila of [filaA, filaB]) {
-      if (!fila.partials.length) continue;
-      if (fila.partials.some((value) => value === null)) {
+    for (const [fila, periods] of [[filaA, periodsA], [filaB, periodsB]]) {
+      const valores = Object.values(periods);
+      if (!valores.length) continue;
+      if (fila.partials.length > valores.length) {
+        razones.push(`${fila.name}: ${fila.partials.length - valores.length} columna(s) ` +
+                     'adicional(es) sin identidad de periodo se omitieron');
+      }
+      if (valores.some((value) => value === null)) {
         razones.push(`${fila.name}: hay parciales todavia desconocidos`);
         continue;
       }
-      const suma = fila.partials.reduce((acc, n) => acc + n, 0);
+      const suma = valores.reduce((acc, n) => acc + n, 0);
       if (suma === fila.total) razones.push(`${fila.name}: los parciales suman el total`);
       else avisos.push(`${fila.name}: los parciales suman ${suma} y el total dice ${fila.total}`);
     }
-
-    const estado = readClockBlock(marcador.node, adapter);
 
     return {
       found: true,
@@ -359,9 +381,9 @@
       teams: [filaA.name, filaB.name],
       score: { scoreA: filaA.total, scoreB: filaB.total },
       teamA: { name: filaA.name, total: filaA.total,
-               periods: periodsFromPartials(filaA.partials) },
+               periods: periodsA },
       teamB: { name: filaB.name, total: filaB.total,
-               periods: periodsFromPartials(filaB.partials) },
+               periods: periodsB },
       period: estado.period,
       clock: estado.clock,
       reasons: [...razones, ...estado.reasons],

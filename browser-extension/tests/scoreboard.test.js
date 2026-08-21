@@ -174,6 +174,35 @@ test('la prorroga anade columnas y no rompe la lectura', () => {
                    { Q1: 18, Q2: 24, Q3: 24, Q4: 10, OT1: 9 });
 });
 
+test('una columna adicional de Kambi no se inventa como overtime', () => {
+  const raiz = conScoreboard({
+    periodo: 'Q3',
+    // La quinta celda representa una columna auxiliar desconocida. El total
+    // correcto sigue siendo la suma de Q1..Q4, no incluye ese 46 repetido.
+    parcialesA: [21, 25, 19, 0, 46], totalA: 65,
+    parcialesB: [26, 18, 3, 0, 44], totalB: 47,
+  });
+  const r = sb.readScoreboard(raiz, A);
+  assert.deepEqual(r.teamA.periods, { Q1: 21, Q2: 25, Q3: 19, Q4: 0 });
+  assert.deepEqual(r.teamB.periods, { Q1: 26, Q2: 18, Q3: 3, Q4: 0 });
+  assert.equal(Object.hasOwn(r.teamA.periods, 'OT1'), false);
+  assert.ok(r.reasons.some((reason) => /columna.*adicional/.test(reason)));
+});
+
+test('OT explicito en el reloj habilita solo las columnas de prorroga observadas', () => {
+  const raiz = conScoreboard({
+    periodo: 'OT',
+    parcialesA: [18, 24, 24, 10, 9, 70], totalA: 85,
+    parcialesB: [22, 20, 19, 8, 7, 69], totalB: 76,
+  });
+  const r = sb.readScoreboard(raiz, A);
+  assert.equal(r.period, 5);
+  assert.deepEqual(r.teamA.periods,
+                   { Q1: 18, Q2: 24, Q3: 24, Q4: 10, OT1: 9 });
+  assert.equal(Object.hasOwn(r.teamA.periods, 'OT2'), false,
+               'una sexta columna auxiliar no se convierte en OT2');
+});
+
 test('un cuarto a medias, con columnas vacias, se lee igual', () => {
   const raiz = conScoreboard({
     periodo: 'Q2', parcialesA: [18], totalA: 18, parcialesB: [22], totalB: 22,
