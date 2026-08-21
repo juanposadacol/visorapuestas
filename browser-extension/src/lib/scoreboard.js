@@ -55,6 +55,12 @@
   //: overtime no rompa la lectura.
   const MAX_PERIOD = 9;
 
+  //: Tope de nodos que se inspeccionan dentro de un contenedor de marcador.
+  //: La busqueda de filas mira las hojas de cada nodo, asi que si un selector
+  //: demasiado generoso llegara a casar con media pagina el coste se
+  //: dispararia. Un marcador de verdad tiene decenas de nodos, no cientos.
+  const MAX_SCOREBOARD_NODES = 400;
+
   // ----------------------------------------------------------- vocabulario
 
   //: El bloque entero del marcador. "scoreboard" o un aria-label explicito.
@@ -161,29 +167,33 @@
    */
   function findTeamRows(container, adapter) {
     const candidatas = [];
+    let visitados = 0;
     walk(container, adapter, (node, chain) => {
-      const hojas = leavesOf(node, adapter);
+      visitados += 1;
+      if (visitados > MAX_SCOREBOARD_NODES) return;
+
       const totales = [];
       const parciales = [];
-      let nombre = null;
-      let nombres = 0;
+      //: Un Set, y no un contador: la casa puede repetir el nombre del equipo
+      //: (version movil y version escritorio en el mismo bloque) y eso sigue
+      //: siendo UN equipo. Lo que descalifica la fila es que aparezcan dos
+      //: nombres DISTINTOS, porque entonces no es la fila de nadie.
+      const nombres = new Set();
 
-      for (const hoja of hojas) {
+      for (const hoja of leavesOf(node, adapter)) {
         const valor = numberOf(hoja);
         if (valor !== null) {
+          // El total gana al parcial: la celda de Kambi lleva las dos clases.
           if (isTotalCell(hoja.node, adapter)) totales.push(valor);
           else if (isPartialCell(hoja.node, adapter)) parciales.push(valor);
           continue;
         }
-        if (looksLikeTeamName(hoja.text)) {
-          if (nombre === null || nombre === hoja.text) nombre = hoja.text;
-          else nombres += 1;                 // un segundo nombre distinto
-          if (nombre === hoja.text) nombres = Math.max(nombres, 1);
-        }
+        if (looksLikeTeamName(hoja.text)) nombres.add(hoja.text);
       }
 
-      if (totales.length !== 1 || nombres !== 1 || nombre === null) return;
-      candidatas.push({ node, chain, name: nombre, total: totales[0], partials: parciales });
+      if (totales.length !== 1 || nombres.size !== 1) return;
+      candidatas.push({ node, chain, name: [...nombres][0],
+                        total: totales[0], partials: parciales });
     });
     return innermost(candidatas);
   }
@@ -316,7 +326,8 @@
     };
   }
 
-  return { CLOCK_RE, MAX_SCORE, MAX_PERIOD, SCOREBOARD_CONTAINER, TOTAL_CELL,
+  return { CLOCK_RE, MAX_SCORE, MAX_PERIOD, MAX_SCOREBOARD_NODES,
+           SCOREBOARD_CONTAINER, TOTAL_CELL,
            PARTIAL_CELL, CLOCK_BLOCK, looksLikeTeamName, isTotalCell, isPartialCell,
            findTeamRows, periodFromText, readClockBlock, readScoreboard, leavesOf };
 });

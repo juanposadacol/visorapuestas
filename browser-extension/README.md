@@ -211,7 +211,7 @@ pégamelo. Si prefieres, **DESCARGAR JSON** genera el fichero
 
 ```bash
 cd browser-extension
-node --test tests/*.test.js     # 286 tests, sin dependencias
+node --test tests/*.test.js     # 288 tests, sin dependencias
 ```
 
 Se usa el runner incorporado de Node (18+), así que **no hay `node_modules`, ni

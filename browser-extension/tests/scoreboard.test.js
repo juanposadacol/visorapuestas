@@ -190,3 +190,37 @@ test('un nombre de equipo no puede ser un texto de mercado', () => {
   assert.equal(sb.looksLikeTeamName('Total de puntos'), false);
   assert.equal(sb.looksLikeTeamName('33:52'), false);
 });
+
+test('un nombre repetido en la misma fila sigue siendo UN equipo', () => {
+  // Las casas repiten el nombre para movil y escritorio dentro del mismo bloque.
+  const doc = createDocument();
+  const fila = filaKambi(doc, 'Dallas Wings (F)', [18, 24, 24, 10], 76);
+  fila.appendChild(el(doc, 'span', { class: 'KambiBC-scoreboard-team-label--mobile' },
+                      ['Dallas Wings (F)']));
+  const otra = filaKambi(doc, 'Indiana Fever (F)', [22, 20, 19, 8], 69);
+  doc.body.appendChild(el(doc, 'section', {
+    class: 'KambiBC-scoreboard-container-template' }, [fila, otra]));
+
+  const r = sb.readScoreboard(doc.body, A);
+  assert.equal(r.found, true);
+  assert.deepEqual(r.score, { scoreA: 76, scoreB: 69 });
+});
+
+test('un contenedor desmesurado no dispara el coste de la busqueda', () => {
+  const doc = createDocument();
+  const enorme = el(doc, 'section', { class: 'KambiBC-scoreboard-container-template' }, [
+    filaKambi(doc, 'Dallas Wings (F)', [18, 24, 24, 10], 76),
+    filaKambi(doc, 'Indiana Fever (F)', [22, 20, 19, 8], 69),
+  ]);
+  for (let i = 0; i < sb.MAX_SCOREBOARD_NODES + 50; i += 1) {
+    enorme.appendChild(el(doc, 'div', {}, [`relleno ${i}`]));
+  }
+  doc.body.appendChild(enorme);
+
+  const inicio = Date.now();
+  const r = sb.readScoreboard(doc.body, A);
+  assert.ok(Date.now() - inicio < 2000, 'la busqueda tiene tope');
+  // Las dos filas van primero, asi que se leen antes de agotar el tope.
+  assert.equal(r.found, true);
+  assert.deepEqual(r.score, { scoreA: 76, scoreB: 69 });
+});
