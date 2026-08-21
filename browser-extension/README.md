@@ -33,7 +33,16 @@ Esto importa tanto como lo que hace:
 | `http://127.0.0.1/*`, `http://localhost/*` | hablar con VisorApuestas en tu propio equipo. Las reglas de coincidencia de Chrome **no incluyen el puerto**, por eso no se puede acotar a 8765 |
 | `storage` | recordar el puerto que elijas, nada más |
 
-Sigue sin pedir `cookies`, `history`, `tabs` ni `downloads`.
+Sigue sin pedir `cookies`, `history`, `tabs` ni `downloads`. **Tampoco `alarms`**: el
+latido que mantiene viva la conexión con la aplicación local lo manda el content script
+cada 5 s, y cada mensaje suyo despierta al service worker, así que no hace falta un
+temporizador propio del worker ni el permiso que lo habilita.
+
+> Esta tabla es **el único sitio** donde se documentan los permisos. En `manifest.json` no
+> hay explicaciones: JSON no admite comentarios, y una clave inventada como `"// permisos"`
+> hace que Chrome y Edge muestren `Unrecognized manifest key`. Si añades un permiso,
+> actualiza esta tabla y el test `tests/manifest.test.js`, que vigila que la lista no
+> crezca por descuido.
 
 ### Por qué ahora sí hay service worker
 

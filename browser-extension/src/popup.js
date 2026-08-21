@@ -101,8 +101,20 @@
 
   // ------------------------------------------------------------------- pintado
 
+  /** Pinta un { texto, clase } en su hueco. */
+  function poner(id, descripcion) {
+    $(id).textContent = descripcion.texto;
+    $(id).className = `valor ${descripcion.clase}`;
+  }
+
   function pintarEstado(estado) {
-    $('sitio').textContent = /betplay/i.test(estado.url) ? 'BetPlay ✓' : 'sitio no reconocido';
+    const enBetplay = /betplay/i.test(estado.url);
+    poner('sitio', enBetplay
+      ? { texto: 'DETECTADO ✓', clase: 'si' }
+      : { texto: 'sitio no reconocido', clase: 'no' });
+    poner('escaner', report.describeScanner(estado));
+    poner('mercados-resumen', report.describeMarketsSummary(estado));
+
     $('url').textContent = report.redact(estado.url);
     $('visible').textContent = estado.visibleMarket
       ? markets.labelFor(estado.visibleMarket)
@@ -112,19 +124,15 @@
     const pistas = (estado.environment && estado.environment.hints) || [];
     $('entorno').textContent = pistas.length ? pistas.join(' · ') : 'sin pistas claras';
 
-    const partido = estado.gameState;
-    if (partido) {
-      const partes = [];
-      if (partido.scoreA !== undefined) partes.push(`${partido.scoreA}-${partido.scoreB}`);
-      if (partido.period !== undefined) partes.push(`Q${partido.period}`);
-      if (partido.clock) partes.push(partido.clock);
-      $('estado-partido').textContent = partes.join('  ');
-    } else {
-      const diag = estado.gameDiagnostics;
-      $('estado-partido').textContent = diag
-        ? `no disponible (${diag.score.reason || diag.clock.reason || 'sin datos'})`
-        : 'no disponible';
+    // Marcador, cuarto y reloj CADA UNO por su cuenta: que falte el reloj no
+    // puede ensuciar lo que se sabe del marcador, ni al reves.
+    for (const campo of ['marcador', 'cuarto', 'reloj']) {
+      poner(campo, report.describeGamePart(estado.gameState, estado.gameDiagnostics, campo));
     }
+
+    const errores = report.describeErrors(estado);
+    $('tarjeta-errores').hidden = !errores.length;
+    $('errores').textContent = errores.join('\n');
   }
 
   function pintarMercados(estado) {

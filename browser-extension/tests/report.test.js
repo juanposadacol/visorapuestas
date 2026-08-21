@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { redact, redactDeep, buildTextReport, buildJsonReport, formatAge,
         suggestFileName, describeHistoryEntry } = require('../src/lib/report.js');
+const report = require('../src/lib/report.js');
 
 const AHORA = 1755550000000;
 
@@ -141,4 +142,76 @@ test('la antiguedad se lee de un vistazo', () => {
 test('el nombre del fichero lleva fecha y hora', () => {
   const nombre = suggestFileName(new Date(2026, 7, 18, 18, 34, 22));
   assert.equal(nombre, 'visorapuestas-dom-diagnostic-20260818-183422.json');
+});
+
+// --------------------------------------------- lo que dice el popup, probado
+//
+// El panel es parte del diagnostico: en las pruebas reales una sola palabra
+// mal elegida ("DESCONECTADA") mando la investigacion por el camino contrario.
+
+test('el escaner dice ACTIVO cuando no hay errores', () => {
+  const d = report.describeScanner({ scanCount: 12, lastScanMs: 34,
+                                     rootCount: 5, rootsScanned: 5, activeErrors: 0 });
+  assert.match(d.texto, /ACTIVO ✓/);
+  assert.match(d.texto, /5\/5 raices/);
+  assert.equal(d.clase, 'si');
+});
+
+test('el escaner avisa de los errores activos sin repetirlos', () => {
+  const d = report.describeScanner({ scanCount: 3, lastScanMs: 20, activeErrors: 1,
+                                     unstableRoots: [{ key: 'iframe:x' }] });
+  assert.match(d.texto, /CON INCIDENCIAS/);
+  assert.match(d.texto, /1 error\(es\) activos/);
+  assert.match(d.texto, /1 raiz\(ces\) en descanso/);
+});
+
+test('marcador confirmado se muestra con los equipos', () => {
+  const d = report.describeGamePart(
+    { scoreA: 56, scoreB: 69 },
+    { score: { status: 'CONFIRMED', teams: ['Las Vegas Aces', 'Atlanta Dream'] } },
+    'marcador');
+  assert.match(d.texto, /56-69 ✓/);
+  assert.match(d.texto, /Las Vegas Aces \/ Atlanta Dream/);
+  assert.equal(d.clase, 'si');
+});
+
+test('marcador en revision se distingue de marcador ausente', () => {
+  const revision = report.describeGamePart(
+    { scoreA: 58, scoreB: 52 },
+    { score: { status: 'UNDER_REVIEW', candidate: { scoreA: 40, scoreB: 52 } } },
+    'marcador');
+  assert.match(revision.texto, /58-52/);
+  assert.match(revision.texto, /EN REVISION: se leyo 40-52/);
+
+  const ausente = report.describeGamePart(
+    null, { score: { reason: 'evidencia insuficiente (0.25 < 0.6)' } }, 'marcador');
+  assert.match(ausente.texto, /no disponible/);
+  assert.match(ausente.texto, /0\.25/);
+});
+
+test('cuarto y reloj se dicen por separado', () => {
+  const cuarto = report.describeGamePart({ period: 3 }, {}, 'cuarto');
+  assert.equal(cuarto.texto, 'Q3 ✓');
+  const reloj = report.describeGamePart({ period: 3 },
+                                        { clock: { reason: 'sin candidatos' } }, 'reloj');
+  assert.match(reloj.texto, /no disponible/);
+  assert.match(reloj.texto, /sin candidatos/);
+});
+
+test('el resumen de mercados cuenta los que traen lineas', () => {
+  const d = report.describeMarketsSummary({ markets: [
+    { existsInDom: true, lines: [{ line: 44.5 }] },
+    { existsInDom: true, lines: [] },
+    { existsInDom: false, lines: [{ line: 1 }] },
+  ] });
+  assert.equal(d.texto, '2 detectado(s), 1 con lineas');
+});
+
+test('los errores se pintan agrupados, con su cuenta', () => {
+  const lineas = report.describeErrors({ errors: [{
+    type: 'createTreeWalker', rootKind: 'iframe', rootLabel: 'live',
+    message: "Cannot read properties of null (reading 'createTreeWalker')", count: 43,
+  }] });
+  assert.equal(lineas.length, 1);
+  assert.match(lineas[0], /createTreeWalker \/ iframe \(live\)  x43/);
 });

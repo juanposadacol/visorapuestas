@@ -4,7 +4,6 @@
   "version": "0.2.0",
   "description": "Lee de solo lectura el mercado visible de BetPlay y lo envia a la aplicacion local VisorApuestas. No apuesta, no navega y no modifica la pagina.",
   "icons": {},
-  "// permisos": "Minimo privilegio. betplay.com.co para leer el DOM del partido; 127.0.0.1 y localhost para hablar con la aplicacion local (las reglas de coincidencia de Chrome no incluyen el puerto, por eso no se puede acotar a 8765); 'storage' solo para recordar el puerto elegido. Sin cookies, sin historial, sin pestanas y sin descargas.",
   "host_permissions": [
     "https://*.betplay.com.co/*",
     "http://127.0.0.1/*",

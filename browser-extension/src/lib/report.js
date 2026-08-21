@@ -251,6 +251,86 @@
       `${dos(d.getDate())}-${dos(d.getHours())}${dos(d.getMinutes())}${dos(d.getSeconds())}.json`;
   }
 
+
+  // ------------------------------------------------- estados para el popup
+  //
+  // Cada funcion responde UNA pregunta y devuelve { texto, clase }. Estan aqui
+  // y no en el popup para poder probarlas: lo que el panel dice es justo lo
+  // que llevo tres pruebas reales a diagnosticar mal el problema.
+
+  /** ¿El escaneo esta funcionando? */
+  function describeScanner(snapshot) {
+    const datos = snapshot || {};
+    if (!datos.scanCount) return { texto: 'todavia sin escanear', clase: 'oculto' };
+    const activos = datos.activeErrors || 0;
+    const inestables = (datos.unstableRoots || []).length;
+    if (!activos && !inestables) {
+      return { texto: `ACTIVO ✓  (${datos.rootsScanned || 0}/${datos.rootCount || 0} raices, ` +
+                      `${datos.lastScanMs} ms)`, clase: 'si' };
+    }
+    const partes = [];
+    if (activos) partes.push(`${activos} error(es) activos`);
+    if (inestables) partes.push(`${inestables} raiz(ces) en descanso`);
+    return { texto: `CON INCIDENCIAS: ${partes.join(', ')}`, clase: activos ? 'no' : 'oculto' };
+  }
+
+  /**
+   * Estado de un campo del partido (marcador, cuarto o reloj).
+   *
+   * "no disponible" y "en revision" son cosas distintas y se dicen distinto:
+   * la primera es que no se sabe, la segunda es que hay una lectura que no
+   * cuadra y NO se esta publicando.
+   */
+  function describeGamePart(gameState, diagnostics, campo) {
+    const estado = gameState || {};
+    const diag = (diagnostics || {})[campo === 'marcador' ? 'score'
+                 : campo === 'cuarto' ? 'period' : 'clock'] || {};
+
+    if (campo === 'marcador') {
+      if (diag.status === 'UNDER_REVIEW') {
+        const enRevision = diag.candidate
+          ? `${diag.candidate.scoreA}-${diag.candidate.scoreB}` : '?';
+        const publicado = estado.scoreA !== undefined
+          ? `${estado.scoreA}-${estado.scoreB}` : '--';
+        return { texto: `${publicado}  (EN REVISION: se leyo ${enRevision})`, clase: 'oculto' };
+      }
+      if (estado.scoreA === undefined) {
+        return { texto: `no disponible  (${diag.reason || 'sin datos'})`, clase: 'oculto' };
+      }
+      const equipos = diag.teams ? `  ${diag.teams.join(' / ')}` : '';
+      return { texto: `${estado.scoreA}-${estado.scoreB} ✓${equipos}`, clase: 'si' };
+    }
+
+    const valor = campo === 'cuarto' ? estado.period : estado.clock;
+    if (valor === undefined || valor === null) {
+      return { texto: `no disponible  (${diag.reason || 'sin datos'})`, clase: 'oculto' };
+    }
+    return { texto: `${campo === 'cuarto' ? `Q${valor}` : valor} ✓`, clase: 'si' };
+  }
+
+  /** Resumen de mercados: cuantos, y cuantos con lineas. */
+  function describeMarketsSummary(snapshot) {
+    const lista = (snapshot || {}).markets || [];
+    const enDom = lista.filter((m) => m.existsInDom);
+    const conLineas = enDom.filter((m) => (m.lines || []).length);
+    if (!enDom.length) return { texto: 'ninguno reconocido todavia', clase: 'oculto' };
+    return {
+      texto: `${enDom.length} detectado(s), ${conLineas.length} con lineas`,
+      clase: conLineas.length ? 'si' : 'oculto',
+    };
+  }
+
+  /** Errores agrupados, listos para pintar. Nunca la misma linea repetida. */
+  function describeErrors(snapshot) {
+    return ((snapshot || {}).errors || []).map((error) => {
+      const donde = error.rootKind
+        ? `${error.rootKind}${error.rootLabel ? ` (${redact(error.rootLabel)})` : ''}`
+        : (error.stage || 'general');
+      return `${error.type || '?'} / ${donde}  x${error.count ?? 1}\n    ${redact(error.message)}`;
+    });
+  }
+
   return { redact, redactDeep, formatClock, formatAge, buildTextReport, buildJsonReport,
-           describeHistoryEntry, suggestFileName };
+           describeHistoryEntry, suggestFileName, describeScanner, describeGamePart,
+           describeMarketsSummary, describeErrors };
 });
