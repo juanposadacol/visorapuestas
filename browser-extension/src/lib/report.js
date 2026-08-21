@@ -153,7 +153,24 @@
     if (snapshot.errors && snapshot.errors.length) {
       out.push('');
       out.push('ERRORES');
-      for (const error of snapshot.errors) out.push(`  ${formatClock(error.ts)} ${error.message}`);
+      // Agrupados por causa y raiz: "createTreeWalker / iframe  x43", no la
+      // misma frase cuarenta y tres veces.
+      for (const error of snapshot.errors) {
+        const donde = error.rootKind
+          ? `${error.rootKind}${error.rootLabel ? ` (${redact(error.rootLabel)})` : ''}`
+          : (error.stage || 'general');
+        out.push(`  ${formatClock(error.lastSeen ?? error.ts)} [${error.type || '?'}] ` +
+                 `${donde}  x${error.count ?? 1}`);
+        out.push(`    ${redact(error.message)}`);
+      }
+    }
+
+    if (snapshot.skippedRoots && snapshot.skippedRoots.length) {
+      out.push('');
+      out.push('RAICES OMITIDAS');
+      for (const raiz of snapshot.skippedRoots) {
+        out.push(`  ${raiz.kind} ${redact(raiz.label || '')}: ${raiz.reason}`);
+      }
     }
 
     return out.join('\n');
@@ -222,6 +239,8 @@
       })),
       history: snapshot.history,
       errors: snapshot.errors,
+      skippedRoots: snapshot.skippedRoots || [],
+      unstableRoots: snapshot.unstableRoots || [],
     });
   }
 

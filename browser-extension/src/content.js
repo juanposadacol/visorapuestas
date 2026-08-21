@@ -15,7 +15,7 @@
 
   const { text, markets, lines: linesLib, dedupe, visibility,
           scan: scanLib, options: optionsLib, payload: payloadLib,
-          gamestate: gamestateLib } = globalThis.VDIAG;
+          gamestate: gamestateLib, dom, errors: erroresLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -36,8 +36,21 @@
     gameMemory: null,
     history: [],
     environment: null,
-    errors: [],
+    //: Errores agrupados por causa y raiz, nunca una linea por ocurrencia.
+    errorLog: erroresLib.createErrorLog(),
+    //: Una raiz que falla sin parar descansa un rato; las sanas siguen.
+    breaker: erroresLib.createCircuitBreaker(),
+    skippedRoots: [],
   };
+
+  /** Anota un error agrupandolo. Devuelve la entrada, ya con su cuenta. */
+  function anotarError(detalle) {
+    return state.errorLog.record({ ...detalle, now: now() });
+  }
+
+  function mensajeDe(error) {
+    return String((error && error.message) || error || 'error sin mensaje');
+  }
 
   // ---------------------------------------------------------------- utilidades
 
@@ -50,37 +63,28 @@
     }
   }
 
-  /**
-   * Texto de un subarbol respetando la separacion entre celdas.
-   *
-   * NO se usa innerText a proposito: innerText devuelve cadena vacia para los
-   * elementos ocultos, y precisamente los mercados ocultos son el objeto de
-   * este diagnostico. textContent si los lee, pero pega todo junto, asi que se
-   * recorren los nodos de texto y se unen con salto de linea.
-   */
-  function extractText(element) {
-    if (!element) return '';
-    const partes = [];
-    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    let node = walker.nextNode();
-    while (node) {
-      const valor = (node.nodeValue || '').trim();
-      if (valor) partes.push(valor);
-      node = walker.nextNode();
-    }
-    return partes.join('\n');
-  }
+  // La lectura de texto vive en `lib/dom.js`: alli se resuelve el documento
+  // segun el TIPO de raiz (Document, Element, ShadowRoot, iframe) en vez de
+  // dar por hecho que existe `ownerDocument`, que para un Document es null.
+  const extractText = dom.extractText;
 
-  /** Hechos de visibilidad medidos sobre el DOM real. */
+  /**
+   * Hechos de visibilidad medidos sobre el DOM real.
+   *
+   * Se pregunta por `isConnected` y no por `document.contains(element)`: los
+   * nodos que viven dentro de un shadow root NO estan en `document.contains`,
+   * y darlos por desmontados hacia desaparecer mercados perfectamente vivos.
+   */
   function measureVisibility(element) {
-    const doc = element.ownerDocument;
-    if (!doc || !doc.contains(element)) {
+    const doc = dom.documentForNode(element);
+    const vista = doc && doc.defaultView;
+    if (!doc || !vista || element.isConnected === false) {
       return visibility.classifyVisibility({ detached: true });
     }
-    const estilo = doc.defaultView.getComputedStyle(element);
+    const estilo = vista.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    const alto = doc.defaultView.innerHeight || 0;
-    const ancho = doc.defaultView.innerWidth || 0;
+    const alto = vista.innerHeight || 0;
+    const ancho = vista.innerWidth || 0;
 
     // display:none en un ANCESTRO no aparece en el estilo calculado del hijo;
     // lo que si delata es que no genere ningun rectangulo.
@@ -168,54 +172,108 @@
     };
   }
 
+  /** describeElement protegido: un nodo que se desmonto no rompe el escaneo. */
+  function describirConCuidado(element, rootKind, rootLabel) {
+    try {
+      return describeElement(element);
+    } catch (error) {
+      anotarError({ stage: 'describe', rootKind, rootLabel, message: mensajeDe(error) });
+      return { tagName: '?', selector: '(no se pudo describir)', parentChain: [] };
+    }
+  }
+
   /**
    * Adaptador del DOM para el escaneo estructural.
    *
    * `text` usa textContent y NO innerText: innerText devuelve cadena vacia en
    * los elementos ocultos, y aqui hay que poder leerlos.
    */
-  const DOM_ADAPTER = {
-    children: (node) => Array.from(node.children || []),
-    text: (node) => extractText(node),
-    ownText: (node) => Array.from(node.childNodes || [])
-      .filter((n) => n.nodeType === 3)
-      .map((n) => (n.nodeValue || '').trim())
-      .filter(Boolean)
-      .join(' '),
-  };
+  const DOM_ADAPTER = dom.createAdapter();
 
   // ------------------------------------------------------- recorrido del DOM
 
-  /** Documento principal, shadow roots abiertos e iframes del mismo origen. */
+  //: Tope de raices que se recorren en un escaneo. BetPlay tiene una decena
+  //: larga entre shadow roots e iframes; el tope solo evita que una pagina
+  //: patologica bloquee la pestana.
+  const MAX_ROOTS = 60;
+
+  /** Clave estable de una raiz, para el cortacircuitos y el diagnostico. */
+  function rootKey(entrada) {
+    return `${entrada.kind}:${entrada.label}#${entrada.index}`;
+  }
+
+  /**
+   * Documento principal, shadow roots abiertos e iframes del mismo origen.
+   *
+   * Se descubre en anchura y ENTRANDO en cada raiz encontrada, porque BetPlay
+   * anida: hay shadow roots dentro de shadow roots e iframes colgando de un
+   * componente. Cada paso esta protegido: una raiz que se desmonta a mitad del
+   * descubrimiento se salta, y las demas se recogen igual.
+   */
   function collectRoots() {
-    const roots = [{ root: document, kind: 'document', label: 'principal' }];
+    const roots = [];
     const shadow = [];
     const frames = [];
+    const pendientes = [{ root: document, kind: 'document', label: 'principal' }];
+    const vistos = new Set();
 
-    const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
-    let node = walker.nextNode();
-    while (node) {
-      if (node.shadowRoot) {
-        shadow.push({ host: node.tagName.toLowerCase(), mode: 'open' });
-        roots.push({ root: node.shadowRoot, kind: 'shadow-root',
-                     label: node.tagName.toLowerCase() });
+    while (pendientes.length && roots.length < MAX_ROOTS) {
+      const entrada = pendientes.shift();
+      if (vistos.has(entrada.root)) continue;
+      vistos.add(entrada.root);
+      if (!dom.isUsableRoot(entrada.root)) {
+        // La raiz murio entre que se descubrio y que toco recorrerla. Es
+        // normal en una pagina viva: se anota y se sigue.
+        state.skippedRoots.push({ kind: entrada.kind, label: entrada.label,
+                                  reason: 'raiz sin documento vivo' });
+        continue;
       }
-      if (node.tagName === 'IFRAME') {
-        let accesible = false;
-        let doc = null;
+      entrada.index = roots.length;
+      entrada.key = rootKey(entrada);
+      roots.push(entrada);
+
+      const doc = dom.documentForNode(entrada.root);
+      let walker = null;
+      try {
+        walker = doc.createTreeWalker(entrada.root, dom.showElementFor(doc));
+      } catch (error) {
+        anotarError({ stage: 'roots', rootKind: entrada.kind,
+                      rootLabel: entrada.label, message: mensajeDe(error) });
+        continue;
+      }
+
+      let node = null;
+      try { node = walker.nextNode(); } catch (error) { node = null; }
+      while (node) {
         try {
-          doc = node.contentDocument;
-          accesible = !!doc;
+          if (node.shadowRoot) {
+            shadow.push({ host: node.tagName.toLowerCase(), mode: 'open' });
+            pendientes.push({ root: node.shadowRoot, kind: 'shadow-root',
+                              label: node.tagName.toLowerCase() });
+          }
+          if (node.tagName === 'IFRAME') {
+            let interno = null;
+            try {
+              interno = node.contentDocument;      // null si es de otro origen
+            } catch (error) {
+              interno = null;   // el navegador lo impide, y esta bien que lo haga
+            }
+            frames.push({
+              src: text.truncate(node.getAttribute('src') || '(sin src)', 120),
+              sameOrigin: !!interno,
+            });
+            if (interno) {
+              pendientes.push({ root: interno, kind: 'iframe',
+                                label: node.getAttribute('src') || 'iframe' });
+            }
+          }
         } catch (error) {
-          accesible = false;   // otro origen: el navegador lo impide, y esta bien
+          // Un nodo concreto que desaparecio: no corta el descubrimiento.
+          anotarError({ stage: 'roots', rootKind: entrada.kind,
+                        rootLabel: entrada.label, message: mensajeDe(error) });
         }
-        frames.push({ src: text.truncate(node.getAttribute('src') || '(sin src)', 120),
-                      sameOrigin: accesible });
-        if (accesible && doc) {
-          roots.push({ root: doc, kind: 'iframe', label: node.getAttribute('src') || 'iframe' });
-        }
+        try { node = walker.nextNode(); } catch (error) { node = null; }
       }
-      node = walker.nextNode();
     }
     return { roots, shadow, frames };
   }
@@ -253,24 +311,51 @@
 
   function scan() {
     const inicio = performance.now();
+    state.skippedRoots = [];
     const { roots, shadow, frames } = collectRoots();
     state.environment = detectEnvironment(shadow, frames);
 
     const encontrados = new Map();
     let cabecerasTotales = 0;
+    let raicesRecorridas = 0;
 
-    for (const { root, kind, label } of roots) {
+    for (const entrada of roots) {
+      const { root, kind, label, key } = entrada;
+      // Una raiz que ya fallo varias veces seguidas descansa un rato. Las
+      // demas siguen recorriendose con normalidad.
+      if (state.breaker.shouldSkip(key, now())) {
+        state.skippedRoots.push({ kind, label, reason: 'ROOT_UNSTABLE' });
+        continue;
+      }
+      if (!dom.isUsableRoot(root)) {
+        state.skippedRoots.push({ kind, label, reason: 'raiz sin documento vivo' });
+        continue;
+      }
+
       let registros = [];
       try {
         registros = scanLib.scanMarkets(root, DOM_ADAPTER, { identify: markets.identifyMarket });
+        state.breaker.success(key);
+        raicesRecorridas += 1;
       } catch (error) {
-        state.errors.push({ ts: now(), message: `escaneo: ${error.message}` });
+        // Una raiz rota NO tumba el escaneo global: se anota agrupado y se
+        // sigue con las demas.
+        anotarError({ stage: 'scan', rootKind: kind, rootLabel: label,
+                      message: mensajeDe(error) });
+        state.breaker.failure(key, now());
         continue;
       }
       cabecerasTotales += registros.length;
 
       for (const registro of registros) {
-        const visible = measureVisibility(registro.container);
+        let visible;
+        try {
+          visible = measureVisibility(registro.container);
+        } catch (error) {
+          anotarError({ stage: 'visibility', rootKind: kind, rootLabel: label,
+                        message: mensajeDe(error) });
+          continue;
+        }
         const clave = registro.key;
 
         const record = {
@@ -296,8 +381,8 @@
           rawLineCount: (registro.lines || []).length,
           duplicates: 0,
           unassigned: (registro.rejected || []).length,
-          debug: describeElement(registro.container),
-          headerDebug: describeElement(registro.container),
+          debug: describirConCuidado(registro.container, kind, label),
+          headerDebug: describirConCuidado(registro.container, kind, label),
         };
 
         const previo = encontrados.get(clave);
@@ -316,7 +401,7 @@
       state.gameDiagnostics = descubierto.diagnostics;
       state.gameMemory = descubierto.memory;
     } catch (error) {
-      state.errors.push({ ts: now(), message: `estado del partido: ${error.message}` });
+      anotarError({ stage: 'gamestate', message: mensajeDe(error) });
     }
 
     mergeIntoState(encontrados);
@@ -328,6 +413,8 @@
     state.scanCount += 1;
     state.lastScanMs = performance.now() - inicio;
     state.headerCount = cabecerasTotales;
+    state.rootCount = roots.length;
+    state.rootsScanned = raicesRecorridas;
   }
 
   /** Funde el resultado del escaneo con lo que ya se sabia, generando historial. */
@@ -439,7 +526,7 @@
       try {
         scan();
       } catch (error) {
-        state.errors.push({ ts: now(), message: String(error && error.message || error) });
+        anotarError({ stage: 'scan', message: mensajeDe(error) });
       }
       mutacionesDesdeElUltimoEscaneo = 0;
     }, RESCAN_DEBOUNCE_MS);
@@ -454,7 +541,7 @@
     try {
       scan();
     } catch (error) {
-      state.errors.push({ ts: now(), message: String(error && error.message || error) });
+      anotarError({ stage: 'scan', message: mensajeDe(error) });
     }
     observer.observe(document.documentElement, {
       childList: true,
@@ -495,7 +582,15 @@
       markets: Array.from(state.markets.values())
         .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key)),
       history: state.history.slice(-200),
-      errors: state.errors.slice(-20),
+      // Errores AGRUPADOS: una entrada por causa y raiz, con su cuenta. Antes
+      // se enviaba una linea por ocurrencia y el popup mostraba la misma
+      // frase cuarenta veces seguidas.
+      errors: state.errorLog.list().slice(0, 12),
+      activeErrors: state.errorLog.active(now()).length,
+      skippedRoots: state.skippedRoots.slice(0, 12),
+      unstableRoots: state.breaker.unstable(now()),
+      rootCount: state.rootCount || 0,
+      rootsScanned: state.rootsScanned || 0,
       gameState: state.gameState,
       gameDiagnostics: state.gameDiagnostics,
       payload: state.payload ? state.payload.payload : null,

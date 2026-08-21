@@ -16,6 +16,8 @@
         "https://*.betplay.com.co/*"
       ],
       "js": [
+        "src/lib/dom.js",
+        "src/lib/errors.js",
         "src/lib/text.js",
         "src/lib/markets.js",
         "src/lib/lines.js",

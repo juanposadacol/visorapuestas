@@ -10,7 +10,7 @@
  *
  * Sigue siendo de SOLO LECTURA respecto de BetPlay: aqui no se toca la pagina.
  */
-importScripts('lib/text.js', 'lib/markets.js', 'lib/lines.js', 'lib/dedupe.js',
+importScripts('lib/dom.js', 'lib/errors.js', 'lib/text.js', 'lib/markets.js', 'lib/lines.js', 'lib/dedupe.js',
               'lib/visibility.js', 'lib/options.js', 'lib/scan.js', 'lib/report.js',
               'lib/gamestate.js', 'lib/payload.js', 'lib/bridge_client.js');
 
