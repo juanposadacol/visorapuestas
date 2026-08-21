@@ -68,7 +68,7 @@
   function chooseVisibleMarket(records, minConfidence) {
     const minimo = minConfidence === undefined ? 0.9 : minConfidence;
     const candidatos = (records || []).filter(
-      (r) => r.isVisible && r.existsInDom && (r.lines || []).length &&
+      (r) => r.isVisible && r.existsInDom &&
              (r.confidence || 0) >= minimo);
     if (!candidatos.length) return null;
     candidatos.sort((a, b) => {
@@ -81,6 +81,35 @@
 
   //: Profundidad maxima al subir de la cabecera hacia el contenedor del mercado.
   const MAX_CLIMB = 8;
+
+  /**
+   * Unidad estructural fuerte que representa UNA oferta de mercado.
+   *
+   * Kambi agrupa cada oferta en un `li` cuya semantica contiene
+   * `bet-offer-subcategory`. Sus hermanos pueden ser handicap, ganador,
+   * margen, etc. Esos titulos no son candidatos de totales y por eso no
+   * siempre aparecen en `allHeaders`: depender solo de encontrar otra
+   * cabecera permitia subir al `ul` comun y absorberlos.
+   *
+   * Se reconoce la semantica, no una clase completa de una version concreta:
+   * `subcategory` es una frontera fuerte; tambien lo son bloques HTML de
+   * nivel oferta con un token exacto `market`/`bet-offer`. Clases internas
+   * como `market__options` no califican.
+   */
+  function isStrongMarketBoundary(node, adapter) {
+    if (!node) return false;
+    const attrs = String(adapter.attrText ? adapter.attrText(node) : '').toLowerCase();
+    const tag = String(node.tagName || '').toLowerCase();
+    // Clase base o modificador (`...subcategory--overunder`), pero NO un
+    // elemento BEM interno (`...subcategory__container`).
+    const subcategory = /(?:^|\s)[a-z0-9_-]*(?:bet[-_]?offer[-_]?subcategory|market[-_]?subcategory)(?:--[a-z0-9_-]+)?(?=\s|$)/;
+    if (subcategory.test(attrs)) return ['li', 'section', 'article', 'div'].includes(tag);
+
+    const block = ['li', 'section', 'article'].includes(tag);
+    if (!block) return false;
+    // Tokens de unidad exactos; no casan `market__options` ni `offer__title`.
+    return /(?:^|\s)(?:market|bet[-_]?offer)(?:--[a-z0-9_-]+)?(?=\s|$)/.test(attrs);
+  }
 
   /**
    * Cabeceras que nombran un mercado dentro de un arbol.
@@ -142,9 +171,14 @@
         break;
       }
       const resultado = extract(node);
-      if (resultado.lines.length > mejor.result.lines.length) {
+      const fronteraFuerte = isStrongMarketBoundary(node, adapter);
+      if (resultado.lines.length > mejor.result.lines.length ||
+          (fronteraFuerte && resultado.lines.length === mejor.result.lines.length)) {
         mejor = { container: node, result: resultado };
       }
+      // La unidad incluye titulo y opciones, asi que se procesa; lo que nunca
+      // se permite es subir a su padre y leer ofertas hermanas.
+      if (fronteraFuerte) break;
     }
     return mejor;
   }
@@ -241,6 +275,7 @@
   }
 
   return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket,
+           isStrongMarketBoundary,
            findMarketHeaders, findMarketContainer, findSectionKey, firstLeafText,
            scanMarkets, descendants };
 });

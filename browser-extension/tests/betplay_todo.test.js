@@ -195,6 +195,64 @@ test('K. el handicap no entra como total', () => {
   assert.equal(marketsLib.identifyMarket('Hándicap - Prórroga incluida').key, 'UNKNOWN');
 });
 
+test('Kambi real: cada li de subcategoria limita fisicamente GAME_TOTAL', () => {
+  const doc = createDocument();
+  const submercado = (clase, titulo, opciones) => el(doc, 'li', {
+    class: `KambiBC-bet-offer-subcategory ${clase}`,
+  }, [el(doc, 'div', { class: 'KambiBC-bet-offer-subcategory__container' }, [
+    el(doc, 'h3', {}, [titulo]),
+    el(doc, 'div', { class: 'KambiBC-bet-offer-subcategory__outcomes-list' }, opciones),
+  ])]);
+
+  const totales = [];
+  for (const [linea, over, under] of [
+    ['195.5', '1.67', '2.00'],
+    ['196.5', '1.87', '1.82'],
+    ['197.5', '2.06', '1.62'],
+  ]) {
+    totales.push(opcion(doc, `Más de ${linea}`, over));
+    totales.push(opcion(doc, `Menos de ${linea}`, under));
+  }
+
+  doc.body.appendChild(el(doc, 'section', { class: 'markets-group' }, [
+    el(doc, 'h2', {}, ['PARTIDO']),
+    el(doc, 'ul', { class: 'KambiBC-bet-offer-category__subcategories' }, [
+      submercado('KambiBC-bet-offer-subcategory--overunder',
+                 'Total de puntos - Prórroga incluida', totales),
+      submercado('KambiBC-bet-offer-subcategory--handicap',
+                 'Hándicap de Puntos - Prórroga incluida', [
+                   opcion(doc, 'Alemania -31.5', '2.12'),
+                   opcion(doc, 'Alemania -30.5', '1.90'),
+                   opcion(doc, 'Alemania -29.5', '1.67'),
+                   opcion(doc, 'República Checa +31.5', '1.60'),
+                   opcion(doc, 'República Checa +30.5', '1.81'),
+                   opcion(doc, 'República Checa +29.5', '2.02'),
+                 ]),
+      submercado('winner', 'Ganador del cuarto', [opcion(doc, 'Alemania', '1.40')]),
+      submercado('margin', 'Margen de victoria', [opcion(doc, '26-30', '3.50')]),
+      submercado('unsupported', 'Mercado especial no soportado', [
+        opcion(doc, 'Más de 88.5', '1.75'),
+      ]),
+    ]),
+  ]));
+
+  const registro = escanear(doc.body).get('GAME_TOTAL');
+  assert.ok(registro, 'se reconoce el total del partido');
+  assert.deepEqual(registro.lines.map((l) => [l.line, l.overOdds, l.underOdds]), [
+    [195.5, 1.67, 2.00],
+    [196.5, 1.87, 1.82],
+    [197.5, 2.06, 1.62],
+  ]);
+  for (const imposible of [29.5, 30.5, 31.5, 88.5]) {
+    assert.ok(!registro.lines.some((linea) => linea.line === imposible),
+              `${imposible} pertenece a otra oferta y no puede cruzar el li`);
+  }
+  assert.match(String(registro.container.className), /bet-offer-subcategory/);
+  assert.equal(registro.container.tagName, 'LI', 'la frontera es la oferta, no su container interno');
+  assert.ok(!/category__subcategories/.test(String(registro.container.className)),
+            'el contenedor nunca sube al ul de ofertas hermanas');
+});
+
 // ------------------------------------------------------------- la vista TODO
 
 test('M. TODO con PARTIDO, SECOND HALF y Q4 abiertos: los tres a la vez', () => {
