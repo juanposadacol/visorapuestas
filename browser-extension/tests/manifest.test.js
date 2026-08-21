@@ -72,7 +72,7 @@ test('todos los ficheros que declara el manifest existen', () => {
 test('el popup carga las mismas librerias que usa', () => {
   const html = fs.readFileSync(path.join(RAIZ, manifest.action.default_popup), 'utf8');
   for (const libreria of ['dom.js', 'errors.js', 'text.js', 'markets.js', 'report.js',
-                          'gamestate.js', 'structure.js', 'payload.js']) {
+                          'scoreboard.js', 'gamestate.js', 'structure.js', 'payload.js']) {
     assert.match(html, new RegExp(`lib/${libreria.replace('.', '\\.')}`),
                  `el popup no carga ${libreria}`);
   }

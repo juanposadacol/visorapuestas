@@ -15,7 +15,7 @@ const { createDocument, el } = require('./fake_dom.js');
 
 const RAIZ = path.join(__dirname, '..');
 const LIBS = ['dom', 'errors', 'text', 'markets', 'lines', 'dedupe', 'visibility',
-              'options', 'scan', 'report', 'gamestate', 'structure', 'payload',
+              'options', 'scan', 'report', 'scoreboard', 'gamestate', 'structure', 'payload',
               'bridge_client'];
 
 function opcion(doc, etiqueta, cuota) {
@@ -179,8 +179,10 @@ test('el marcador del scoreboard viaja dentro del payload', () => {
   const c = montarContenido(doc);
 
   const ultimo = c.payloads().pop();
-  assert.deepEqual(ultimo.payload.gameState,
-                   { clock: '06:42', period: 4, scoreA: 56, scoreB: 69 });
+  assert.deepEqual(ultimo.payload.gameState, {
+    clock: '06:42', clockRaw: '06:42', clockSemantics: 'PERIOD_REMAINING',
+    period: 4, scoreA: 56, scoreB: 69,
+  });
 });
 
 test('un marcador dudoso NO bloquea el envio del mercado', () => {
@@ -251,8 +253,10 @@ test('S. cambiar de mercado sin cambiar de partido conserva el contexto', () => 
   assert.equal(estado.eventId, '111111111', 'sigue siendo el mismo partido');
   assert.deepEqual(estado.markets.map((m) => m.key).sort(),
                    ['GAME_TOTAL', 'Q4_TOTAL'], 'los dos mercados a la vez');
-  assert.deepEqual(estado.gameState, { clock: '06:42', period: 4, scoreA: 56, scoreB: 69 },
-                   'y el marcador no se pierde');
+  assert.deepEqual(estado.gameState, {
+    clock: '06:42', clockRaw: '06:42', clockSemantics: 'PERIOD_REMAINING',
+    period: 4, scoreA: 56, scoreB: 69,
+  }, 'y el marcador no se pierde');
 });
 
 test('T. al cambiar de partido se olvida todo lo del anterior', () => {

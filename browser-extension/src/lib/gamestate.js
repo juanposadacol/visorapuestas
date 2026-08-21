@@ -33,11 +33,12 @@
  */
 (function (root, factory) {
   const api = factory(
-    typeof require === 'function' ? require('./text.js') : root.VDIAG.text
+    typeof require === 'function' ? require('./text.js') : root.VDIAG.text,
+    typeof require === 'function' ? require('./scoreboard.js') : root.VDIAG.scoreboard
   );
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.VDIAG = Object.assign(root.VDIAG || {}, { gamestate: api });
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (text) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (text, scoreboardLib) {
   'use strict';
 
   const CLOCK_RE = /^(\d{1,2}):([0-5]\d)$/;
@@ -53,8 +54,17 @@
 
   //: Un contenedor que se declara marcador / cabecera del evento.
   const SCOREBOARD_HINTS = /\b(scoreboard|score-?board|scoreheader|marcador|tanteo|resultado|match-?header|event-?header|game-?header|live-?header|score-?panel|scores?)\b|score|marcador/;
-  //: Un numero que se declara puntuacion.
-  const SCORE_VALUE_HINTS = /\b(score|puntos|points|tanteo|marcador|result)\b|score/;
+  /**
+   * Un numero que se declara puntuacion.
+   *
+   * OJO con el limite de palabra final: la version anterior terminaba en
+   * `|score`, y eso hacia que "kambibc-scoreboard-grid-item" —una celda de
+   * PARCIAL— contase como "declarado puntuacion", porque "scoreboard" contiene
+   * "score". Ahora se exige que "score" termine ahi: `-score\b` casa con
+   * "grid-score" y NO con "scoreboard".
+   */
+  const SCORE_VALUE_HINTS =
+    /\b(score|scores|puntos|points|tanteo|marcador|result|resultado)\b|-score\b|\bscore-/;
   //: Nombres de equipo: atributos que los identifican.
   const TEAM_HINTS = /\b(team|equipo|participant|competitor|home|away|local|visitante|opponent|contender)\b|team|equipo/;
   //: Bloques de APUESTAS. Un numero aqui dentro no es un marcador.
@@ -356,12 +366,33 @@
       const comun = sharedAncestor(a, b, 4);
       if (!comun) continue;
 
+      // ------------------------------------------------ imposibles, no dudosos
+      //
+      // Estas dos no son penalizaciones: son parejas que NO PUEDEN ser un
+      // marcador, y penalizarlas dejaria la puerta abierta a que otra suma de
+      // bonos las colase. En la prueba real sobre BetPlay/Kambi el par elegido
+      // fue exactamente el primero de los dos casos: el TOTAL de un equipo con
+      // el parcial del primer cuarto del otro.
+      const totalA = scoreboardLib.isTotalCell(a.node, adapter);
+      const totalB = scoreboardLib.isTotalCell(b.node, adapter);
+      const parcialA = scoreboardLib.isPartialCell(a.node, adapter);
+      const parcialB = scoreboardLib.isPartialCell(b.node, adapter);
+
+      // 1. TOTAL de un equipo con PARCIAL del otro.
+      if ((totalA && parcialB) || (parcialA && totalB)) continue;
+
+      // 2. Dos PARCIALES de equipos distintos: son el Qx de uno y el Qy del
+      //    otro, nunca el marcador.
+      const equipoA = equipoDe(a, hojas, adapter);
+      const equipoB = equipoDe(b, hojas, adapter);
+      if (parcialA && parcialB && equipoA && equipoB && equipoA.name !== equipoB.name) {
+        continue;
+      }
+
       const razones = [];
       //: Base baja a proposito: la proximidad sola no confirma nada.
       let confianza = 0.15;
 
-      const equipoA = equipoDe(a, hojas, adapter);
-      const equipoB = equipoDe(b, hojas, adapter);
       if (equipoA && equipoB && equipoA.name !== equipoB.name) {
         confianza += 0.35;
         razones.push(`equipos asociados: ${equipoA.name} / ${equipoB.name}`);
@@ -425,9 +456,11 @@
         raw: `${a.text}-${b.text}`,
         value: { scoreA: a.value, scoreB: b.value },
         teams: equipoA && equipoB ? [equipoA.name, equipoB.name] : null,
-        //: Evidencia fuerte = se puede confirmar en una sola lectura.
+        //: Evidencia fuerte = se puede confirmar en una sola lectura. Una
+        //: celda de parcial nunca cuenta como evidencia fuerte, por muchos
+        //: otros indicios que la acompanen.
         strong: !!(equipoA && equipoB && equipoA.name !== equipoB.name) &&
-                (marcadorA && marcadorB),
+                (marcadorA && marcadorB) && !parcialA && !parcialB,
         confidence: acotar(confianza),
         reasons: razones,
       });
@@ -658,12 +691,111 @@
   //: MM:SS de un banner o el cuarto de un mercado futuro no valen.
   const UMBRAL_CONTEXTO = 0.6;
 
+  // ------------------------------------------------------ semantica del reloj
+  //
+  // No todas las casas muestran lo mismo en el reloj del marcador. BetPlay/
+  // Kambi mostro "Q4 • 33:52" en un partido de baloncesto: 33:52 NO puede ser
+  // el restante de un cuarto, porque ningun cuarto dura tanto.
+  //
+  // La aplicacion espera `clock` = RESTANTE DEL CUARTO ACTUAL (es lo que usa
+  // `elapsed_period_seconds = duracion - restante`). Convertir un acumulado a
+  // restante exige saber cuanto dura un cuarto y cuantos van, y eso lo sabe
+  // GameRules, que vive en Python. La extension no lo sabe y no lo inventa:
+  // manda lo que observo mas su semantica, y Python convierte.
+
+  const CLOCK_SEMANTICS = {
+    //: Cuenta atras del cuarto en curso. Es lo que la aplicacion usa tal cual.
+    PERIOD_REMAINING: 'PERIOD_REMAINING',
+    //: Tiempo de juego acumulado del partido. Python lo convierte con sus reglas.
+    GAME_ELAPSED: 'GAME_ELAPSED',
+    //: No se ha podido determinar. No se publica reloj.
+    UNKNOWN: 'UNKNOWN',
+  };
+
+  //: Ningun cuarto dura mas de esto en ninguna competicion habitual, asi que
+  //: por encima el valor NO puede ser el restante de un cuarto.
+  const MAX_QUARTER_SECONDS = 12 * 60;
+
+  /**
+   * Que representa el reloj observado, decidido por EVIDENCIA y no por fe.
+   *
+   * Un valor que cabe en un cuarto se lee como restante: es lo que hacen las
+   * casas de forma abrumadoramente mayoritaria y es el comportamiento que ya
+   * teniamos. Un valor que NO cabe solo puede ser un acumulado, pero eso hay
+   * que verlo: un acumulado SUBE. Hasta tener dos lecturas que lo demuestren,
+   * la respuesta es UNKNOWN y no se publica reloj.
+   */
+  function decideClockSemantics(segundos, previa) {
+    const cabeEnUnCuarto = segundos <= MAX_QUARTER_SECONDS;
+    const anterior = previa && Number.isFinite(previa.rawSeconds) ? previa : null;
+
+    if (!anterior) {
+      return cabeEnUnCuarto ? CLOCK_SEMANTICS.PERIOD_REMAINING : CLOCK_SEMANTICS.UNKNOWN;
+    }
+    if (segundos === anterior.rawSeconds) {
+      // Reloj parado: no aporta informacion nueva, se mantiene lo que habia.
+      return anterior.semantics ||
+        (cabeEnUnCuarto ? CLOCK_SEMANTICS.PERIOD_REMAINING : CLOCK_SEMANTICS.UNKNOWN);
+    }
+
+    const sube = segundos > anterior.rawSeconds;
+    if (!cabeEnUnCuarto) {
+      // Mas de un cuarto: solo puede ser un acumulado, y un acumulado sube.
+      // Si baja, es un contador de otra cosa y no se toca.
+      return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.UNKNOWN;
+    }
+    if (anterior.semantics === CLOCK_SEMANTICS.GAME_ELAPSED) {
+      // Venia siendo acumulado y de golpe cabe en un cuarto: cambio de partido
+      // o de maquetacion. No se arrastra la lectura anterior.
+      return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.UNKNOWN;
+    }
+    // Baja con normalidad, o sube al empezar un cuarto nuevo.
+    return CLOCK_SEMANTICS.PERIOD_REMAINING;
+  }
+
+  function formatClock(segundos) {
+    const minutos = Math.floor(segundos / 60);
+    const resto = segundos % 60;
+    return `${String(minutos).padStart(2, '0')}:${String(resto).padStart(2, '0')}`;
+  }
+
+  /**
+   * Convierte una observacion del reloj en lo que se publica.
+   *
+   * `clock` solo se rellena cuando la lectura ES el restante del cuarto. En
+   * cualquier otro caso viaja el valor crudo con su semantica y decide Python,
+   * que es quien conoce las reglas de la competicion.
+   */
+  function resolveClock(observacion, previa) {
+    if (!observacion) return null;
+    const semantica = decideClockSemantics(observacion.seconds, previa);
+    const salida = {
+      raw: observacion.raw,
+      rawSeconds: observacion.seconds,
+      semantics: semantica,
+      source: observacion.source || 'heuristic',
+      value: null,
+    };
+    if (semantica === CLOCK_SEMANTICS.PERIOD_REMAINING) {
+      salida.value = formatClock(observacion.seconds);
+    }
+    return salida;
+  }
+
   /** Candidatos de una raiz, sin decidir nada todavia. */
   function collectCandidates(root, adapter, previous) {
     const anterior = previous || {};
     // Un solo recorrido del arbol para los tres, no uno por cada uno.
     const cache = new Map();
+    let estructural = null;
+    try {
+      const leido = scoreboardLib.readScoreboard(root, adapter);
+      if (leido && leido.found) estructural = leido;
+    } catch (error) {
+      estructural = null;      // el arbol cambio: se sigue con la heuristica
+    }
     return {
+      structured: estructural ? [estructural] : [],
       clock: findClockCandidates(root, adapter, cache),
       period: findPeriodCandidates(root, adapter, cache),
       score: findScoreCandidates(root, adapter, anterior.score, cache),
@@ -688,7 +820,7 @@
    * respuesta es "no se sabe", no "la primera que aparezca".
    */
   function extractGameStateFromRoots(roots, adapter, previous) {
-    const todos = { clock: [], period: [], score: [] };
+    const todos = { structured: [], clock: [], period: [], score: [] };
     for (const root of roots || []) {
       if (!root) continue;
       let parciales;
@@ -697,6 +829,7 @@
       } catch (error) {
         continue;      // una raiz rota no deja sin marcador a las demas
       }
+      todos.structured.push(...parciales.structured);
       todos.clock.push(...parciales.clock);
       todos.period.push(...parciales.period);
       todos.score.push(...parciales.score);
@@ -704,23 +837,98 @@
     return decide(todos, previous);
   }
 
+  /**
+   * De todas las lecturas estructurales, la unica utilizable.
+   *
+   * Si dos raices distintas dicen cosas distintas, no se elige a dedo: se
+   * renuncia y manda la heuristica, que ya sabe callarse ante la ambiguedad.
+   */
+  function elegirEstructural(lecturas) {
+    const utiles = (lecturas || []).filter((l) => l && l.found && l.score);
+    if (utiles.length !== 1) {
+      if (utiles.length > 1) {
+        const distintas = new Set(utiles.map((l) => `${l.score.scoreA}-${l.score.scoreB}`));
+        if (distintas.size === 1) return utiles[0];    // la misma, duplicada
+      }
+      return null;
+    }
+    return utiles[0];
+  }
+
   function decide(candidatos, previous) {
     const anterior = previous || {};
 
-    const reloj = pickBest(candidatos.clock, anterior.clock,
-                           clockValidator, UMBRAL_CONTEXTO);
-    const cuarto = pickBest(candidatos.period,
-                            anterior.period ? anterior.period.value : null,
-                            periodValidator, UMBRAL_CONTEXTO);
-    const lecturaMarcador = pickBest(candidatos.score, anterior.score, scoreValidator, 0);
+    // ------------------------------------------------ 1. lectura estructural
+    //
+    // Cuando la casa marca su marcador con semantica —una celda declarada
+    // TOTAL por equipo, un bloque de reloj identificable— no hay nada que
+    // estimar. Esa lectura MANDA sobre los candidatos genericos, que existen
+    // para las casas que no dan esa evidencia.
+    const estructural = elegirEstructural(candidatos.structured);
+
+    // -------------------------------------------------------------- 2. reloj
+    let observacionReloj = null;
+    if (estructural && estructural.clock) {
+      observacionReloj = { ...estructural.clock, source: 'structural' };
+    }
+    const relojHeuristico = pickBest(candidatos.clock, anterior.clock,
+                                     clockValidator, UMBRAL_CONTEXTO);
+    if (!observacionReloj && relojHeuristico.value) {
+      observacionReloj = { raw: relojHeuristico.value,
+                           seconds: secondsOf(relojHeuristico.value),
+                           source: 'heuristic' };
+    }
+    const reloj = resolveClock(observacionReloj, anterior.clock);
+
+    // ------------------------------------------------------------- 3. cuarto
+    const cuartoHeuristico = pickBest(candidatos.period,
+                                      anterior.period ? anterior.period.value : null,
+                                      periodValidator, UMBRAL_CONTEXTO);
+    const cuarto = estructural && estructural.period !== null &&
+                   estructural.period !== undefined
+      ? { value: estructural.period, confidence: 1, reason: '',
+          raw: `Q${estructural.period}`,
+          reasons: ['cuarto leido del bloque de estado del marcador'] }
+      : cuartoHeuristico;
+
+    // ----------------------------------------------------------- 4. marcador
+    let lecturaMarcador;
+    if (estructural) {
+      lecturaMarcador = {
+        value: estructural.score,
+        confidence: 1,
+        reason: '',
+        raw: `${estructural.score.scoreA}-${estructural.score.scoreB}`,
+        strong: true,
+        structural: true,
+        reasons: estructural.reasons,
+        warnings: estructural.warnings,
+        teams: estructural.teams,
+        node: estructural.container || null,
+      };
+    } else {
+      lecturaMarcador = pickBest(candidatos.score, anterior.score, scoreValidator, 0);
+    }
+    // La estabilizacion se aplica IGUAL a la lectura estructural: leer bien la
+    // estructura no autoriza a aceptar un retroceso imposible sin revisarlo.
     const marcador = stabilizeScore(lecturaMarcador, anterior.score);
 
     const estado = {};
-    if (reloj.value) estado.clock = reloj.value;
+    if (reloj && reloj.value) estado.clock = reloj.value;
+    if (reloj && reloj.raw && reloj.semantics !== CLOCK_SEMANTICS.UNKNOWN) {
+      // El valor crudo viaja SIEMPRE que se sepa que representa: es lo que
+      // permite a Python convertirlo con las reglas de la competicion.
+      estado.clockRaw = reloj.raw;
+      estado.clockSemantics = reloj.semantics;
+    }
     if (cuarto.value) estado.period = cuarto.value;
     if (marcador.confirmed && marcador.value) {
       estado.scoreA = marcador.value.scoreA;
       estado.scoreB = marcador.value.scoreB;
+    }
+    if (estructural && estructural.teams) {
+      estado.teamA = String(estructural.teams[0]).slice(0, 60);
+      estado.teamB = String(estructural.teams[1]).slice(0, 60);
     }
 
     return {
@@ -731,8 +939,14 @@
       // nodo del DOM no se puede serializar. Aqui solo se guardan para poder
       // copiar la estructura del marcador desde el popup.
       nodes: { score: lecturaMarcador.node || null },
+      structured: !!estructural,
       diagnostics: {
-        clock: sinNodo(reloj),
+        clock: reloj
+          ? { value: reloj.value, raw: reloj.raw, semantics: reloj.semantics,
+              source: reloj.source, confidence: reloj.value ? 1 : 0,
+              reason: reloj.semantics === CLOCK_SEMANTICS.UNKNOWN
+                ? 'semantica del reloj sin determinar' : '' }
+          : sinNodo(relojHeuristico),
         period: sinNodo(cuarto),
         score: {
           ...sinNodo(lecturaMarcador),
@@ -745,7 +959,13 @@
         underReview: marcador.status === 'UNDER_REVIEW',
       },
       memory: {
-        clock: reloj.value ? { seconds: secondsOf(reloj.value), value: reloj.value } : anterior.clock,
+        // Se recuerda el valor CRUDO y su semantica, no solo lo publicado: es
+        // lo que permite decidir en la siguiente lectura si el reloj sube
+        // (acumulado) o baja (restante).
+        clock: reloj
+          ? { seconds: reloj.value ? secondsOf(reloj.value) : null, value: reloj.value,
+              raw: reloj.raw, rawSeconds: reloj.rawSeconds, semantics: reloj.semantics }
+          : anterior.clock,
         period: cuarto.value ? { value: cuarto.value } : anterior.period,
         score: {
           value: marcador.value,
@@ -776,7 +996,9 @@
     return match ? Number(match[1]) * 60 + Number(match[2]) : null;
   }
 
-  return { CLOCK_RE, MAX_SCORE, MAX_JUMP, UMBRAL_INICIAL, UMBRAL_REPETIDO,
+  return { CLOCK_RE, MAX_SCORE, MAX_JUMP, CLOCK_SEMANTICS, MAX_QUARTER_SECONDS,
+           decideClockSemantics, resolveClock, elegirEstructural,
+           UMBRAL_INICIAL, UMBRAL_REPETIDO,
            UMBRAL_CONTINUACION,
            REPETICIONES, pareceNombreDeEquipo, periodoDe, continuaDe,
            findClockCandidates, findPeriodCandidates, findScoreCandidates,

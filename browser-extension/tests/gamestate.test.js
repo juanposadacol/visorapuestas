@@ -53,7 +53,15 @@ function conCuerpo(construir) {
 test('F. un marcador dentro de un scoreboard semantico se acepta a la primera', () => {
   const raiz = conCuerpo((doc, body) => body.appendChild(scoreboard(doc)));
   const r = gs.extractGameState(raiz, A, null);
-  assert.deepEqual(r.gameState, { clock: '06:42', period: 3, scoreA: 56, scoreB: 69 });
+  assert.deepEqual(r.gameState, {
+    clock: '06:42',
+    // El valor crudo y su semantica viajan siempre: es lo que permite a Python
+    // convertir cuando la casa no muestra el restante del cuarto.
+    clockRaw: '06:42',
+    clockSemantics: 'PERIOD_REMAINING',
+    period: 3, scoreA: 56, scoreB: 69,
+  });
+  assert.equal(r.structured, false, 'esta maquetacion no marca celdas de total');
   assert.equal(r.diagnostics.score.status, 'CONFIRMED');
   assert.deepEqual(r.diagnostics.score.teams, ['Las Vegas Aces', 'Atlanta Dream']);
 });
@@ -328,7 +336,8 @@ test('un estado parcial se envia solo con lo que se sabe', () => {
       el(doc, 'span', { class: 'clock' }, ['06:24']),
     ]));
   });
-  assert.deepEqual(gs.extractGameState(raiz, A, null).gameState, { clock: '06:24' });
+  assert.deepEqual(gs.extractGameState(raiz, A, null).gameState,
+                   { clock: '06:24', clockRaw: '06:24', clockSemantics: 'PERIOD_REMAINING' });
 });
 
 test('marcador sin reloj tambien es un estado valido', () => {
@@ -390,4 +399,133 @@ test('el marcador se valida por forma, y la memoria decide lo demas', () => {
   assert.ok(gs.scoreValidator({ value: { scoreA: 60, scoreB: 52 } }, null));
   assert.ok(!gs.scoreValidator({ value: { scoreA: 999, scoreB: 52 } }, null));
   assert.ok(!gs.scoreValidator({ value: { scoreA: 1.5, scoreB: 52 } }, null));
+});
+
+// ============================================================================
+// El marcador estructural de BetPlay/Kambi manda sobre la heuristica
+// ============================================================================
+//
+// Prueba real: la extension publico `76-22` como CONFIRMED. 76 era el total de
+// un equipo y 22 el parcial del PRIMER cuarto del otro. Lo que fallaba no eran
+// los pesos, sino el modelo: se emparejaban numeros consecutivos en orden de
+// documento, y el par correcto (76, 69) ni siquiera se generaba.
+
+const { scoreboardKambi, documentoConScoreboard } = require('./kambi_fixture.js');
+
+test('K. el scoreboard de Kambi se lee 76-69 y se confirma a la primera', () => {
+  const doc = documentoConScoreboard();
+  const r = gs.extractGameState(doc.body, A, null);
+
+  assert.equal(r.structured, true, 'gana la lectura estructural');
+  assert.equal(r.gameState.scoreA, 76);
+  assert.equal(r.gameState.scoreB, 69);
+  assert.equal(r.diagnostics.score.status, 'CONFIRMED');
+  assert.equal(r.gameState.teamA, 'Dallas Wings (F)');
+  assert.equal(r.gameState.teamB, 'Indiana Fever (F)');
+});
+
+test('K. 76-22 NO puede salir jamas, ni como candidato', () => {
+  const doc = documentoConScoreboard();
+
+  // 1. La heuristica general ya no genera esa pareja: mezcla el TOTAL de un
+  //    equipo con el PARCIAL del otro, y eso es imposible, no improbable.
+  const genericos = gs.findScoreCandidates(doc.body, A, null);
+  assert.ok(!genericos.some((c) => c.raw === '76-22'),
+            `no puede haber candidato 76-22: ${genericos.map((c) => c.raw).join(', ')}`);
+  assert.ok(genericos.every((c) => !c.strong),
+            'ninguna pareja generica de esta rejilla es evidencia fuerte');
+
+  // 2. Y lo publicado es el marcador de verdad, no el falso.
+  let memoria = null;
+  for (let i = 0; i < 5; i += 1) {
+    const r = gs.extractGameState(doc.body, A, memoria);
+    memoria = r.memory;
+    assert.notEqual(`${r.gameState.scoreA}-${r.gameState.scoreB}`, '76-22');
+    assert.equal(r.gameState.scoreA, 76);
+    assert.equal(r.gameState.scoreB, 69);
+  }
+});
+
+test('K. el cuarto sale del bloque de estado, no de los mercados', () => {
+  const doc = documentoConScoreboard();
+  // Un mercado del Q2 en la misma pagina no puede mandar sobre el marcador.
+  doc.body.appendChild(el(doc, 'div', { class: 'market-list' }, [
+    el(doc, 'div', { class: 'market__header' }, ['Total de puntos - Cuarto 2']),
+  ]));
+  const r = gs.extractGameState(doc.body, A, null);
+  assert.equal(r.gameState.period, 4);
+});
+
+test('K. un marcador estructural que retrocede sigue pasando por revision', () => {
+  const primero = gs.extractGameState(documentoConScoreboard().body, A, null);
+  assert.equal(primero.gameState.scoreA, 76);
+
+  // Leer bien la estructura no autoriza a aceptar un imposible.
+  const retroceso = documentoConScoreboard({ totalA: 40, parcialesA: [10, 10, 10, 10] });
+  const segundo = gs.extractGameState(retroceso.body, A, primero.memory);
+  assert.equal(segundo.gameState.scoreA, 76, 'se conserva el anterior');
+  assert.equal(segundo.diagnostics.score.status, 'UNDER_REVIEW');
+});
+
+test('K. sin celdas de total marcadas, la heuristica vuelve a tomar el mando', () => {
+  const doc = documentoConScoreboard({ claseTotal: 'KambiBC-scoreboard-grid-item' });
+  const r = gs.extractGameState(doc.body, A, null);
+  assert.equal(r.structured, false);
+  // Y sin esa evidencia prefiere callarse antes que emparejar parciales.
+  assert.equal(r.gameState.scoreA, undefined);
+  assert.equal(r.gameState.scoreB, undefined);
+});
+
+// ----------------------------------------------------- semantica del reloj
+
+test('R. 33:52 no puede ser el restante de un cuarto: primero UNKNOWN', () => {
+  const doc = documentoConScoreboard();
+  const r = gs.extractGameState(doc.body, A, null);
+  assert.equal(r.gameState.clock, undefined, 'no se publica un reloj sin semantica');
+  assert.equal(r.gameState.clockRaw, undefined);
+  assert.equal(r.diagnostics.clock.semantics, 'UNKNOWN');
+  assert.match(r.diagnostics.clock.reason, /semantica del reloj sin determinar/);
+});
+
+test('R. cuando se ve SUBIR, queda claro que es tiempo acumulado del partido', () => {
+  let memoria = gs.extractGameState(documentoConScoreboard().body, A, null).memory;
+  const segundo = gs.extractGameState(documentoConScoreboard({ reloj: '33:53' }).body,
+                                      A, memoria);
+
+  assert.equal(segundo.diagnostics.clock.semantics, 'GAME_ELAPSED');
+  assert.equal(segundo.gameState.clockRaw, '33:53');
+  assert.equal(segundo.gameState.clockSemantics, 'GAME_ELAPSED');
+  // La extension NO convierte: no sabe si el cuarto dura 10 o 12 minutos.
+  assert.equal(segundo.gameState.clock, undefined,
+               'convertir sin conocer las reglas seria inventar');
+});
+
+test('R. un reloj que cabe en un cuarto se sigue leyendo como restante', () => {
+  const doc = documentoConScoreboard({ periodo: 'Q4', reloj: '06:08' });
+  const r = gs.extractGameState(doc.body, A, null);
+  assert.equal(r.gameState.clock, '06:08');
+  assert.equal(r.gameState.clockSemantics, 'PERIOD_REMAINING');
+});
+
+test('R. un contador largo que BAJA no se publica: no es tiempo jugado', () => {
+  let memoria = gs.extractGameState(documentoConScoreboard({ reloj: '33:52' }).body,
+                                    A, null).memory;
+  const segundo = gs.extractGameState(documentoConScoreboard({ reloj: '33:51' }).body,
+                                      A, memoria);
+  assert.equal(segundo.diagnostics.clock.semantics, 'UNKNOWN');
+  assert.equal(segundo.gameState.clockRaw, undefined);
+});
+
+test('R. la semantica se decide por evidencia, no por el primer valor visto', () => {
+  const S = gs.CLOCK_SEMANTICS;
+  assert.equal(gs.decideClockSemantics(6 * 60 + 8, null), S.PERIOD_REMAINING);
+  assert.equal(gs.decideClockSemantics(33 * 60 + 52, null), S.UNKNOWN);
+
+  const previa = { rawSeconds: 33 * 60 + 52, semantics: S.UNKNOWN };
+  assert.equal(gs.decideClockSemantics(33 * 60 + 53, previa), S.GAME_ELAPSED);
+  assert.equal(gs.decideClockSemantics(33 * 60 + 51, previa), S.UNKNOWN);
+
+  // Reloj parado: no aporta nada nuevo, se conserva lo que ya se sabia.
+  const acumulado = { rawSeconds: 2032, semantics: S.GAME_ELAPSED };
+  assert.equal(gs.decideClockSemantics(2032, acumulado), S.GAME_ELAPSED);
 });
