@@ -86,6 +86,24 @@ test('la firma cambia cuando cambia una cuota', () => {
   assert.equal(payloadSignature(a), payloadSignature(payloadValido()));
 });
 
+test('el marcador y los parciales en vivo forman parte de la firma', () => {
+  const team = (q3, total) => ({
+    name: 'Baréin', total, periods: { Q1: 21, Q2: 25, Q3: q3, Q4: 0 },
+  });
+  const a = payloadValido({ gameState: {
+    scoreA: 65, scoreB: 47, teamA: team(19, 65),
+    teamB: { name: 'Arabia Saudí', total: 47,
+      periods: { Q1: 26, Q2: 18, Q3: 3, Q4: 0 } },
+  } });
+  const b = payloadValido({ gameState: {
+    scoreA: 67, scoreB: 47, teamA: team(21, 67),
+    teamB: { name: 'Arabia Saudí', total: 47,
+      periods: { Q1: 26, Q2: 18, Q3: 3, Q4: 0 } },
+  } });
+  assert.equal(validatePayload(a).valid, true);
+  assert.notEqual(payloadSignature(a), payloadSignature(b));
+});
+
 test('la firma cambia al cambiar de mercado o de evento', () => {
   const base = payloadValido();
   assert.notEqual(payloadSignature(base), payloadSignature(payloadValido({ marketKey: 'Q4_TOTAL' })));

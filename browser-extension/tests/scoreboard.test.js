@@ -42,6 +42,31 @@ test('el marcador REAL de Kambi se lee 76-69, no 76-22', () => {
   assert.deepEqual(r.teams, ['Dallas Wings (F)', 'Indiana Fever (F)']);
 });
 
+test('regresion BetPlay real: Barein 65-47 conserva Q1-Q4 y el cero explicito', () => {
+  const r = sb.readScoreboard(conScoreboard({
+    periodo: 'Q3', reloj: '24:42',
+    equipoA: 'Baréin', parcialesA: [21, 25, 19, 0], totalA: 65,
+    equipoB: 'Arabia Saudí', parcialesB: [26, 18, 3, 0], totalB: 47,
+  }), A);
+  assert.deepEqual(r.teamA, {
+    name: 'Baréin', total: 65, periods: { Q1: 21, Q2: 25, Q3: 19, Q4: 0 },
+  });
+  assert.deepEqual(r.teamB, {
+    name: 'Arabia Saudí', total: 47, periods: { Q1: 26, Q2: 18, Q3: 3, Q4: 0 },
+  });
+});
+
+test('una celda vacia sigue ocupando su columna y no se convierte en cero', () => {
+  const r = sb.readScoreboard(conScoreboard({
+    periodo: 'Q3',
+    parcialesA: [21, 25, null, null], totalA: 46,
+    parcialesB: [26, 18, null, null], totalB: 44,
+  }), A);
+  assert.deepEqual(r.teamA.periods, { Q1: 21, Q2: 25, Q3: null, Q4: null });
+  assert.deepEqual(r.teamB.periods, { Q1: 26, Q2: 18, Q3: null, Q4: null });
+  assert.ok(r.reasons.some((reason) => /desconocidos/.test(reason)));
+});
+
 test('los parciales NO son candidatos a marcador', () => {
   const r = sb.readScoreboard(conScoreboard(), A);
   assert.deepEqual(r.rows[0].partials, [18, 24, 24, 10]);
@@ -145,6 +170,8 @@ test('la prorroga anade columnas y no rompe la lectura', () => {
   assert.deepEqual(r.score, { scoreA: 85, scoreB: 76 });
   assert.equal(r.period, 5, 'OT1 es el periodo 5, no un cuarto invalido');
   assert.deepEqual(r.warnings, [], 'los parciales con prorroga siguen sumando');
+  assert.deepEqual(r.teamA.periods,
+                   { Q1: 18, Q2: 24, Q3: 24, Q4: 10, OT1: 9 });
 });
 
 test('un cuarto a medias, con columnas vacias, se lee igual', () => {

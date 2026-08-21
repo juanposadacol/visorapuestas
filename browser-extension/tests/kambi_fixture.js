@@ -27,7 +27,7 @@ function filaKambi(doc, equipo, parciales, total, opciones) {
   const o = opciones || {};
   const celdas = parciales.map((n) => el(doc, 'span', {
     class: 'KambiBC-scoreboard-grid-item', role: 'griditem',
-  }, [String(n)]));
+  }, [n === null || n === undefined ? '' : String(n)]));
   if (total !== null && total !== undefined) {
     celdas.push(el(doc, 'span', {
       // La celda del total lleva LAS DOS clases: por eso el total tiene que

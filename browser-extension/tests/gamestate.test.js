@@ -420,8 +420,14 @@ test('K. el scoreboard de Kambi se lee 76-69 y se confirma a la primera', () => 
   assert.equal(r.gameState.scoreA, 76);
   assert.equal(r.gameState.scoreB, 69);
   assert.equal(r.diagnostics.score.status, 'CONFIRMED');
-  assert.equal(r.gameState.teamA, 'Dallas Wings (F)');
-  assert.equal(r.gameState.teamB, 'Indiana Fever (F)');
+  assert.deepEqual(r.gameState.teamA, {
+    name: 'Dallas Wings (F)', total: 76,
+    periods: { Q1: 18, Q2: 24, Q3: 24, Q4: 10 },
+  });
+  assert.deepEqual(r.gameState.teamB, {
+    name: 'Indiana Fever (F)', total: 69,
+    periods: { Q1: 22, Q2: 20, Q3: 19, Q4: 8 },
+  });
 });
 
 test('K. 76-22 NO puede salir jamas, ni como candidato', () => {

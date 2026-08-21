@@ -113,6 +113,33 @@ def test_estado_de_juego_opcional_y_validado():
         assert not validate_browser_payload(p)[0], malo
 
 
+def test_scoreboard_estructural_con_parciales_cumple_el_contrato():
+    game_state = {
+        "scoreA": 65, "scoreB": 47, "period": 3,
+        "teamA": {"name": "Baréin", "total": 65,
+                  "periods": {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}},
+        "teamB": {"name": "Arabia Saudí", "total": 47,
+                  "periods": {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": 0}},
+    }
+    valido, errores = validate_browser_payload(payload_valido(gameState=game_state))
+    assert valido, errores
+
+
+@pytest.mark.parametrize("romper", [
+    lambda state: state["teamA"]["periods"].update({"Q5": 1}),
+    lambda state: state["teamA"]["periods"].update({"Q3": -1}),
+    lambda state: state["teamA"].update({"extra": "no permitido"}),
+])
+def test_scoreboard_estructural_rechaza_periodos_mal_formados(romper):
+    game_state = {
+        "scoreA": 65, "scoreB": 47,
+        "teamA": {"name": "Baréin", "total": 65, "periods": {"Q1": 21}},
+        "teamB": {"name": "Arabia Saudí", "total": 47, "periods": {"Q1": 26}},
+    }
+    romper(game_state)
+    assert not validate_browser_payload(payload_valido(gameState=game_state))[0]
+
+
 def test_ensure_valid_lanza_con_los_motivos():
     with pytest.raises(BridgeValidationError) as info:
         ensure_valid(payload_valido(lines=[]))

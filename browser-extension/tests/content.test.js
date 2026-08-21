@@ -397,8 +397,10 @@ test('K. el marcador de Kambi llega al payload como 76-69', () => {
   assert.equal(estado.scoreB, 69);
   assert.notEqual(estado.scoreB, 22, 'el parcial del Q1 no es medio marcador');
   assert.equal(estado.period, 4);
-  assert.equal(estado.teamA, 'Dallas Wings (F)');
-  assert.equal(estado.teamB, 'Indiana Fever (F)');
+  assert.equal(estado.teamA.name, 'Dallas Wings (F)');
+  assert.equal(estado.teamB.name, 'Indiana Fever (F)');
+  assert.deepEqual(estado.teamA.periods, { Q1: 18, Q2: 24, Q3: 24, Q4: 10 });
+  assert.deepEqual(estado.teamB.periods, { Q1: 22, Q2: 20, Q3: 19, Q4: 8 });
 
   // Y el mercado sigue llegando entero, con su UNDER.
   assert.deepEqual(ultimo.payload.lines, [{ line: 44.5, overOdds: 1.78, underOdds: 1.86 }]);

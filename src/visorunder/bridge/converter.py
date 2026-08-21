@@ -128,10 +128,25 @@ def payload_to_game_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         if segundos is not None:
             salida["clock_raw_seconds"] = segundos
             salida["clock_semantics"] = semantica
-    for origen, destino in (("teamA", "team_a"), ("teamB", "team_b")):
+    for origen, destino, periodos_destino in (
+            ("teamA", "team_a", "periods_a"),
+            ("teamB", "team_b", "periods_b")):
         valor = estado.get(origen)
         if isinstance(valor, str) and valor.strip():
             salida[destino] = valor.strip()[:60]
+            continue
+        if not isinstance(valor, dict):
+            continue
+        nombre = valor.get("name")
+        if isinstance(nombre, str) and nombre.strip():
+            salida[destino] = nombre.strip()[:60]
+        periodos = valor.get("periods")
+        if isinstance(periodos, dict):
+            salida[periodos_destino] = {
+                str(label): (points if isinstance(points, int) and not isinstance(points, bool)
+                             else None)
+                for label, points in periodos.items()
+            }
     return salida
 
 

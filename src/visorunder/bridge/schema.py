@@ -39,6 +39,7 @@ LINE_FIELDS = {"line", "overOdds", "underOdds"}
 #: convertirlo exige conocer la duracion del cuarto, que la extension no sabe.
 GAME_STATE_FIELDS = {"scoreA", "scoreB", "period", "clock", "clockRaw",
                      "clockSemantics", "teamA", "teamB", "confidence"}
+TEAM_FIELDS = {"name", "total", "periods"}
 
 #: Que representa el reloj que manda la extension.
 CLOCK_SEMANTICS = {"PERIOD_REMAINING", "GAME_ELAPSED"}
@@ -170,6 +171,37 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                 errors.append(f"gameState.clockSemantics invalida: {semantica!r}")
             if estado.get("clockRaw") is not None and semantica is None:
                 errors.append("gameState.clockRaw sin clockSemantics: no se puede interpretar")
+            for campo in ("teamA", "teamB"):
+                equipo = estado.get(campo)
+                # Compatibilidad con extensiones anteriores, que solo enviaban
+                # el nombre. El contrato actual usa el objeto completo.
+                if equipo is None or isinstance(equipo, str):
+                    if isinstance(equipo, str) and len(equipo) > 60:
+                        errors.append(f"gameState.{campo} demasiado largo")
+                    continue
+                if not isinstance(equipo, dict):
+                    errors.append(f"gameState.{campo} no es un objeto")
+                    continue
+                errors += _unknown_fields(equipo, TEAM_FIELDS, f"gameState.{campo}")
+                nombre = equipo.get("name")
+                if not isinstance(nombre, str) or not nombre.strip() or len(nombre) > 60:
+                    errors.append(f"gameState.{campo}.name invalido")
+                total = equipo.get("total")
+                if (isinstance(total, bool) or not isinstance(total, int) or
+                        not (0 <= total <= 300)):
+                    errors.append(f"gameState.{campo}.total invalido: {total!r}")
+                periods = equipo.get("periods")
+                if not isinstance(periods, dict):
+                    errors.append(f"gameState.{campo}.periods no es un objeto")
+                    continue
+                for label, value in periods.items():
+                    if not isinstance(label, str) or not re.fullmatch(r"(?:Q[1-4]|OT[1-9]\d*)", label):
+                        errors.append(f"gameState.{campo}.periods etiqueta invalida: {label!r}")
+                    if value is not None and (isinstance(value, bool) or
+                                              not isinstance(value, int) or
+                                              not (0 <= value <= 300)):
+                        errors.append(
+                            f"gameState.{campo}.periods.{label} invalido: {value!r}")
 
     return (not errors), errors
 

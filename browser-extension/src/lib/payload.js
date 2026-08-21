@@ -196,6 +196,41 @@
       }
     }
 
+    const gameState = p.gameState;
+    if (gameState != null && typeof gameState !== 'object') {
+      errores.push('gameState invalido');
+    } else if (gameState) {
+      for (const key of ['teamA', 'teamB']) {
+        const team = gameState[key];
+        // Se acepta texto por compatibilidad con versiones anteriores de la
+        // extension; la version actual publica el objeto completo.
+        if (team == null || typeof team === 'string') continue;
+        if (typeof team !== 'object') {
+          errores.push(`${key} invalido`);
+          continue;
+        }
+        if (typeof team.name !== 'string' || !team.name.trim() || team.name.length > 60) {
+          errores.push(`${key}.name invalido`);
+        }
+        if (!Number.isInteger(team.total) || team.total < 0 || team.total > 300) {
+          errores.push(`${key}.total invalido`);
+        }
+        if (!team.periods || typeof team.periods !== 'object' || Array.isArray(team.periods)) {
+          errores.push(`${key}.periods invalido`);
+          continue;
+        }
+        for (const [period, value] of Object.entries(team.periods)) {
+          if (!/^(?:Q[1-4]|OT[1-9]\d*)$/.test(period)) {
+            errores.push(`${key}.periods.${period} invalido`);
+          }
+          if (value !== null &&
+              (!Number.isInteger(value) || value < 0 || value > 300)) {
+            errores.push(`${key}.periods.${period} invalido`);
+          }
+        }
+      }
+    }
+
     return { valid: errores.length === 0, errors: errores };
   }
 
@@ -206,8 +241,9 @@
     const lineas = payload.lines
       .map((l) => `${l.line}|${l.overOdds ?? '-'}|${l.underOdds ?? '-'}`)
       .join(';');
+    const state = payload.gameState ? JSON.stringify(payload.gameState) : '-';
     return `${payload.event.id || '-'}#${market.marketType}:${market.period ?? '-'}:` +
-      `${market.half ?? '-'}#${lineas}`;
+      `${market.half ?? '-'}#${lineas}#${state}`;
   }
 
   return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, WIRE_MARKET,

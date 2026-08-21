@@ -269,7 +269,14 @@ class BridgeServer:
                  version: str = "1.0.0",
                  log: Optional[Callable[[str, str], None]] = None,
                  on_contact: Optional[Callable[[], None]] = None) -> None:
+        # `port=0` es la convencion del sistema operativo para un puerto
+        # efimero. Se usa en tests e integraciones locales para no colisionar
+        # con una instancia real de VisorApuestas ya abierta. Los ajustes
+        # persistidos siguen saneandose a 8765 mediante BridgeSettings.validate.
+        ephemeral = settings is not None and settings.port == 0
         self.settings = (settings or BridgeSettings()).validate()
+        if ephemeral:
+            self.settings.port = 0
         self.on_payload = on_payload or (lambda _payload: None)
         #: Se llama en CADA senal de vida de la extension, traiga mercado o no.
         self.on_contact = on_contact or (lambda: None)

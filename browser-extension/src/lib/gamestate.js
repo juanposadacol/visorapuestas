@@ -926,9 +926,15 @@
       estado.scoreA = marcador.value.scoreA;
       estado.scoreB = marcador.value.scoreB;
     }
-    if (estructural && estructural.teams) {
-      estado.teamA = String(estructural.teams[0]).slice(0, 60);
-      estado.teamB = String(estructural.teams[1]).slice(0, 60);
+    const estructuraPublicable = estructural && marcador.confirmed && marcador.value &&
+      marcador.status !== 'UNDER_REVIEW' &&
+      marcador.value.scoreA === estructural.score.scoreA &&
+      marcador.value.scoreB === estructural.score.scoreB;
+    if (estructuraPublicable && estructural.teamA && estructural.teamB) {
+      // El contrato conserva scoreA/scoreB para compatibilidad, y anade el
+      // scoreboard observado completo. Los ritmos siguen calculandose en Python.
+      estado.teamA = estructural.teamA;
+      estado.teamB = estructural.teamB;
     }
 
     return {

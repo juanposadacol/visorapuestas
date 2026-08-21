@@ -149,10 +149,47 @@
     return PARTIAL_CELL.test(attrTextOf(node, adapter));
   }
 
-  function numberOf(hoja) {
-    if (!/^\d{1,3}$/.test(hoja.text)) return null;
-    const valor = Number(hoja.text);
+  function numberOfText(raw) {
+    const value = String(raw == null ? '' : raw).trim();
+    if (!/^\d{1,3}$/.test(value)) return null;
+    const valor = Number(value);
     return Number.isInteger(valor) && valor >= 0 && valor <= MAX_SCORE ? valor : null;
+  }
+
+  function numberOf(hoja) {
+    return numberOfText(hoja && hoja.text);
+  }
+
+  /**
+   * Celdas semanticas de una fila, incluidas las vacias.
+   *
+   * `leavesOf` omite hojas sin texto, que es correcto para nombres y reloj,
+   * pero perder una celda vacia desplazaria Q3 a la columna de Q2. Aqui la
+   * existencia de la celda es evidencia aunque su valor siga desconocido.
+   */
+  function scoreCellsOf(root, adapter) {
+    const celdas = [];
+    walk(root, adapter, (node, chain) => {
+      const total = isTotalCell(node, adapter);
+      const partial = !total && isPartialCell(node, adapter);
+      if (!total && !partial) return;
+      celdas.push({ node, chain, total, partial,
+                     value: numberOfText(adapter.text(node)) });
+    });
+    return innermost(celdas);
+  }
+
+  function periodLabel(index, regulationPeriods) {
+    const regulation = Number.isInteger(regulationPeriods) ? regulationPeriods : 4;
+    return index < regulation ? `Q${index + 1}` : `OT${index - regulation + 1}`;
+  }
+
+  function periodsFromPartials(partials, regulationPeriods) {
+    const periods = {};
+    (partials || []).forEach((value, index) => {
+      periods[periodLabel(index, regulationPeriods)] = value;
+    });
+    return periods;
   }
 
   // --------------------------------------------------------- filas de equipo
@@ -180,14 +217,12 @@
       //: nombres DISTINTOS, porque entonces no es la fila de nadie.
       const nombres = new Set();
 
+      for (const celda of scoreCellsOf(node, adapter)) {
+        if (celda.total && celda.value !== null) totales.push(celda.value);
+        else if (celda.partial) parciales.push(celda.value);
+      }
       for (const hoja of leavesOf(node, adapter)) {
-        const valor = numberOf(hoja);
-        if (valor !== null) {
-          // El total gana al parcial: la celda de Kambi lleva las dos clases.
-          if (isTotalCell(hoja.node, adapter)) totales.push(valor);
-          else if (isPartialCell(hoja.node, adapter)) parciales.push(valor);
-          continue;
-        }
+        if (isTotalCell(hoja.node, adapter) || isPartialCell(hoja.node, adapter)) continue;
         if (looksLikeTeamName(hoja.text)) nombres.add(hoja.text);
       }
 
@@ -306,6 +341,10 @@
     // puede no cuadrar y la clase del total sigue siendo la evidencia buena.
     for (const fila of [filaA, filaB]) {
       if (!fila.partials.length) continue;
+      if (fila.partials.some((value) => value === null)) {
+        razones.push(`${fila.name}: hay parciales todavia desconocidos`);
+        continue;
+      }
       const suma = fila.partials.reduce((acc, n) => acc + n, 0);
       if (suma === fila.total) razones.push(`${fila.name}: los parciales suman el total`);
       else avisos.push(`${fila.name}: los parciales suman ${suma} y el total dice ${fila.total}`);
@@ -319,6 +358,10 @@
       rows: [filaA, filaB],
       teams: [filaA.name, filaB.name],
       score: { scoreA: filaA.total, scoreB: filaB.total },
+      teamA: { name: filaA.name, total: filaA.total,
+               periods: periodsFromPartials(filaA.partials) },
+      teamB: { name: filaB.name, total: filaB.total,
+               periods: periodsFromPartials(filaB.partials) },
       period: estado.period,
       clock: estado.clock,
       reasons: [...razones, ...estado.reasons],
@@ -329,5 +372,6 @@
   return { CLOCK_RE, MAX_SCORE, MAX_PERIOD, MAX_SCOREBOARD_NODES,
            SCOREBOARD_CONTAINER, TOTAL_CELL,
            PARTIAL_CELL, CLOCK_BLOCK, looksLikeTeamName, isTotalCell, isPartialCell,
-           findTeamRows, periodFromText, readClockBlock, readScoreboard, leavesOf };
+           findTeamRows, scoreCellsOf, periodLabel, periodsFromPartials,
+           periodFromText, readClockBlock, readScoreboard, leavesOf };
 });

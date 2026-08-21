@@ -274,6 +274,35 @@ def test_el_reloj_acumulado_viaja_crudo_con_su_semantica():
     assert estado["team_a"] == "Dallas Wings (F)"
 
 
+def test_el_scoreboard_anidado_llega_con_nombres_y_parciales_sin_derivados():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={
+        "scoreA": 65, "scoreB": 47, "period": 3,
+        "teamA": {"name": "Baréin", "total": 65,
+                  "periods": {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}},
+        "teamB": {"name": "Arabia Saudí", "total": 47,
+                  "periods": {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": None}},
+    }), now=6500.0)
+    estado = fuente.game_state(now=6500.5)
+    assert estado["team_a"] == "Baréin"
+    assert estado["periods_a"] == {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}
+    assert estado["periods_b"]["Q4"] is None
+    assert "period_pace" not in estado and "half_pace" not in estado
+
+
+def test_cambiar_evento_limpia_nombres_y_parciales_del_paquete_anterior():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={
+        "scoreA": 65, "scoreB": 47,
+        "teamA": {"name": "Baréin", "total": 65, "periods": {"Q1": 21}},
+        "teamB": {"name": "Arabia Saudí", "total": 47, "periods": {"Q1": 26}},
+    }), now=6600.0)
+    fuente.accept(payload(event={"id": "evento-nuevo", "name": "C vs D"},
+                          gameState={"period": 1}), now=6601.0)
+    estado = fuente.game_state(now=6601.5)
+    assert estado == {"period": 1}
+
+
 def test_el_reloj_acumulado_cuenta_como_reloj_cubierto():
     fuente = BrowserSource()
     fuente.accept(payload(gameState={"period": 4, "clockRaw": "33:52",
