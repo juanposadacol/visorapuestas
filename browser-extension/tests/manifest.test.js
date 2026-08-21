@@ -88,3 +88,34 @@ test('el service worker importa todas las librerias del content script', () => {
                  `el service worker no importa ${nombre}`);
   }
 });
+
+test('el popup no pinta en huecos que no existen', () => {
+  // Un id mal escrito en popup.js no falla en tiempo de carga: simplemente
+  // deja de pintarse ese dato, y el panel miente por omision.
+  const js = fs.readFileSync(path.join(RAIZ, 'src', 'popup.js'), 'utf8');
+  const html = fs.readFileSync(path.join(RAIZ, manifest.action.default_popup), 'utf8');
+  const enHtml = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+
+  const usados = new Set([
+    ...[...js.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]),
+    ...[...js.matchAll(/poner\('([^']+)'/g)].map((m) => m[1]),
+  ]);
+  for (const id of usados) {
+    assert.ok(enHtml.has(id), `popup.js escribe en "#${id}", que no existe en el HTML`);
+  }
+  // Los tres campos del partido se pintan en un bucle, con el nombre como id.
+  for (const campo of ['marcador', 'cuarto', 'reloj']) {
+    assert.ok(enHtml.has(campo), `falta el hueco de ${campo}`);
+  }
+});
+
+test('los botones del popup tienen su manejador', () => {
+  const js = fs.readFileSync(path.join(RAIZ, 'src', 'popup.js'), 'utf8');
+  const html = fs.readFileSync(path.join(RAIZ, manifest.action.default_popup), 'utf8');
+  const botones = [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(botones.includes('copiar-estructura'));
+  assert.ok(botones.includes('copiar-scoreboard'));
+  for (const boton of botones) {
+    assert.match(js, new RegExp(`\\$\\('${boton}'\\)`), `el boton ${boton} no hace nada`);
+  }
+});
