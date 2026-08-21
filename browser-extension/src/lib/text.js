@@ -40,10 +40,10 @@
   //: Ordinales escritos con palabra, solo cuando acompanan a un nombre de
   //: periodo. "cuarto" a secas es el sustantivo, no el ordinal 4.
   const WORD_ORDINALS = [
-    [/\b(primer|primero|primera)\b/g, '1'],
-    [/\b(segundo|segunda)\b/g, '2'],
-    [/\b(tercer|tercero|tercera)\b/g, '3'],
-    [/\b(cuarta)\b/g, '4'],
+    [/\b(primer|primero|primera|first)\b/g, '1'],
+    [/\b(segundo|segunda|second)\b/g, '2'],
+    [/\b(tercer|tercero|tercera|third)\b/g, '3'],
+    [/\b(cuarta|fourth)\b/g, '4'],
   ];
 
   const PERIOD_NOUNS = 'cuarto|cuartos|periodo|periodos|parcial|parciales|tiempo|mitad|mitades|parte|partes|quarter|half';
@@ -55,6 +55,7 @@
    *   "1.ª mitad"    -> "1 mitad"
    *   "2º periodo"   -> "2 periodo"
    *   "primer cuarto"-> "1 cuarto"
+   *   "Second Half"  -> "2 half"    (BetPlay mezcla espanol e ingles)
    *   "cuarto cuarto"-> "4 cuarto"   (el primero es ordinal, el segundo nombre)
    */
   function normalizeOrdinals(value) {

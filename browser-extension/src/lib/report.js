@@ -196,6 +196,9 @@
         }
         return `${entrada.market} ${entrada.visible ? '(visible)' : '(OCULTO)'} cambia ${partes.join(' ')}`;
       }
+      case 'eventChanged':
+        return `cambio de partido: ${redact(entrada.from) || '(ninguno)'} -> ` +
+               `${redact(entrada.to) || '(ninguno)'} (se olvida lo anterior)`;
       case 'observerStarted':
         return 'observador de mutaciones activo';
       default:

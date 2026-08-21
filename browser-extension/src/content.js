@@ -34,6 +34,8 @@
     gameState: null,        // marcador, cuarto y reloj si el DOM los da
     gameDiagnostics: null,
     gameMemory: null,
+    //: Partido al que pertenece todo lo de arriba. Si cambia, se olvida todo.
+    eventId: undefined,
     history: [],
     environment: null,
     //: Errores agrupados por causa y raiz, nunca una linea por ocurrencia.
@@ -309,8 +311,35 @@
 
   // ------------------------------------------------------------------ escaneo
 
+  /**
+   * Si cambio el partido, se tira TODO lo que se sabia del anterior.
+   *
+   * Sin esto, al pasar de un evento a otro quedaban en memoria los mercados y
+   * el marcador del partido viejo, y durante unos segundos la aplicacion podia
+   * mezclar dos partidos distintos. La URL de BetPlay usa enrutado por hash,
+   * asi que el cambio de evento no recarga la pagina ni el content script.
+   */
+  function comprobarCambioDeEvento() {
+    const actual = payloadLib.eventIdFromUrl(location.href);
+    if (state.eventId === undefined) {
+      state.eventId = actual;
+      return;
+    }
+    if (actual === state.eventId) return;
+
+    pushHistory('eventChanged', { from: state.eventId, to: actual });
+    state.eventId = actual;
+    state.markets.clear();
+    state.visibleMarket = null;
+    state.gameState = null;
+    state.gameMemory = null;
+    state.gameDiagnostics = null;
+    state.payload = null;
+  }
+
   function scan() {
     const inicio = performance.now();
+    comprobarCambioDeEvento();
     state.skippedRoots = [];
     const { roots, shadow, frames } = collectRoots();
     state.environment = detectEnvironment(shadow, frames);
@@ -334,7 +363,10 @@
 
       let registros = [];
       try {
-        registros = scanLib.scanMarkets(root, DOM_ADAPTER, { identify: markets.identifyMarket });
+        registros = scanLib.scanMarkets(root, DOM_ADAPTER, {
+          identify: markets.identifyMarket,
+          sectionOf: markets.sectionKey,
+        });
         state.breaker.success(key);
         raicesRecorridas += 1;
       } catch (error) {
@@ -365,6 +397,8 @@
           headerText: text.truncate(registro.headerText, 120),
           normalized: markets.identifyMarket(registro.headerText).normalized,
           reasons: registro.reasons,
+          sectionKey: registro.sectionKey,
+          sectionLabel: registro.sectionLabel,
           rootKind: kind,
           rootLabel: label,
           existsInDom: visible.existsInDom,
@@ -510,7 +544,7 @@
       marketKey: registro.key,
       confidence: registro.confidence,
       rawTitle: registro.headerText,
-      eventId: payloadLib.eventIdFromUrl(location.href),
+      eventId: state.eventId,
       eventName: eventName(),
       lines: registro.strictLines || registro.lines,
       sideMarkers: registro.sideMarkers,
@@ -620,6 +654,7 @@
       lastScanMs: Math.round(state.lastScanMs),
       headerCount: state.headerCount || 0,
       pendingMutations: mutacionesDesdeElUltimoEscaneo,
+      eventId: state.eventId === undefined ? null : state.eventId,
       visibleMarket: state.visibleMarket,
       environment: state.environment,
       markets: Array.from(state.markets.values())

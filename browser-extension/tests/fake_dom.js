@@ -86,6 +86,15 @@ class FakeElement extends FakeNode {
 
   get id() { return this._attrs.id || ''; }
 
+  get classList() {
+    return String(this._attrs.class || '').split(/\s+/).filter(Boolean);
+  }
+
+  get parentElement() {
+    return this.parentNode && this.parentNode.nodeType === NODE.ELEMENT
+      ? this.parentNode : null;
+  }
+
   getAttribute(nombre) {
     return Object.prototype.hasOwnProperty.call(this._attrs, nombre)
       ? this._attrs[nombre] : null;
@@ -93,6 +102,17 @@ class FakeElement extends FakeNode {
 
   hasAttribute(nombre) {
     return Object.prototype.hasOwnProperty.call(this._attrs, nombre);
+  }
+
+  //: Geometria de mentira, pero coherente: todo mide algo y todo cae dentro
+  //: del viewport salvo que la prueba diga lo contrario con `rect`.
+  getBoundingClientRect() {
+    return this.rect || { x: 0, y: 0, width: 200, height: 40,
+                          top: 0, left: 0, bottom: 40, right: 200 };
+  }
+
+  getClientRects() {
+    return this.sinRectangulos ? [] : [this.getBoundingClientRect()];
   }
 
   attachShadow() {
@@ -114,14 +134,21 @@ class FakeShadowRoot extends FakeDocumentFragment {
   }
 }
 
-/** Recorre en orden de documento y devuelve los nodos de texto. */
-function textNodesOf(root) {
+/**
+ * Recorre en orden de documento y devuelve los nodos del tipo pedido.
+ * `whatToShow` usa los valores de NodeFilter: 0x1 elementos, 0x4 textos.
+ */
+function nodesOf(root, whatToShow) {
   const salida = [];
-  const visitar = (node) => {
-    if (node.nodeType === NODE.TEXT) { salida.push(node); return; }
-    for (const hijo of [...node.childNodes]) visitar(hijo);
+  const visitar = (node, esRaiz) => {
+    if (!esRaiz) {
+      if ((whatToShow & 0x1) && node.nodeType === NODE.ELEMENT) salida.push(node);
+      if ((whatToShow & 0x4) && node.nodeType === NODE.TEXT) salida.push(node);
+    }
+    for (const hijo of [...node.childNodes]) visitar(hijo, false);
   };
-  visitar(root);
+  // Como en el DOM real, el TreeWalker NO devuelve su propia raiz.
+  visitar(root, true);
   return salida;
 }
 
@@ -132,16 +159,21 @@ class FakeDocument extends FakeNode {
     this.defaultView = { NodeFilter: { SHOW_TEXT: 0x4, SHOW_ELEMENT: 0x1 } };
     this.documentElement = null;
     this.body = null;
+    this.title = 'Aces vs Dream | BetPlay';
+    this.readyState = 'complete';
+    this.defaultView.getComputedStyle = () => ({
+      display: 'block', visibility: 'visible', opacity: '1',
+    });
+    this.defaultView.innerHeight = 900;
+    this.defaultView.innerWidth = 1600;
     //: Si se pone a true, el walker lanza a mitad del recorrido: sirve para
     //: simular que Angular reemplaza el subarbol mientras se esta leyendo.
     this.breakWalkerAt = null;
   }
 
   createTreeWalker(root, whatToShow) {
-    if (whatToShow !== undefined && whatToShow !== 0x4) {
-      throw new Error(`whatToShow no soportado: ${whatToShow}`);
-    }
-    const nodos = textNodesOf(root);
+    const filtro = whatToShow === undefined ? 0xFFFFFFFF : whatToShow;
+    const nodos = nodesOf(root, filtro);
     const limite = this.breakWalkerAt;
     let i = 0;
     return {
@@ -152,6 +184,21 @@ class FakeDocument extends FakeNode {
         return i < nodos.length ? nodos[i++] : null;
       },
     };
+  }
+
+  //: El escaneo usa querySelector solo para adivinar el framework de la
+  //: pagina; para las pruebas basta con que no encuentre nada.
+  querySelector() { return null; }
+
+  addEventListener() {}
+
+  contains(node) {
+    let actual = node;
+    while (actual) {
+      if (actual === this) return true;
+      actual = actual.parentNode;
+    }
+    return false;
   }
 
   /** Simula que el iframe se desmonta: el documento se queda sin ventana. */

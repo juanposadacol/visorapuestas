@@ -48,7 +48,12 @@
   const OTHER_MARKET_WORDS = ['handicap', 'handicap asiatico', 'ganador', 'ganara',
                               'linea de dinero', 'moneyline', 'diferencia',
                               'margen', 'primer', 'ambos'];
-  const GAME_WORDS = ['partido', 'encuentro', 'juego completo', 'tiempo reglamentario', 'match'];
+  //: Formas de nombrar el partido COMPLETO. "prorroga incluida" es una de
+  //: ellas: BetPlay titula asi el total del partido en la seccion PARTIDO, y
+  //: sin esta palabra el mercado se quedaba en DESCONOCIDO con confianza 0.50.
+  const GAME_WORDS = ['partido', 'encuentro', 'juego completo', 'tiempo reglamentario',
+                      'match', 'prorroga incluida', 'incluye prorroga',
+                      'prorroga included', 'overtime included'];
   const QUARTER_PATTERNS = [
     /\bq\s*([1-4])\b/,
     /\b([1-4])\s*q\b/,
@@ -65,12 +70,49 @@
   }
 
   /**
+   * Clave de SECCION a partir de una etiqueta suelta ("Partido", "Second
+   * Half", "Cuarto 4").
+   *
+   * En la vista TODO, BetPlay agrupa los mercados bajo cabeceras de seccion.
+   * Un titulo como "Total de puntos - Prorroga incluida" no dice a que periodo
+   * pertenece, pero la seccion que lo contiene si.
+   *
+   * Se exige una etiqueta ESCUETA: si el texto ya nombra un mercado (lleva
+   * "total", "handicap", "equipo"...) no es una cabecera de seccion, es otro
+   * titulo, y confundirlos seria justo el error que se quiere evitar.
+   */
+  function sectionKey(rawText) {
+    const normalized = text.normalizeOrdinals(rawText);
+    if (!normalized || normalized.length > 40) return null;
+    if (hasAny(normalized, TOTAL_WORDS)) return null;
+    if (hasAny(normalized, TEAM_TOTAL_WORDS)) return null;
+    if (hasAny(normalized, OTHER_MARKET_WORDS)) return null;
+
+    for (const pattern of QUARTER_PATTERNS) {
+      const match = normalized.match(pattern);
+      if (match) return KEYS[`Q${match[1]}`];
+    }
+    for (const pattern of HALF_PATTERNS) {
+      const match = normalized.match(pattern);
+      if (match) return match[1] === '1' ? KEYS.H1 : KEYS.H2;
+    }
+    if (hasAny(normalized, GAME_WORDS)) return KEYS.GAME;
+    return null;
+  }
+
+  /**
    * Devuelve { key, confidence, normalized, isTotal, candidate, reasons }.
    *
    * `candidate` guarda la clave que se sospechaba cuando la confianza no
    * alcanza el umbral: es informacion de diagnostico, no una clasificacion.
+   *
+   * `options.sectionKey` es el CONTEXTO: la seccion de la vista TODO en la que
+   * vive este titulo. Solo se usa para resolver titulos que no dicen a que
+   * periodo pertenecen. Nunca contradice a un titulo que si lo dice: el titulo
+   * es el nombre propio del mercado y la seccion solo lo acompana, asi que un
+   * desacuerdo se anota como aviso pero no cambia la clave.
    */
-  function identifyMarket(rawText) {
+  function identifyMarket(rawText, options) {
     const normalized = text.normalizeOrdinals(rawText);
     const reasons = [];
     if (!normalized) {
@@ -136,6 +178,8 @@
       reasons.push('nombra el partido completo');
     }
 
+    const contexto = (options || {}).sectionKey || null;
+
     if (!candidate && isTotal) {
       // "Total de puntos" a secas suele ser el del partido, pero sin periodo
       // indicado no hay confianza suficiente para afirmarlo.
@@ -152,8 +196,25 @@
       else confidence = 0.5;
     }
 
+    // El contexto entra SOLO donde el titulo se queda corto.
+    if (contexto && isTotal && !ambiguous) {
+      if (!explicitPeriod && !explicitGame) {
+        candidate = contexto;
+        confidence = Math.max(confidence, 0.92);
+        reasons.push(`la seccion dice ${LABELS[contexto] || contexto}`);
+      } else if (candidate === contexto) {
+        confidence = Math.max(confidence, 0.95);
+        reasons.push('titulo y seccion coinciden');
+      } else {
+        // Desacuerdo: manda el titulo, que es el nombre propio del mercado,
+        // pero queda constancia para poder revisarlo en el diagnostico.
+        reasons.push(`aviso: la seccion dice ${LABELS[contexto] || contexto}`);
+      }
+    }
+
     const key = confidence >= CONFIDENCE_THRESHOLD ? candidate : KEYS.UNKNOWN;
-    return { key, confidence, normalized, isTotal, candidate, reasons };
+    return { key, confidence, normalized, isTotal, candidate, reasons,
+             sectionKey: contexto };
   }
 
   function labelFor(key) {
@@ -168,5 +229,6 @@
     return index === -1 ? order.length : index;
   }
 
-  return { KEYS, LABELS, CONFIDENCE_THRESHOLD, identifyMarket, labelFor, sortKey };
+  return { KEYS, LABELS, CONFIDENCE_THRESHOLD, identifyMarket, sectionKey,
+           labelFor, sortKey };
 });

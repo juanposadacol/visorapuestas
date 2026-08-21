@@ -96,3 +96,63 @@ test('se recorta un numero absurdo de lineas', () => {
   const muchas = Array.from({ length: 60 }, (_, i) => ({ line: 20.5 + i, overOdds: 1.9 }));
   assert.equal(buildPayload({ marketKey: 'Q3_TOTAL', confidence: 0.95, lines: muchas }).payload, null);
 });
+
+// ------------------------------------------------ el evento, con hash routing
+//
+// BetPlay enruta con almohadilla:  .../apuestas#event/live/123456789
+// Mirar solo `pathname` devolvia "/apuestas" para TODOS los partidos, asi que
+// al cambiar de evento nada se enteraba y se podian mezclar dos partidos.
+
+const payloadLib = require('../src/lib/payload.js');
+
+test('R. el identificador se saca del hash de Angular', () => {
+  const ids = [
+    ['https://betplay.com.co/apuestas#event/live/123456789', '123456789'],
+    ['https://betplay.com.co/apuestas#/event/live/987654321/markets', '987654321'],
+    ['https://betplay.com.co/apuestas#evento/live/555444333', '555444333'],
+    ['https://betplay.com.co/apuestas#event/live/123456789?tab=todo', '123456789'],
+    ['https://betplay.com.co/apuestas#event/live/12345', '12345'],
+  ];
+  for (const [url, esperado] of ids) {
+    assert.equal(payloadLib.eventIdFromUrl(url), esperado, url);
+  }
+});
+
+test('R. dos partidos distintos dan identificadores distintos', () => {
+  const a = payloadLib.eventIdFromUrl('https://betplay.com.co/apuestas#event/live/111111111');
+  const b = payloadLib.eventIdFromUrl('https://betplay.com.co/apuestas#event/live/222222222');
+  assert.notEqual(a, b, 'esto es lo que evita mezclar dos partidos');
+});
+
+test('sin numero en el hash se usa la ruta del hash, no el pathname', () => {
+  assert.equal(payloadLib.eventIdFromUrl('https://betplay.com.co/apuestas#sports/basketball'),
+               'sports/basketball');
+  assert.equal(payloadLib.eventIdFromUrl('https://betplay.com.co/apuestas'), '/apuestas');
+  assert.equal(payloadLib.eventIdFromUrl(''), null);
+});
+
+test('S. si cambia el mercado pero no el partido, la firma cambia y el evento no', () => {
+  const url = 'https://betplay.com.co/apuestas#event/live/123456789';
+  const comun = { confidence: 0.95, eventId: payloadLib.eventIdFromUrl(url),
+                  sideMarkers: { both: true } };
+  const q4 = payloadLib.buildPayload({ ...comun, marketKey: 'Q4_TOTAL',
+    rawTitle: 'Total de puntos - Cuarto 4',
+    lines: [{ line: 44.5, overOdds: 1.75, underOdds: 1.9 }] }).payload;
+  const partido = payloadLib.buildPayload({ ...comun, marketKey: 'GAME_TOTAL',
+    rawTitle: 'Total de puntos - Prorroga incluida',
+    lines: [{ line: 163.5, overOdds: 1.66, underOdds: 2.15 }] }).payload;
+
+  assert.equal(q4.event.id, partido.event.id, 'mismo partido');
+  assert.notEqual(payloadLib.payloadSignature(q4), payloadLib.payloadSignature(partido),
+                  'pero distinta firma: hay que reenviar');
+});
+
+test('T. la firma incluye el partido, asi que cambiar de evento fuerza reenvio', () => {
+  const construir = (eventId) => payloadLib.buildPayload({
+    marketKey: 'Q4_TOTAL', confidence: 0.95, eventId,
+    rawTitle: 'Total de puntos - Cuarto 4', sideMarkers: { both: true },
+    lines: [{ line: 44.5, overOdds: 1.75, underOdds: 1.9 }],
+  }).payload;
+  assert.notEqual(payloadLib.payloadSignature(construir('111111111')),
+                  payloadLib.payloadSignature(construir('222222222')));
+});

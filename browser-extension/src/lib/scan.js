@@ -149,24 +149,88 @@
     return mejor;
   }
 
+  //: Cuanto se sube buscando la cabecera de SECCION de la vista TODO.
+  const SECTION_MAX_CLIMB = 8;
+  //: Cuanto se baja buscando el primer texto de un contenedor.
+  const FIRST_LEAF_MAX_DEPTH = 12;
+
+  /** Primer texto que aparece dentro de un contenedor. */
+  function firstLeafText(node, adapter) {
+    let actual = node;
+    for (let i = 0; i < FIRST_LEAF_MAX_DEPTH && actual; i += 1) {
+      const hijos = adapter.children(actual);
+      if (!hijos.length) return (adapter.text(actual) || '').trim();
+      actual = hijos[0];
+    }
+    return '';
+  }
+
+  /**
+   * Seccion de la vista TODO a la que pertenece una cabecera de mercado.
+   *
+   * En BetPlay, dentro de la pestana TODO, los mercados cuelgan de secciones
+   * ("PARTIDO", "SECOND HALF", "Cuarto 4"). Un titulo como "Total de puntos -
+   * Prorroga incluida" no dice a que periodo pertenece, pero su seccion si: sin
+   * este contexto el mercado se quedaba en DESCONOCIDO con confianza 0.50.
+   *
+   * Se sube por la cadena de padres y se mira el PRIMER texto de cada ancestro,
+   * que es donde las casas ponen el titulo de la seccion.
+   */
+  function findSectionKey(header, adapter, sectionOf) {
+    if (typeof sectionOf !== 'function') return null;
+    const cadena = header.chain || [];
+    const propio = (adapter.text(header.element) || '').trim();
+    for (let i = 0; i < cadena.length && i < SECTION_MAX_CLIMB; i += 1) {
+      const etiqueta = firstLeafText(cadena[i], adapter);
+      if (!etiqueta || etiqueta === propio) continue;
+      const clave = sectionOf(etiqueta);
+      if (clave) return { key: clave, label: etiqueta };
+    }
+    return null;
+  }
+
   /**
    * Escaneo completo: devuelve un registro por mercado reconocido, cada uno
    * con SUS lineas, extraidas solo de SU contenedor.
    */
   function scanMarkets(root, adapter, deps) {
     const identify = deps.identify;
+    const sectionOf = deps.sectionOf;
     const extract = deps.extract ||
       ((node) => optionsLib.extractMarketLines(node, adapter, deps.extractOptions));
-    const cabeceras = findMarketHeaders(root, adapter, identify, deps.headerOptions);
+    const todas = findMarketHeaders(root, adapter, identify, deps.headerOptions);
+
+    // Las cabeceras de SECCION ("PARTIDO", "Second Half", "Cuarto 4") no son
+    // mercados: son el contexto de los mercados que vienen debajo. Antes se
+    // colaban en la lista como DESCONOCIDO con confianza 0.55 y llenaban el
+    // panel de ruido. Se apartan aqui, pero siguen sirviendo de frontera para
+    // que un mercado no invada al vecino.
+    const secciones = [];
+    const cabeceras = [];
+    for (const header of todas) {
+      const esSeccion = !header.identified.isTotal &&
+        typeof sectionOf === 'function' &&
+        !!sectionOf(adapter.text(header.element));
+      if (esSeccion) secciones.push(header);
+      else cabeceras.push(header);
+    }
+
     const registros = [];
     for (const header of cabeceras) {
-      const { container, result } = findMarketContainer(header, cabeceras, adapter, extract);
+      const { container, result } = findMarketContainer(header, todas, adapter, extract);
+      const seccion = findSectionKey(header, adapter, sectionOf);
+      // Se vuelve a identificar YA con el contexto de la seccion.
+      const identificado = seccion
+        ? identify(adapter.text(header.element), { sectionKey: seccion.key })
+        : header.identified;
       registros.push({
-        key: header.identified.key,
-        candidate: header.identified.candidate,
-        confidence: header.identified.confidence,
+        key: identificado.key,
+        candidate: identificado.candidate,
+        confidence: identificado.confidence,
         headerText: adapter.text(header.element),
-        reasons: header.identified.reasons,
+        reasons: identificado.reasons,
+        sectionKey: seccion ? seccion.key : null,
+        sectionLabel: seccion ? seccion.label : null,
         container,
         lines: result.lines,
         rejected: result.rejected,
@@ -177,5 +241,6 @@
   }
 
   return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket,
-           findMarketHeaders, findMarketContainer, scanMarkets, descendants };
+           findMarketHeaders, findMarketContainer, findSectionKey, firstLeafText,
+           scanMarkets, descendants };
 });

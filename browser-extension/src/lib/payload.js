@@ -43,13 +43,42 @@
     return wire ? { ...wire } : null;
   }
 
-  /** Identificador del evento a partir de la URL, sin datos de la cuenta. */
+  /**
+   * Identificador del evento a partir de la URL, sin datos de la cuenta.
+   *
+   * BetPlay usa el enrutado por HASH de Angular:
+   *
+   *     https://betplay.com.co/apuestas#event/live/123456789
+   *
+   * Ahi el identificador NO esta en `pathname`: esta detras de la almohadilla,
+   * que para `new URL()` es un solo bloque opaco. Mirar solo el pathname
+   * devolvia "/apuestas" para TODOS los partidos, asi que al cambiar de evento
+   * la aplicacion no se enteraba y podia mezclar dos partidos distintos.
+   *
+   * Se busca primero en el hash, que es donde vive la ruta de verdad, y solo
+   * despues en el resto de la URL.
+   */
   function eventIdFromUrl(url) {
     const texto = String(url || '');
-    // BetPlay usa rutas con identificadores numericos largos del evento.
-    const match = texto.match(/(?:event|evento|match|partido)[/-]?(\d{4,})/i) ||
-                  texto.match(/\/(\d{6,})(?:[/?#]|$)/);
-    if (match) return match[1];
+    const almohadilla = texto.indexOf('#');
+    const hash = almohadilla === -1 ? '' : texto.slice(almohadilla + 1);
+    const resto = almohadilla === -1 ? texto : texto.slice(0, almohadilla);
+
+    //: "event/live/123456789", "evento-123456", "match/98765/mercados"
+    const PORNOMBRE = /(?:event|evento|match|partido|game|juego)[/_-]?(?:live|envivo|en-vivo|directo|prematch|pre-match)?[/_-]?(\d{4,})/i;
+    //: Un identificador largo suelto en la ruta.
+    const SUELTO = /(?:^|[/_-])(\d{6,})(?:[/?#&]|$)/;
+
+    for (const trozo of [hash, resto]) {
+      if (!trozo) continue;
+      const match = trozo.match(PORNOMBRE) || trozo.match(SUELTO);
+      if (match) return match[1];
+    }
+
+    // Sin numero reconocible, la ruta del hash sigue distinguiendo un evento de
+    // otro mejor que el pathname, que en Angular es siempre el mismo.
+    const rutaHash = hash.split('?')[0].replace(/\/+$/, '');
+    if (rutaHash) return rutaHash;
     try {
       const parsed = new URL(texto);
       return `${parsed.pathname}`.replace(/\/+$/, '') || null;
