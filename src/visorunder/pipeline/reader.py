@@ -166,6 +166,11 @@ class LiveReader:
         self.on_update: Optional[Callable[[ReaderSnapshot], None]] = None
         self.reads_per_second = 3.0
         self.last_snapshot: Optional[ReaderSnapshot] = None
+        #: Identidad del evento cuyos datos consolidamos. BrowserSource limpia
+        #: su propia foto al cambiar el hash; el lector tambien debe vaciar su
+        #: dominio antes de aplicar un update parcial del evento nuevo.
+        self._browser_event_id: Optional[str] = (
+            browser_source.event_id if browser_source is not None else None)
 
     # ------------------------------------------------------------- utilidades
     def tracker_for(self, key: MarketKey) -> MarketTracker:
@@ -221,6 +226,7 @@ class LiveReader:
         """Ejecuta un ciclo completo de lectura."""
         start = time.perf_counter()
         now = now if now is not None else time.time()
+        self._reset_if_browser_event_changed()
         errors: List[str] = []
         ocr_ms = 0.0
         reads = 0
@@ -351,6 +357,44 @@ class LiveReader:
         self._persist(snapshot, now)
         self.last_snapshot = snapshot
         return snapshot
+
+    def _reset_if_browser_event_changed(self) -> None:
+        """Inicia una foto vacia antes de leer el nuevo evento del navegador.
+
+        La UI tambien cierra la sesion al detectar el cambio, pero el dominio
+        no puede depender de ese siguiente pulso: entre ambos, un paquete solo
+        de mercado no debe convivir con nombres, parciales o ritmos antiguos.
+        """
+        fuente = self.browser_source
+        current = fuente.event_id if fuente is not None else None
+        if not current:
+            return
+        if self._browser_event_id is None:
+            self._browser_event_id = current
+            return
+        if current == self._browser_event_id:
+            return
+
+        previous = self._browser_event_id
+        self._browser_event_id = current
+        self.state = GameState(rules=self.rules)
+        self.markets = EventMarkets()
+        self._trackers.clear()
+        self._market_signatures.clear()
+        self.field_sources.clear()
+        self.source_conflicts.clear()
+        for stabilizer in (self.clock, self.period, self.score_a, self.score_b,
+                           self.team_a, self.team_b, self.market_label):
+            stabilizer.reset()
+        self._previous_period = None
+        self.manual_visible_key = None
+        self._raw_label_key = None
+        self._in_transition = False
+        self.market_key_from_ocr = False
+        self._last_market_read = 0.0
+        self.log.info(
+            f"Estado local limpiado por cambio de evento: {previous} -> {current}",
+            region="BRIDGE")
 
     # ------------------------------------------------------------ submodulos
     def _read_breakdown(self, frames: Dict[RoiKind, RoiFrame], now: float) -> None:

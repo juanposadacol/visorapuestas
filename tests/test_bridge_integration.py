@@ -7,10 +7,13 @@ poder empezar SIN dibujar ninguna region.
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.request
 
 import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from visorunder.app import AppController
 from visorunder.bridge.server import BRIDGE_HEADER, BridgeSettings
@@ -391,6 +394,112 @@ def test_fixture_real_llega_hasta_metricas_sin_marcador_manual(app):
     assert general.period_pace == pytest.approx(22 / 4.7)
     assert general.half_points == 22
     assert general.first_half_points == 90
+
+
+def test_regresion_real_llega_al_cuadro_metricas_y_vs_mitad(app):
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from visorunder.ui.entry_board import COL_HALF
+    from visorunder.ui.main_window import MainWindow
+
+    app.start_bridge()
+    enviar(app, payload(
+        visibleMarket={"marketType": "GAME_TOTAL", "period": None, "half": None,
+                       "confidence": 0.95,
+                       "rawTitle": "Total de puntos - Prórroga incluida",
+                       "sidesConfirmed": True},
+        lines=[{"line": 170.5, "overOdds": 1.67, "underOdds": 2.00}],
+        gameState={
+            "scoreA": 65, "scoreB": 47, "period": 3,
+            "clockRaw": "24:42", "clockSemantics": "GAME_ELAPSED",
+            "teamA": {"name": "Baréin", "total": 65,
+                      "periods": {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}},
+            "teamB": {"name": "Arabia Saudí", "total": 47,
+                      "periods": {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": 0}},
+        },
+    ))
+    reader = app.start_session(app.profile)
+    reader.stop()
+    snapshot = reader.tick()
+    view = app.build_view_model(snapshot)
+
+    qapp = QApplication.instance() or QApplication([])
+    window = MainWindow(app)
+    window.timer.stop()
+    window.hotkeys.stop()
+    window._refresh()
+    panel = window.metrics_panel
+    board = window.entry_board
+
+    table = panel.results_table
+    assert [[table.item(row, column).text() for column in range(1, 6)]
+            for row in range(3)] == [
+        ["21", "25", "19", "0", "65"],
+        ["26", "18", "3", "0", "47"],
+        ["47", "43", "22", "0", "112"],
+    ]
+    assert table.item(0, 0).text() == "Baréin"
+    assert table.item(1, 0).text() == "Arabia Saudí"
+    assert panel.period_points_title.text() == "PUNTOS Q3"
+    assert panel.period_points_label.text() == "22   (19 - 3)"
+    assert panel.period_pace_label.text() == "4.68 pts/min"
+    assert panel.half_points_title.text() == "PUNTOS 2H"
+    assert panel.half_points_label.text() == "19 - 3   ·   22 pts"
+    assert panel.half_pace_label.text() == "4.68 pts/min"
+    assert panel.first_half_points_label.text() == "46 - 44   ·   90 pts"
+    assert panel.first_half_pace_label.text() == "4.50 pts/min"
+    assert panel.game_pace_label.text() == "4.53 pts/min"
+    assert panel.baseline_button.isHidden(), \
+        "el DOM completo no debe pedir marcador inicial manual"
+    assert window.baseline_button.isHidden(), \
+        "la barra superior tampoco debe pedir el marcador inicial"
+
+    block = board.block_for(MarketKey.game())
+    assert block is not None and block.table.rowCount() == 1
+    assert block.table.item(0, COL_HALF).text() == \
+        f"{view.focus.margin_vs_half_pace:+.2f}"
+    window.deleteLater()
+    qapp.processEvents()
+
+
+def test_evento_nuevo_solo_con_mercado_limpia_parciales_y_metricas_anteriores(app):
+    from visorunder.calculations.metrics import compute_general_metrics
+
+    app.start_bridge()
+    enviar(app, payload(gameState={
+        "scoreA": 65, "scoreB": 47, "period": 3,
+        "clockRaw": "24:42", "clockSemantics": "GAME_ELAPSED",
+        "teamA": {"name": "Baréin", "total": 65,
+                  "periods": {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}},
+        "teamB": {"name": "Arabia Saudí", "total": 47,
+                  "periods": {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": 0}},
+    }))
+    reader = app.start_session(app.profile)
+    reader.stop()
+    assert reader.tick().state.current_period_score().total == 22
+
+    # El primer paquete del evento nuevo puede traer solo mercado. Ni durante
+    # ese intervalo se pueden conservar nombres, parciales o ritmos de Baréin.
+    enviar(app, payload(
+        event={"id": "nuevo-evento", "name": "Equipo C vs Equipo D"},
+        visibleMarket={"marketType": "GAME_TOTAL", "period": None, "half": None,
+                       "confidence": 0.95, "rawTitle": "Total del partido",
+                       "sidesConfirmed": True},
+        lines=[{"line": 151.5, "overOdds": 1.85, "underOdds": 1.90}],
+        gameState=None,
+    ))
+    nuevo = reader.tick()
+    general = compute_general_metrics(nuevo.state)
+
+    assert nuevo.state.team_a.usable_value() is None
+    assert nuevo.state.team_b.usable_value() is None
+    assert nuevo.state.score_a_value is None and nuevo.state.score_b_value is None
+    assert nuevo.state.tracker.dom_breakdown == {}
+    assert general.total_points is None
+    assert general.period_points is None
+    assert general.half_points is None and general.half_pace is None
+    assert general.first_half_points is None and general.first_half_pace is None
+    assert nuevo.markets.get(MarketKey.game()).lines[0].line == 151.5
 
 
 def test_lineas_suspendidas_no_detienen_scoreboard_ni_rejuvenecen_la_ultima_cuota(app):

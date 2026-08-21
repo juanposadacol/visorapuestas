@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
 
         self.baseline_button = QPushButton("Marcador inicial del cuarto")
         self.baseline_button.clicked.connect(lambda: self._ask_baseline(force=True))
+        self.baseline_button.setVisible(False)
 
         self.on_top_check = QCheckBox("Siempre encima")
         self.on_top_check.setChecked(self.controller.settings.always_on_top)
@@ -349,6 +350,7 @@ class MainWindow(QMainWindow):
         snapshot = reader.last_snapshot if reader else None
         view = self.controller.build_view_model(snapshot)
         if view.snapshot is None or view.general is None:
+            self.baseline_button.setVisible(False)
             # Todavia sin sesion: el panel de conexion es justo lo que hay que
             # poder mirar ahora, para saber que falta.
             self.connection_panel.update_view(
@@ -369,6 +371,7 @@ class MainWindow(QMainWindow):
             focus_freshness=view.focus_freshness,
             focus_age_text=view.focus_age_text,
         )
+        self.baseline_button.setVisible(bool(view.snapshot.needs_period_baseline))
         self.connection_panel.update_view(
             link_state=view.link_state, age_seconds=view.link_age_seconds,
             field_sources=view.field_sources, latency_ms=view.link_latency_ms,

@@ -93,13 +93,16 @@ def test_v1_flujo_completo(window):
     # 9: sin marcador inicial NO se inventan los puntos del cuarto
     assert win.metrics_panel.period_points_label.text() == "--"
     assert win.metrics_panel.period_pace_label.text() == "--"
-    assert win.metrics_panel.baseline_button.isVisible() or True  # visible al pintar
+    assert not win.metrics_panel.baseline_button.isHidden()
+    assert not win.baseline_button.isHidden(), "el fallback manual sigue disponible"
 
     # el usuario introduce el marcador con el que empezo el Q3
     controller.set_period_baseline(3, 34, 21)
     _pump(win, controller, 1)
     assert win.metrics_panel.period_points_label.text().startswith("19")
     assert win.metrics_panel.period_pace_label.text() == "4.19 pts/min"
+    assert win.metrics_panel.baseline_button.isHidden()
+    assert win.baseline_button.isHidden()
 
     # 12-13: se evaluan varias lineas y se selecciona una
     assert _q3_block(win).table.rowCount() == 4
