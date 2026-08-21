@@ -15,7 +15,8 @@
 
   const { text, markets, lines: linesLib, dedupe, visibility,
           scan: scanLib, options: optionsLib, payload: payloadLib,
-          gamestate: gamestateLib, dom, errors: erroresLib } = globalThis.VDIAG;
+          gamestate: gamestateLib, dom, errors: erroresLib,
+          structure: structureLib } = globalThis.VDIAG;
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
@@ -417,6 +418,9 @@
           unassigned: (registro.rejected || []).length,
           debug: describirConCuidado(registro.container, kind, label),
           headerDebug: describirConCuidado(registro.container, kind, label),
+          // El nodo se guarda para poder copiar su estructura, pero NUNCA
+          // viaja en el snapshot: un nodo del DOM no se puede serializar.
+          container: registro.container,
         };
 
         const previo = encontrados.get(clave);
@@ -445,6 +449,8 @@
       state.gameState = descubierto.gameState;
       state.gameDiagnostics = descubierto.diagnostics;
       state.gameMemory = descubierto.memory;
+      state.scoreboardNode = (descubierto.nodes && descubierto.nodes.score) ||
+        buscarScoreboard(raices);
     } catch (error) {
       anotarError({ stage: 'gamestate', message: mensajeDe(error) });
     }
@@ -553,6 +559,24 @@
     });
   }
 
+  /**
+   * Contenedor del marcador aunque no se haya podido LEER el marcador.
+   *
+   * Si no sabemos interpretarlo, al menos podemos copiar como esta montado y
+   * ajustar el lector contra HTML de verdad en lugar de a ciegas.
+   */
+  function buscarScoreboard(raices) {
+    for (const raiz of raices || []) {
+      try {
+        const encontrados = gamestateLib.findScoreboardContainers(raiz, DOM_ADAPTER);
+        if (encontrados.length) return encontrados[0];
+      } catch (error) {
+        anotarError({ stage: 'scoreboard', message: mensajeDe(error) });
+      }
+    }
+    return null;
+  }
+
   /** Nombre del evento, sin arrastrar datos de la cuenta. */
   function eventName() {
     const titulo = (document.title || '').split('|')[0].trim();
@@ -657,8 +681,11 @@
       eventId: state.eventId === undefined ? null : state.eventId,
       visibleMarket: state.visibleMarket,
       environment: state.environment,
+      // `container` se quita a proposito: es un nodo del DOM y `sendResponse`
+      // no puede serializarlo.
       markets: Array.from(state.markets.values())
-        .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key)),
+        .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key))
+        .map(({ container, ...resto }) => resto),
       history: state.history.slice(-200),
       // Errores AGRUPADOS: una entrada por causa y raiz, con su cuenta. Antes
       // se enviaba una linea por ocurrencia y el popup mostraba la misma
@@ -676,14 +703,76 @@
     };
   }
 
-  chrome.runtime.onMessage.addListener((mensaje, sender, sendResponse) => {
-    if (!mensaje || mensaje.type !== 'VDIAG_GET_STATE') return undefined;
-    try {
-      sendResponse({ ok: true, state: snapshot() });
-    } catch (error) {
-      sendResponse({ ok: false, error: String(error && error.message || error) });
+  /**
+   * Estructura saneada de un trozo del DOM, para poder ajustar el lector
+   * contra HTML real en vez de adivinando.
+   */
+  function copiarEstructura(que) {
+    if (que === 'scoreboard') {
+      if (!state.scoreboardNode) {
+        const marcosAjenos = ((state.environment || {}).frames || [])
+          .filter((f) => !f.sameOrigin).length;
+        return marcosAjenos
+          ? 'SCOREBOARD NO ACCESIBLE DESDE EL DOM PRINCIPAL\n\n' +
+            `Hay ${marcosAjenos} iframe(s) de otro origen. El navegador impide leer su ` +
+            'contenido, y esta bien que lo impida: no se va a intentar rodear.'
+          : 'No se ha encontrado ningun bloque que se declare marcador en el DOM accesible.';
+      }
+      return structureLib.buildStructureReport('SCOREBOARD', state.scoreboardNode,
+        DOM_ADAPTER, {
+          marcador: state.gameState && state.gameState.scoreA !== undefined
+            ? `${state.gameState.scoreA}-${state.gameState.scoreB}` : 'no leido',
+          estado: state.gameDiagnostics && state.gameDiagnostics.score
+            ? state.gameDiagnostics.score.status : '--',
+        });
     }
-    return true;
+
+    const registro = state.markets.get(state.visibleMarket) || mercadoConMasLineas();
+    if (!registro || !registro.container) {
+      return 'Todavia no hay ningun mercado reconocido del que copiar la estructura.';
+    }
+    return structureLib.buildStructureReport('MERCADO', registro.container, DOM_ADAPTER, {
+      clave: registro.key,
+      confianza: registro.confidence,
+      seccion: registro.sectionLabel,
+      titulo: registro.headerText,
+      lineas: (registro.lines || [])
+        .map((l) => `${l.line}: over ${l.overOdds ?? '--'} / under ${l.underOdds ?? '--'}`)
+        .join(' | '),
+    });
+  }
+
+  function mercadoConMasLineas() {
+    let mejor = null;
+    for (const registro of state.markets.values()) {
+      if (!registro.existsInDom) continue;
+      if (!mejor || (registro.lines || []).length > (mejor.lines || []).length) mejor = registro;
+    }
+    return mejor;
+  }
+
+  chrome.runtime.onMessage.addListener((mensaje, sender, sendResponse) => {
+    if (!mensaje) return undefined;
+
+    if (mensaje.type === 'VDIAG_GET_STATE') {
+      try {
+        sendResponse({ ok: true, state: snapshot() });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error && error.message || error) });
+      }
+      return true;
+    }
+
+    if (mensaje.type === 'VDIAG_COPY_STRUCTURE') {
+      try {
+        sendResponse({ ok: true, texto: copiarEstructura(mensaje.what) });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error && error.message || error) });
+      }
+      return true;
+    }
+
+    return undefined;
   });
 
   if (document.readyState === 'loading') {

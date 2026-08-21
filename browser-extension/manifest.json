@@ -26,6 +26,7 @@
         "src/lib/scan.js",
         "src/lib/report.js",
         "src/lib/gamestate.js",
+        "src/lib/structure.js",
         "src/lib/payload.js",
         "src/lib/bridge_client.js",
         "src/content.js"

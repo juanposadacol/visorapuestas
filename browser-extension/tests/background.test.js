@@ -27,7 +27,8 @@ const vm = require('node:vm');
 
 const RAIZ = path.join(__dirname, '..');
 const LIBS = ['dom', 'errors', 'text', 'markets', 'lines', 'dedupe', 'visibility',
-              'options', 'scan', 'report', 'gamestate', 'payload', 'bridge_client'];
+              'options', 'scan', 'report', 'gamestate', 'structure', 'payload',
+              'bridge_client'];
 
 /** Payload valido minimo, del mismo tipo que construye el content script. */
 function payloadValido(linea = 44.5) {

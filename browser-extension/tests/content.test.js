@@ -15,7 +15,8 @@ const { createDocument, el } = require('./fake_dom.js');
 
 const RAIZ = path.join(__dirname, '..');
 const LIBS = ['dom', 'errors', 'text', 'markets', 'lines', 'dedupe', 'visibility',
-              'options', 'scan', 'report', 'gamestate', 'payload', 'bridge_client'];
+              'options', 'scan', 'report', 'gamestate', 'structure', 'payload',
+              'bridge_client'];
 
 function opcion(doc, etiqueta, cuota) {
   return el(doc, 'div', { class: 'option' }, [
@@ -101,6 +102,12 @@ function montarContenido(doc, url) {
   vm.runInContext(fs.readFileSync(path.join(RAIZ, 'src', 'content.js'), 'utf8'),
                   sandbox, { filename: 'content.js' });
 
+  function pedir(mensaje) {
+    let salida = null;
+    for (const oyente of oyentes) oyente(mensaje, {}, (r) => { salida = r; });
+    return salida;
+  }
+
   function estado() {
     let salida = null;
     for (const oyente of oyentes) {
@@ -117,6 +124,7 @@ function montarContenido(doc, url) {
 
   return {
     estado,
+    pedir,
     mensajes,
     rescanear,
     irA: (nueva) => { sandbox.location.href = nueva; },
@@ -278,4 +286,63 @@ test('el latido se manda desde la pestana, sin permiso "alarms"', () => {
   const c = montarContenido(doc);
   assert.ok(c.latidos().length >= 1,
             'el primer latido sale sin esperar al primer ciclo del temporizador');
+});
+
+test('F. se puede copiar la estructura saneada del mercado', () => {
+  const doc = createDocument();
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
+  const c = montarContenido(doc);
+
+  const respuesta = c.pedir({ type: 'VDIAG_COPY_STRUCTURE', what: 'market' });
+  assert.ok(respuesta.ok, JSON.stringify(respuesta));
+  assert.match(respuesta.texto, /^MERCADO/);
+  assert.match(respuesta.texto, /clave: Q4_TOTAL/);
+  assert.match(respuesta.texto, /section\.market/);
+  assert.match(respuesta.texto, /"Menos de 44\.5"/);
+  assert.match(respuesta.texto, /"1\.90"/);
+  assert.match(respuesta.texto, /estructura saneada/);
+});
+
+test('F. y la del scoreboard, aunque el marcador no se haya podido leer', () => {
+  const doc = createDocument();
+  doc.body.appendChild(el(doc, 'div', { class: 'event-header scoreboard' }, [
+    el(doc, 'div', { class: 'scoreboard__team' }, [
+      el(doc, 'span', { class: 'team__name' }, ['Las Vegas Aces']),
+      el(doc, 'span', { class: 'team__score' }, ['??']),
+    ]),
+  ]));
+  const c = montarContenido(doc);
+
+  const respuesta = c.pedir({ type: 'VDIAG_COPY_STRUCTURE', what: 'scoreboard' });
+  assert.ok(respuesta.ok);
+  assert.match(respuesta.texto, /^SCOREBOARD/);
+  assert.match(respuesta.texto, /scoreboard__team/);
+  assert.match(respuesta.texto, /"Las Vegas Aces"/);
+});
+
+test('si el scoreboard esta en un iframe ajeno, se dice y no se intenta rodear', () => {
+  const doc = createDocument();
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
+  const ajeno = el(doc, 'iframe', { src: 'https://otro-origen.example/scoreboard' });
+  ajeno.contentDocument = null;                  // el navegador lo impide
+  doc.body.appendChild(ajeno);
+  const c = montarContenido(doc);
+
+  const respuesta = c.pedir({ type: 'VDIAG_COPY_STRUCTURE', what: 'scoreboard' });
+  assert.ok(respuesta.ok);
+  assert.match(respuesta.texto, /NO ACCESIBLE DESDE EL DOM PRINCIPAL/);
+  assert.match(respuesta.texto, /no se va a intentar rodear/);
+});
+
+test('el snapshot no lleva nodos del DOM: tiene que poder serializarse', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboard(doc, 56, 69));
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
+  const c = montarContenido(doc);
+
+  // Si algun nodo se colara, `sendResponse` fallaria en el navegador de verdad.
+  assert.doesNotThrow(() => JSON.stringify(c.estado()));
+  for (const market of c.estado().markets) {
+    assert.equal(market.container, undefined, 'el contenedor se queda en la pestana');
+  }
 });

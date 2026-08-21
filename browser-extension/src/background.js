@@ -12,7 +12,7 @@
  */
 importScripts('lib/dom.js', 'lib/errors.js', 'lib/text.js', 'lib/markets.js', 'lib/lines.js', 'lib/dedupe.js',
               'lib/visibility.js', 'lib/options.js', 'lib/scan.js', 'lib/report.js',
-              'lib/gamestate.js', 'lib/payload.js', 'lib/bridge_client.js');
+              'lib/gamestate.js', 'lib/structure.js', 'lib/payload.js', 'lib/bridge_client.js');
 
 const { payload: payloadLib, bridgeClient } = self.VDIAG;
 

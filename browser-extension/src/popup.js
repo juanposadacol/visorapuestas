@@ -273,6 +273,23 @@
     }
   }
 
+  /** Pide al content script la estructura saneada y la deja en el portapapeles. */
+  async function copiarEstructura(que) {
+    try {
+      const tab = await pestanaActiva();
+      if (!tab || tab.id === undefined) throw new Error('no hay pestana activa');
+      const respuesta = await chrome.tabs.sendMessage(
+        tab.id, { type: 'VDIAG_COPY_STRUCTURE', what: que });
+      if (!respuesta || !respuesta.ok) {
+        throw new Error((respuesta && respuesta.error) || 'sin respuesta');
+      }
+      await copiar(respuesta.texto,
+                   que === 'scoreboard' ? 'Estructura del scoreboard' : 'Estructura del mercado');
+    } catch (error) {
+      aviso(`No se pudo copiar la estructura: ${error.message}`, true);
+    }
+  }
+
   function descargarJson() {
     if (!ultimoEstado) return;
     const contenido = JSON.stringify(report.buildJsonReport(ultimoEstado), null, 2);
@@ -307,6 +324,10 @@
       if (!ultimoEstado) return aviso('sin datos todavia', true);
       copiar(JSON.stringify(report.buildJsonReport(ultimoEstado), null, 2), 'JSON');
     });
+    // Estructura REAL del mercado y del marcador, saneada. Es lo que permite
+    // ajustar el lector contra el HTML de BetPlay en vez de a ciegas.
+    $('copiar-estructura').addEventListener('click', () => copiarEstructura('market'));
+    $('copiar-scoreboard').addEventListener('click', () => copiarEstructura('scoreboard'));
     $('descargar').addEventListener('click', descargarJson);
     $('refrescar').addEventListener('click', refrescar);
     $('ver-debug').addEventListener('change', (evento) => {

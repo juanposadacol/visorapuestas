@@ -409,6 +409,9 @@
 
       candidatos.push({
         nodes: [a.node, b.node],
+        //: Contenedor para el diagnostico estructural: el ancestro que declara
+        //: ser marcador si lo hay, y si no el que agrupa a los dos numeros.
+        container: contenedorDelMarcador(a, b, adapter) || comun.node,
         raw: `${a.text}-${b.text}`,
         value: { scoreA: a.value, scoreB: b.value },
         teams: equipoA && equipoB ? [equipoA.name, equipoB.name] : null,
@@ -420,6 +423,38 @@
       });
     }
     return candidatos;
+  }
+
+  /** Ancestro comun que se declara marcador, si existe. */
+  function contenedorDelMarcador(a, b, adapter) {
+    const cadena = a.chain || [];
+    for (let i = 0; i < cadena.length && i < 6; i += 1) {
+      const ancestro = cadena[i];
+      if (!(b.chain || []).includes(ancestro)) continue;
+      if (SCOREBOARD_HINTS.test(attrTextOf(ancestro, adapter))) return ancestro;
+    }
+    return null;
+  }
+
+  /**
+   * Contenedores que se declaran marcador, aunque no se haya podido leer
+   * ningun marcador dentro. Sirve para el diagnostico estructural: si no
+   * sabemos leer el marcador, al menos podemos mandar como esta montado.
+   */
+  function findScoreboardContainers(root, adapter) {
+    const encontrados = [];
+    const cadenas = new Map();
+    walk(root, adapter, (node, chain) => {
+      if (SCOREBOARD_HINTS.test(attrTextOf(node, adapter))) {
+        encontrados.push(node);
+        cadenas.set(node, chain);
+      }
+    });
+    // Se prefiere el MAS EXTERNO: es el bloque entero de la cabecera del
+    // evento, con los dos equipos, el cuarto y el reloj dentro.
+    const externos = encontrados.filter(
+      (node) => !(cadenas.get(node) || []).some((padre) => encontrados.includes(padre)));
+    return externos.slice(0, 3);
   }
 
   function mismaEtiqueta(a, b, adapter) {
@@ -493,7 +528,7 @@
     }
     return { value: mejor.value, confidence: mejor.confidence, reason: '',
              raw: mejor.raw, strong: !!mejor.strong, reasons: mejor.reasons,
-             teams: mejor.teams || null };
+             teams: mejor.teams || null, node: mejor.container || null };
   }
 
   function clockValidator(candidato, previous) {
@@ -680,11 +715,15 @@
       // Un gameState PARCIAL es valido: que no se sepa el marcador no puede
       // bloquear el mercado, y que no se sepa el reloj no puede inventarlo.
       gameState: Object.keys(estado).length ? estado : null,
+      // Los NODOS van aparte: el diagnostico viaja por `sendResponse` y un
+      // nodo del DOM no se puede serializar. Aqui solo se guardan para poder
+      // copiar la estructura del marcador desde el popup.
+      nodes: { score: lecturaMarcador.node || null },
       diagnostics: {
-        clock: reloj,
-        period: cuarto,
+        clock: sinNodo(reloj),
+        period: sinNodo(cuarto),
         score: {
-          ...lecturaMarcador,
+          ...sinNodo(lecturaMarcador),
           status: marcador.status,
           confirmed: marcador.confirmed,
           published: marcador.confirmed ? marcador.value : null,
@@ -710,6 +749,16 @@
     };
   }
 
+  /** Copia sin el nodo del DOM, que no se puede serializar. */
+  function sinNodo(lectura) {
+    const copia = { ...lectura };
+    delete copia.node;
+    delete copia.nodes;
+    delete copia.container;
+    if (copia.rejected) delete copia.rejected.nodes;
+    return copia;
+  }
+
   function secondsOf(reloj) {
     const match = String(reloj).match(CLOCK_RE);
     return match ? Number(match[1]) * 60 + Number(match[2]) : null;
@@ -720,6 +769,7 @@
            REPETICIONES, pareceNombreDeEquipo, periodoDe, continuaDe,
            findClockCandidates, findPeriodCandidates, findScoreCandidates,
            pickBest, stabilizeScore, clockValidator, periodValidator,
-           scoreValidator, collectCandidates, extractGameState,
+           scoreValidator, collectCandidates, findScoreboardContainers,
+           extractGameState,
            extractGameStateFromRoots };
 });
