@@ -72,18 +72,27 @@ class FakeElement extends FakeNode {
   constructor(tagName, atributos) {
     super(NODE.ELEMENT);
     this.tagName = String(tagName || 'div').toUpperCase();
-    this.attributes = { ...(atributos || {}) };
+    this._attrs = { ...(atributos || {}) };
     this.shadowRoot = null;
     this.contentDocument = null;
   }
 
+  // `attributes` es una lista de {name, value}, como en el DOM real.
+  get attributes() {
+    return Object.entries(this._attrs).map(([name, value]) => ({ name, value }));
+  }
+
+  get className() { return this._attrs.class || ''; }
+
+  get id() { return this._attrs.id || ''; }
+
   getAttribute(nombre) {
-    return Object.prototype.hasOwnProperty.call(this.attributes, nombre)
-      ? this.attributes[nombre] : null;
+    return Object.prototype.hasOwnProperty.call(this._attrs, nombre)
+      ? this._attrs[nombre] : null;
   }
 
   hasAttribute(nombre) {
-    return Object.prototype.hasOwnProperty.call(this.attributes, nombre);
+    return Object.prototype.hasOwnProperty.call(this._attrs, nombre);
   }
 
   attachShadow() {

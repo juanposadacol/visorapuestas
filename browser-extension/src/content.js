@@ -394,9 +394,20 @@
 
     // Marcador, cuarto y reloj desde el DOM, si es que estan. Si no hay
     // confianza suficiente, no se envia nada y la aplicacion usara OCR.
+    //
+    // Se miran TODAS las raices vivas, no solo `document.body`: en BetPlay la
+    // cabecera del evento puede estar dentro de un shadow root o de un iframe
+    // del mismo origen, y buscarla solo en el documento principal era quedarse
+    // ciego justo donde estan los datos.
     try {
-      const descubierto = gamestateLib.extractGameState(
-        document.body || document.documentElement, DOM_ADAPTER, state.gameMemory);
+      const raices = roots
+        .filter((entrada) => dom.isUsableRoot(entrada.root))
+        .map((entrada) => entrada.kind === 'document'
+          ? (entrada.root.body || entrada.root.documentElement)
+          : entrada.root)
+        .filter(Boolean);
+      const descubierto = gamestateLib.extractGameStateFromRoots(
+        raices, DOM_ADAPTER, state.gameMemory);
       state.gameState = descubierto.gameState;
       state.gameDiagnostics = descubierto.diagnostics;
       state.gameMemory = descubierto.memory;

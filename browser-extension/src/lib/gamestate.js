@@ -1,32 +1,82 @@
 /**
  * Descubrimiento del marcador, el cuarto y el reloj en el DOM.
  *
- * Aqui hay mas riesgo que en el mercado: una pagina de deportes esta llena de
- * numeros que se parecen a un marcador. Por eso:
+ * Aqui hay mucho mas riesgo que en los mercados: una pagina de apuestas esta
+ * llena de numeros que se parecen a un marcador. La version anterior emparejaba
+ * dos enteros cercanos en el arbol y les daba 0.75 de confianza, y en la prueba
+ * real sobre BetPlay eso produjo:
  *
- * * se recogen TODOS los candidatos con su confianza, no se elige el primero;
- * * si hay empate entre candidatos distintos, no se elige ninguno;
- * * se aplican las validaciones acordadas: el marcador no baja, el reloj tiene
- *   forma MM:SS y baja, y el cuarto va de 1 a 4;
- * * si no hay confianza suficiente, no se envia nada y la aplicacion usara OCR.
+ *     MARCADOR/RELOJ DOM
+ *     43-232
+ *
+ * que no era el marcador de nada. Bajar el maximo de 250 a 150 habria tapado
+ * ESE caso concreto sin arreglar el problema: la proximidad entre dos numeros
+ * NO es evidencia de que sean un marcador.
+ *
+ * La regla de esta version:
+ *
+ *   PROXIMIDAD SOLA NUNCA CONFIRMA UN MARCADOR.
+ *
+ * Hace falta evidencia semantica o estructural: un contenedor que se declare
+ * marcador, nombres de equipo asociados a cada numero, simetria de maquetacion,
+ * cercania al reloj o al cuarto, continuidad con lo que ya se sabia. Y en
+ * contra: estar dentro de un bloque de apuestas, de una lista de mercados, de
+ * cuotas, o acompanado de "Mas de"/"Menos de".
+ *
+ * Ademas, una sola lectura no confirma nada salvo que la evidencia sea muy
+ * fuerte: un candidato debil tiene que repetirse varias veces seguidas. Y si un
+ * marcador ya confirmado retrocede o pega un salto imposible, no se reemplaza:
+ * se marca SCORE_UNDER_REVIEW y se conserva el anterior, para no contaminar el
+ * calculo con un dato inventado.
+ *
+ * Principio de todo el proyecto: NINGUN DATO ES MEJOR QUE UN DATO INCORRECTO.
  */
 (function (root, factory) {
   const api = factory(
-    typeof require === 'function' ? require('./text.js') : root.VDIAG.text,
-    typeof require === 'function' ? require('./markets.js') : root.VDIAG.markets
+    typeof require === 'function' ? require('./text.js') : root.VDIAG.text
   );
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.VDIAG = Object.assign(root.VDIAG || {}, { gamestate: api });
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (text, markets) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (text) {
   'use strict';
 
   const CLOCK_RE = /^(\d{1,2}):([0-5]\d)$/;
+  //: Tope defensivo. NO es la defensa principal: el 232 del falso positivo
+  //: cabia de sobra aqui y se rechaza por falta de evidencia, no por tamano.
   const MAX_SCORE = 250;
-  //: Un marcador de baloncesto por debajo de esto al principio es normal, pero
-  //: un numero suelto tambien: por eso el marcador exige un PAR cercano.
   const MAX_PERIOD = 4;
 
-  /** Recorrido con la cadena de padres, igual que el resto de modulos. */
+  //: Salto maximo creible del marcador de un equipo entre dos lecturas.
+  const MAX_JUMP = 25;
+
+  // ------------------------------------------------------------- vocabulario
+
+  //: Un contenedor que se declara marcador / cabecera del evento.
+  const SCOREBOARD_HINTS = /\b(scoreboard|score-?board|scoreheader|marcador|tanteo|resultado|match-?header|event-?header|game-?header|live-?header|score-?panel|scores?)\b|score|marcador/;
+  //: Un numero que se declara puntuacion.
+  const SCORE_VALUE_HINTS = /\b(score|puntos|points|tanteo|marcador|result)\b|score/;
+  //: Nombres de equipo: atributos que los identifican.
+  const TEAM_HINTS = /\b(team|equipo|participant|competitor|home|away|local|visitante|opponent|contender)\b|team|equipo/;
+  //: Bloques de APUESTAS. Un numero aqui dentro no es un marcador.
+  const BETTING_HINTS = /\b(market|mercado|odds|cuota|cuotas|bet|apuesta|apuestas|selection|seleccion|outcome|coupon|cupon|betslip|bet-?slip|boleto|carrito|price|stake|wager)\b|odds|cuota|market|bet/;
+  //: Listas de mercados.
+  const MARKET_LIST_HINTS = /\b(market-?list|markets|lista-?mercados|accordion|coupon-?list|outcomes)\b/;
+  //: Estado en vivo: sitio natural del cuarto y del reloj.
+  const LIVE_HINTS = /\b(live|en-?vivo|directo|period|periodo|cuarto|quarter|clock|reloj|timer|tiempo|match-?state|game-?state|status)\b/;
+
+  const OVER_UNDER_RE = /\b(mas de|menos de|over|under)\b/;
+
+  //: Palabras que descartan un texto como nombre de equipo.
+  const NO_ES_EQUIPO = /\b(total|puntos|cuota|apuesta|mercado|mas de|menos de|over|under|handicap|ganador|linea|cuarto|periodo|mitad|prorroga|iniciar|sesion|deposito|saldo|retirar|combinada|acumulada)\b/;
+
+  // ----------------------------------------------------------- recorrido base
+
+  function attrTextOf(node, adapter) {
+    if (!adapter || typeof adapter.attrText !== 'function') return '';
+    return adapter.attrText(node) || '';
+  }
+
+  /** Recorrido con la cadena de padres, del mas cercano al mas lejano. */
   function walk(node, adapter, visit, chain) {
     const padres = chain || [];
     visit(node, padres);
@@ -35,66 +85,250 @@
 
   function leaves(root, adapter) {
     const hojas = [];
+    let indice = 0;
     walk(root, adapter, (node, chain) => {
       if (adapter.children(node).length === 0) {
         const valor = (adapter.text(node) || '').trim();
-        if (valor) hojas.push({ node, chain, text: valor });
+        if (valor) hojas.push({ node, chain, text: valor, order: indice++ });
       }
     });
     return hojas;
   }
 
+  /** ¿Alguno de los ancestros cercanos encaja con este patron? */
+  function chainMatches(hoja, adapter, patron, profundidad) {
+    const limite = profundidad === undefined ? 6 : profundidad;
+    const cadena = hoja.chain || [];
+    for (let i = 0; i < cadena.length && i < limite; i += 1) {
+      if (patron.test(attrTextOf(cadena[i], adapter))) return i;
+    }
+    return -1;
+  }
+
+  /** Ancestro comun mas cercano de dos hojas, con su profundidad. */
+  function sharedAncestor(a, b, limite) {
+    const tope = limite === undefined ? 6 : limite;
+    const cadenaA = a.chain || [];
+    const cadenaB = b.chain || [];
+    for (let i = 0; i < cadenaA.length && i < tope; i += 1) {
+      const indice = cadenaB.indexOf(cadenaA[i]);
+      if (indice !== -1 && indice < tope) {
+        return { node: cadenaA[i], depth: Math.max(i, indice), depthA: i, depthB: indice };
+      }
+    }
+    return null;
+  }
+
+  // --------------------------------------------------------- nombres de equipo
+
+  /** ¿Este texto puede ser el nombre de un equipo? */
+  function pareceNombreDeEquipo(valor) {
+    const crudo = String(valor || '').trim();
+    if (crudo.length < 3 || crudo.length > 40) return false;
+    if (/^\d/.test(crudo)) return false;
+    const letras = (crudo.match(/[a-zA-ZáéíóúñÁÉÍÓÚÑ]/g) || []).length;
+    if (letras < 3) return false;
+    if (/\d{2,}/.test(crudo)) return false;                 // "Cuota 1.85", "12:34"
+    return !NO_ES_EQUIPO.test(text.normalize(crudo));
+  }
+
+  /**
+   * Nombre de equipo asociado a un numero: se busca en el ancestro que los
+   * agrupa (la tarjeta del equipo), no en cualquier sitio de la pagina.
+   */
+  function equipoDe(hoja, hojas, adapter) {
+    const cadena = hoja.chain || [];
+    for (let i = 0; i < cadena.length && i < 4; i += 1) {
+      const contenedor = cadena[i];
+      const dentro = hojas.filter((h) => (h.chain || []).includes(contenedor));
+      const nombres = dentro.filter((h) => h !== hoja && pareceNombreDeEquipo(h.text));
+      if (!nombres.length) continue;
+      // Si el contenedor tiene DOS nombres o mas, no es la tarjeta de un
+      // equipo sino el bloque entero: no se puede atribuir el numero.
+      if (nombres.length > 1 && i > 0) continue;
+      const marcado = TEAM_HINTS.test(attrTextOf(contenedor, adapter));
+      return { name: nombres[0].text, depth: i, marked: marcado };
+    }
+    return null;
+  }
+
   // ------------------------------------------------------------------ reloj
-  /** Candidatos a reloj: hojas con forma MM:SS y un tiempo verosimil. */
+
+  /**
+   * Candidatos a reloj: hojas con forma MM:SS, puntuadas por su CONTEXTO.
+   *
+   * En BetPlay hay relojes de transmision, temporizadores y otros partidos.
+   * Un MM:SS suelto en cualquier rincon de la pagina no es el reloj del
+   * partido, por muy bien formado que este.
+   */
   function findClockCandidates(root, adapter) {
+    const hojas = leaves(root, adapter);
     const candidatos = [];
-    for (const hoja of leaves(root, adapter)) {
+    for (const hoja of hojas) {
       const match = hoja.text.match(CLOCK_RE);
       if (!match) continue;
       const minutos = Number(match[1]);
       const segundos = Number(match[2]);
       // Un cuarto no dura mas de 12 minutos en ninguna competicion habitual.
       if (minutos > 12) continue;
+
+      const razones = [];
+      let confianza = 0.25;                    // un MM:SS solo, sin contexto
+
+      if (SCOREBOARD_HINTS.test(attrTextOf(hoja.node, adapter)) ||
+          chainMatches(hoja, adapter, SCOREBOARD_HINTS, 4) !== -1) {
+        confianza += 0.35;
+        razones.push('dentro del marcador');
+      }
+      if (LIVE_HINTS.test(attrTextOf(hoja.node, adapter)) ||
+          chainMatches(hoja, adapter, LIVE_HINTS, 3) !== -1) {
+        confianza += 0.20;
+        razones.push('en el bloque de estado en vivo');
+      }
+      if (cercaDeUnCuarto(hoja, hojas)) {
+        confianza += 0.20;
+        razones.push('junto al cuarto');
+      }
+      if (cercaDeNombresDeEquipo(hoja, hojas)) {
+        confianza += 0.15;
+        razones.push('junto a los nombres de los equipos');
+      }
+      if (chainMatches(hoja, adapter, BETTING_HINTS, 6) !== -1) {
+        confianza -= 0.40;
+        razones.push('dentro de un bloque de apuestas');
+      }
+
       candidatos.push({
         node: hoja.node,
         raw: hoja.text,
         value: `${String(minutos).padStart(2, '0')}:${match[2]}`,
         seconds: minutos * 60 + segundos,
-        confidence: minutos <= 12 ? 0.8 : 0.4,
+        confidence: acotar(confianza),
+        reasons: razones,
       });
     }
     return candidatos;
   }
 
+  function cercaDeUnCuarto(hoja, hojas) {
+    return hojas.some((otra) => {
+      if (otra === hoja) return false;
+      if (!periodoDe(otra.text)) return false;
+      const comun = sharedAncestor(hoja, otra, 4);
+      return !!comun;
+    });
+  }
+
+  function cercaDeNombresDeEquipo(hoja, hojas) {
+    const cerca = hojas.filter((otra) => otra !== hoja &&
+      pareceNombreDeEquipo(otra.text) && !!sharedAncestor(hoja, otra, 4));
+    return cerca.length >= 2;
+  }
+
   // ----------------------------------------------------------------- cuarto
-  /** Candidatos a cuarto, reutilizando el reconocedor de mercados. */
+
+  function periodoDe(valor) {
+    const normalizado = text.normalizeOrdinals(valor || '');
+    if (!normalizado || normalizado.length > 24) return null;
+    const directo = normalizado.match(/^q\s*([1-4])$/) ||
+                    normalizado.match(/^([1-4])\s*q$/) ||
+                    normalizado.match(/\b([1-4])\s+(?:cuarto|periodo|parcial|quarter)\b/) ||
+                    normalizado.match(/\b(?:cuarto|periodo|parcial|quarter)\s+([1-4])\b/);
+    if (!directo) return null;
+    const periodo = Number(directo[1]);
+    return periodo >= 1 && periodo <= MAX_PERIOD ? periodo : null;
+  }
+
+  /**
+   * Candidatos a cuarto.
+   *
+   * Ojo con la trampa: estando en el Q3 la pagina muestra tambien mercados del
+   * Q4. Que exista un titulo "Total de puntos - Cuarto 4" NO significa que el
+   * partido este en el cuarto 4. Por eso los candidatos que cuelgan de un
+   * bloque de apuestas se penalizan fuerte, y manda el marcador / estado en
+   * vivo.
+   */
   function findPeriodCandidates(root, adapter) {
+    const hojas = leaves(root, adapter);
     const candidatos = [];
-    for (const hoja of leaves(root, adapter)) {
+    for (const hoja of hojas) {
       if (hoja.text.length > 24) continue;
+      const periodo = periodoDe(hoja.text);
+      if (periodo === null) continue;
+
+      const razones = [];
+      let confianza = 0.3;
       const normalizado = text.normalizeOrdinals(hoja.text);
-      let periodo = null;
-      const directo = normalizado.match(/^q\s*([1-4])$/) ||
-                      normalizado.match(/^([1-4])\s*q$/) ||
-                      normalizado.match(/\b([1-4])\s+(?:cuarto|periodo|parcial|quarter)\b/) ||
-                      normalizado.match(/\b(?:cuarto|periodo|parcial|quarter)\s+([1-4])\b/);
-      if (directo) periodo = Number(directo[1]);
-      if (periodo === null || periodo < 1 || periodo > MAX_PERIOD) continue;
+      if (/^q?\s*[1-4]\s*q?$/.test(normalizado)) {
+        confianza += 0.1;
+        razones.push('etiqueta escueta');
+      }
+      if (SCOREBOARD_HINTS.test(attrTextOf(hoja.node, adapter)) ||
+          chainMatches(hoja, adapter, SCOREBOARD_HINTS, 4) !== -1) {
+        confianza += 0.35;
+        razones.push('dentro del marcador');
+      }
+      if (LIVE_HINTS.test(attrTextOf(hoja.node, adapter)) ||
+          chainMatches(hoja, adapter, LIVE_HINTS, 3) !== -1) {
+        confianza += 0.25;
+        razones.push('en el bloque de estado en vivo');
+      }
+      const enApuestas = chainMatches(hoja, adapter, BETTING_HINTS, 6);
+      if (enApuestas !== -1) {
+        confianza -= 0.55;
+        razones.push('es el cuarto de un MERCADO, no el del partido');
+      }
+      if (chainMatches(hoja, adapter, MARKET_LIST_HINTS, 6) !== -1) {
+        confianza -= 0.25;
+        razones.push('dentro de una lista de mercados');
+      }
+      if (OVER_UNDER_RE.test(text.normalize(hoja.text))) {
+        confianza -= 0.30;
+        razones.push('acompanado de mas/menos');
+      }
+
       candidatos.push({
         node: hoja.node, raw: hoja.text, value: periodo,
-        // "Q3" a secas es mas fiable que un texto largo que lo contenga.
-        confidence: /^q?\s*[1-4]\s*q?$/.test(normalizado) ? 0.8 : 0.75,
+        confidence: acotar(confianza), reasons: razones,
       });
     }
     return candidatos;
   }
 
   // --------------------------------------------------------------- marcador
+
+  function acotar(valor) {
+    return Math.max(0, Math.min(1, Math.round(valor * 1000) / 1000));
+  }
+
+  /** Cuantos numeros hay colgando de un contenedor: mucho ruido resta. */
+  function numerosBajo(contenedor, hojas) {
+    return hojas.filter((h) => (h.chain || []).includes(contenedor) &&
+                               /\d/.test(h.text)).length;
+  }
+
   /**
-   * Candidatos a marcador: PAREJAS de enteros que cuelgan de un mismo
-   * contenedor cercano. Un numero suelto nunca se toma por un marcador.
+   * Candidatos a marcador, con una puntuacion EXPLICITA.
+   *
+   * La base es deliberadamente baja: dos enteros cercanos, por si solos, no
+   * llegan ni de lejos al umbral. Lo que sube la nota es la evidencia:
+   *
+   *   +0.35  cada numero esta asociado al nombre de un equipo
+   *   +0.20  los dos cuelgan de un contenedor que se declara marcador
+   *   +0.15  los propios numeros se declaran puntuacion
+   *   +0.10  maquetacion simetrica (misma profundidad y misma etiqueta)
+   *   +0.10  continuidad con el marcador que ya teniamos
+   *   +0.10  cerca del reloj o del cuarto
+   *
+   * y lo que la hunde:
+   *
+   *   -0.40  dentro de un bloque de apuestas
+   *   -0.30  dentro de cuotas
+   *   -0.30  dentro de una lista de mercados
+   *   -0.30  acompanados de "Mas de" / "Menos de"
+   *   -0.20  el ancestro comun esta lleno de numeros
    */
-  function findScoreCandidates(root, adapter) {
+  function findScoreCandidates(root, adapter, previous) {
     const hojas = leaves(root, adapter);
     const numeros = [];
     for (const hoja of hojas) {
@@ -104,46 +338,152 @@
       numeros.push({ ...hoja, value: valor });
     }
 
+    const anterior = previous && previous.value ? previous.value : null;
     const candidatos = [];
     for (let i = 0; i < numeros.length - 1; i += 1) {
       const a = numeros[i];
       const b = numeros[i + 1];
-      // Deben compartir un ancestro cercano: si no, son numeros sin relacion.
-      const cercania = sharedAncestorDepth(a, b);
-      if (cercania === null || cercania > 3) continue;
+      const comun = sharedAncestor(a, b, 4);
+      if (!comun) continue;
+
+      const razones = [];
+      //: Base baja a proposito: la proximidad sola no confirma nada.
+      let confianza = 0.15;
+
+      const equipoA = equipoDe(a, hojas, adapter);
+      const equipoB = equipoDe(b, hojas, adapter);
+      if (equipoA && equipoB && equipoA.name !== equipoB.name) {
+        confianza += 0.35;
+        razones.push(`equipos asociados: ${equipoA.name} / ${equipoB.name}`);
+      }
+
+      const marcadorA = SCOREBOARD_HINTS.test(attrTextOf(a.node, adapter)) ||
+                        chainMatches(a, adapter, SCOREBOARD_HINTS, 4) !== -1;
+      const marcadorB = SCOREBOARD_HINTS.test(attrTextOf(b.node, adapter)) ||
+                        chainMatches(b, adapter, SCOREBOARD_HINTS, 4) !== -1;
+      if (marcadorA && marcadorB) {
+        confianza += 0.20;
+        razones.push('mismo contenedor de marcador');
+      }
+
+      const valorA = SCORE_VALUE_HINTS.test(attrTextOf(a.node, adapter));
+      const valorB = SCORE_VALUE_HINTS.test(attrTextOf(b.node, adapter));
+      if (valorA && valorB) {
+        confianza += 0.15;
+        razones.push('los numeros se declaran puntuacion');
+      }
+
+      if (comun.depthA === comun.depthB && mismaEtiqueta(a.node, b.node, adapter)) {
+        confianza += 0.10;
+        razones.push('maquetacion simetrica');
+      }
+
+      if (anterior && continuaDe(anterior, { scoreA: a.value, scoreB: b.value })) {
+        confianza += 0.10;
+        razones.push('continua el marcador anterior');
+      }
+
+      if (cercaDeRelojOCuarto(a, b, hojas)) {
+        confianza += 0.10;
+        razones.push('junto al reloj o al cuarto');
+      }
+
+      if (chainMatches(a, adapter, BETTING_HINTS, 6) !== -1 ||
+          chainMatches(b, adapter, BETTING_HINTS, 6) !== -1) {
+        confianza -= 0.40;
+        razones.push('dentro de un bloque de apuestas');
+      }
+      if (chainMatches(a, adapter, MARKET_LIST_HINTS, 6) !== -1) {
+        confianza -= 0.30;
+        razones.push('dentro de una lista de mercados');
+      }
+      if (textoConLados(comun.node, adapter)) {
+        confianza -= 0.30;
+        razones.push('acompanado de mas/menos');
+      }
+      const cuantos = numerosBajo(comun.node, hojas);
+      if (cuantos > 6) {
+        confianza -= 0.20;
+        razones.push(`el contenedor tiene ${cuantos} numeros`);
+      }
+
       candidatos.push({
         nodes: [a.node, b.node],
         raw: `${a.text}-${b.text}`,
         value: { scoreA: a.value, scoreB: b.value },
-        confidence: cercania <= 2 ? 0.75 : 0.6,
+        teams: equipoA && equipoB ? [equipoA.name, equipoB.name] : null,
+        //: Evidencia fuerte = se puede confirmar en una sola lectura.
+        strong: !!(equipoA && equipoB && equipoA.name !== equipoB.name) &&
+                (marcadorA && marcadorB),
+        confidence: acotar(confianza),
+        reasons: razones,
       });
     }
     return candidatos;
   }
 
-  function sharedAncestorDepth(a, b) {
-    for (let i = 0; i < a.chain.length && i < 4; i += 1) {
-      const indice = b.chain.indexOf(a.chain[i]);
-      if (indice !== -1 && indice < 4) return Math.max(i, indice);
-    }
-    return null;
+  function mismaEtiqueta(a, b, adapter) {
+    const ta = (attrTextOf(a, adapter).split(' ')[0] || '');
+    const tb = (attrTextOf(b, adapter).split(' ')[0] || '');
+    return !!ta && ta === tb;
+  }
+
+  function textoConLados(nodo, adapter) {
+    return OVER_UNDER_RE.test(text.normalize(adapter.text(nodo) || ''));
+  }
+
+  function cercaDeRelojOCuarto(a, b, hojas) {
+    return hojas.some((h) => {
+      if (h === a || h === b) return false;
+      if (!CLOCK_RE.test(h.text) && periodoDe(h.text) === null) return false;
+      return !!sharedAncestor(a, h, 4) && !!sharedAncestor(b, h, 4);
+    });
+  }
+
+  /** ¿Es este marcador una continuacion creible del anterior? */
+  function continuaDe(anterior, actual) {
+    const subeA = actual.scoreA - anterior.scoreA;
+    const subeB = actual.scoreB - anterior.scoreB;
+    return subeA >= 0 && subeB >= 0 && subeA <= MAX_JUMP && subeB <= MAX_JUMP;
   }
 
   // ------------------------------------------------------------- validacion
+
+  //: Sin memoria, la primera lectura tiene que ser MUY buena: equivocarse aqui
+  //: contamina despues toda la memoria, porque el marcador siguiente se juzga
+  //: contra este.
+  const UMBRAL_INICIAL = 0.9;
+  //: Evidencia intermedia (equipos asociados, pero maquetacion opaca): se
+  //: acepta solo despues de repetirse varias lecturas seguidas.
+  const UMBRAL_REPETIDO = 0.6;
+  //: Con un marcador ya confirmado, una continuacion creible exige menos.
+  //: Aun asi queda MUY por encima de lo que puntua la proximidad sola (0.15).
+  const UMBRAL_CONTINUACION = 0.5;
+  //: Lecturas seguidas iguales que exige un candidato sin evidencia fuerte.
+  const REPETICIONES = 3;
+
   /**
-   * Elige entre candidatos aplicando las validaciones y la memoria del ciclo
-   * anterior. Devuelve { value, confidence, reason } y `value` null si no hay
-   * una respuesta clara.
+   * Elige entre candidatos aplicando las validaciones. Devuelve
+   * { value, confidence, reason } con `value` null si no hay respuesta clara.
    */
-  function pickBest(candidatos, previous, validate) {
+  function pickBest(candidatos, previous, validate, umbral) {
     if (!candidatos.length) return { value: null, confidence: 0, reason: 'sin candidatos' };
 
+    const minimo = umbral === undefined ? 0 : umbral;
     const validos = candidatos.filter((c) => validate(c, previous));
     if (!validos.length) return { value: null, confidence: 0, reason: 'ningun candidato valido' };
 
-    validos.sort((a, b) => b.confidence - a.confidence);
-    const mejor = validos[0];
-    const empatados = validos.filter(
+    const suficientes = validos.filter((c) => (c.confidence || 0) >= minimo);
+    if (!suficientes.length) {
+      const mejor = [...validos].sort((a, b) => b.confidence - a.confidence)[0];
+      return { value: null, confidence: mejor.confidence, raw: mejor.raw,
+               reason: `evidencia insuficiente (${mejor.confidence.toFixed(2)} < ${minimo})`,
+               rejected: mejor };
+    }
+
+    suficientes.sort((a, b) => b.confidence - a.confidence);
+    const mejor = suficientes[0];
+    const empatados = suficientes.filter(
       (c) => Math.abs(c.confidence - mejor.confidence) < 1e-9 &&
              JSON.stringify(c.value) !== JSON.stringify(mejor.value));
     if (empatados.length) {
@@ -151,7 +491,9 @@
       return { value: null, confidence: 0, reason: 'candidatos ambiguos',
                ambiguous: [mejor, ...empatados].map((c) => c.raw) };
     }
-    return { value: mejor.value, confidence: mejor.confidence, reason: '', raw: mejor.raw };
+    return { value: mejor.value, confidence: mejor.confidence, reason: '',
+             raw: mejor.raw, strong: !!mejor.strong, reasons: mejor.reasons,
+             teams: mejor.teams || null };
   }
 
   function clockValidator(candidato, previous) {
@@ -169,10 +511,116 @@
 
   function scoreValidator(candidato, previous) {
     const { scoreA, scoreB } = candidato.value;
+    if (!Number.isInteger(scoreA) || !Number.isInteger(scoreB)) return false;
     if (scoreA > MAX_SCORE || scoreB > MAX_SCORE) return false;
-    if (!previous) return true;
-    // El marcador normalmente no baja.
-    return scoreA >= previous.scoreA && scoreB >= previous.scoreB;
+    return true;                            // el resto lo decide la memoria
+  }
+
+  // ------------------------------------------------- estabilizacion temporal
+
+  /**
+   * Convierte una lectura en una decision, usando la memoria.
+   *
+   * Devuelve { value, confirmed, streak, status, reason }. `status` puede ser
+   * 'CONFIRMED', 'CANDIDATE', 'UNDER_REVIEW' o 'NONE'.
+   */
+  function stabilizeScore(lectura, memoria) {
+    const previa = memoria || null;
+    const confirmadoPrevio = previa && previa.confirmed ? previa.value : null;
+
+    if (!lectura.value) {
+      // Sin lectura nueva se conserva lo confirmado: que la casa repinte el
+      // marcador un instante no es motivo para olvidarlo.
+      return {
+        value: confirmadoPrevio,
+        confirmed: !!confirmadoPrevio,
+        streak: 0,
+        candidate: null,
+        status: confirmadoPrevio ? 'CONFIRMED' : 'NONE',
+        reason: lectura.reason,
+        confidence: confirmadoPrevio ? (previa.confidence || 0) : 0,
+      };
+    }
+
+    const nueva = lectura.value;
+    const igualQueConfirmado = confirmadoPrevio &&
+      confirmadoPrevio.scoreA === nueva.scoreA && confirmadoPrevio.scoreB === nueva.scoreB;
+
+    if (igualQueConfirmado) {
+      return { value: nueva, confirmed: true, streak: (previa.streak || 1) + 1,
+               candidate: null, status: 'CONFIRMED', reason: '',
+               confidence: Math.max(lectura.confidence, previa.confidence || 0) };
+    }
+
+    if (confirmadoPrevio && !continuaDe(confirmadoPrevio, nueva)) {
+      // Retroceso o salto imposible: NO se reemplaza. Se conserva el anterior
+      // y se avisa, en vez de meter un numero raro en los calculos.
+      const repetido = previa.pending &&
+        previa.pending.scoreA === nueva.scoreA && previa.pending.scoreB === nueva.scoreB
+        ? (previa.pendingStreak || 0) + 1 : 1;
+      if (repetido >= REPETICIONES && lectura.confidence >= UMBRAL_INICIAL) {
+        // Se ha repetido lo suficiente y con evidencia fuerte: la casa
+        // corrigio el marcador de verdad.
+        return { value: nueva, confirmed: true, streak: 1, candidate: null,
+                 status: 'CONFIRMED', reason: 'correccion aceptada tras repetirse',
+                 confidence: lectura.confidence };
+      }
+      return {
+        value: confirmadoPrevio, confirmed: true, streak: previa.streak || 1,
+        candidate: nueva, pending: nueva, pendingStreak: repetido,
+        status: 'UNDER_REVIEW', confidence: previa.confidence || 0,
+        reason: `lectura ${nueva.scoreA}-${nueva.scoreB} incompatible con ` +
+                `${confirmadoPrevio.scoreA}-${confirmadoPrevio.scoreB}`,
+      };
+    }
+
+    // Lectura nueva y creible. ¿Se publica ya o hace falta que se repita?
+    const mismaQueCandidato = previa && previa.candidate &&
+      previa.candidate.scoreA === nueva.scoreA && previa.candidate.scoreB === nueva.scoreB;
+    const racha = mismaQueCandidato ? (previa.candidateStreak || 1) + 1 : 1;
+
+    // Tres caminos para confirmar, en orden de exigencia:
+    //   1. evidencia estructural fuerte (equipos + contenedor de marcador) o
+    //      confianza muy alta: vale una sola lectura;
+    //   2. ya habia un marcador confirmado y esto lo continua de forma
+    //      creible: basta con evidencia media;
+    //   3. evidencia media sin marcador previo: hay que verlo repetido.
+    const deUnaVez = lectura.strong || lectura.confidence >= UMBRAL_INICIAL ||
+                     (confirmadoPrevio && lectura.confidence >= UMBRAL_CONTINUACION);
+    const repitiendose = lectura.confidence >= UMBRAL_REPETIDO && racha >= REPETICIONES;
+
+    if (deUnaVez || repitiendose) {
+      return { value: nueva, confirmed: true, streak: 1, candidate: null,
+               status: 'CONFIRMED', reason: '', confidence: lectura.confidence };
+    }
+
+    const conservado = {
+      value: confirmadoPrevio, confirmed: !!confirmadoPrevio, streak: 0,
+      status: confirmadoPrevio ? 'CONFIRMED' : 'NONE',
+      confidence: confirmadoPrevio ? (previa.confidence || 0) : 0,
+    };
+    if (lectura.confidence >= UMBRAL_REPETIDO) {
+      return { ...conservado, candidate: nueva, candidateStreak: racha,
+               reason: `esperando confirmacion (${racha}/${REPETICIONES})` };
+    }
+    // Por debajo de esto no hay repeticion que valga: es proximidad y poco mas.
+    return { ...conservado, candidate: null,
+             reason: `evidencia insuficiente ` +
+                     `(${lectura.confidence.toFixed(2)} < ${UMBRAL_REPETIDO})` };
+  }
+
+  //: Confianza minima para publicar reloj y cuarto. Por debajo, `null`: un
+  //: MM:SS de un banner o el cuarto de un mercado futuro no valen.
+  const UMBRAL_CONTEXTO = 0.6;
+
+  /** Candidatos de una raiz, sin decidir nada todavia. */
+  function collectCandidates(root, adapter, previous) {
+    const anterior = previous || {};
+    return {
+      clock: findClockCandidates(root, adapter),
+      period: findPeriodCandidates(root, adapter),
+      score: findScoreCandidates(root, adapter, anterior.score),
+    };
   }
 
   /**
@@ -180,28 +628,84 @@
    * afirmar. Nunca se rellena a medias con suposiciones.
    */
   function extractGameState(root, adapter, previous) {
+    return decide(collectCandidates(root, adapter, previous), previous);
+  }
+
+  /**
+   * Igual, pero mirando VARIAS raices (documento principal, shadow roots e
+   * iframes del mismo origen). El marcador de BetPlay no tiene por que estar
+   * en el documento principal, y buscarlo solo alli era quedarse ciego.
+   *
+   * Los candidatos de todas las raices compiten entre si con la misma vara de
+   * medir: si dos raices dicen cosas distintas con la misma confianza, la
+   * respuesta es "no se sabe", no "la primera que aparezca".
+   */
+  function extractGameStateFromRoots(roots, adapter, previous) {
+    const todos = { clock: [], period: [], score: [] };
+    for (const root of roots || []) {
+      if (!root) continue;
+      let parciales;
+      try {
+        parciales = collectCandidates(root, adapter, previous);
+      } catch (error) {
+        continue;      // una raiz rota no deja sin marcador a las demas
+      }
+      todos.clock.push(...parciales.clock);
+      todos.period.push(...parciales.period);
+      todos.score.push(...parciales.score);
+    }
+    return decide(todos, previous);
+  }
+
+  function decide(candidatos, previous) {
     const anterior = previous || {};
-    const reloj = pickBest(findClockCandidates(root, adapter), anterior.clock, clockValidator);
-    const cuarto = pickBest(findPeriodCandidates(root, adapter),
-                            anterior.period ? anterior.period.value : null, periodValidator);
-    const marcador = pickBest(findScoreCandidates(root, adapter),
-                              anterior.score ? anterior.score.value : null, scoreValidator);
+
+    const reloj = pickBest(candidatos.clock, anterior.clock,
+                           clockValidator, UMBRAL_CONTEXTO);
+    const cuarto = pickBest(candidatos.period,
+                            anterior.period ? anterior.period.value : null,
+                            periodValidator, UMBRAL_CONTEXTO);
+    const lecturaMarcador = pickBest(candidatos.score, anterior.score, scoreValidator, 0);
+    const marcador = stabilizeScore(lecturaMarcador, anterior.score);
 
     const estado = {};
     if (reloj.value) estado.clock = reloj.value;
     if (cuarto.value) estado.period = cuarto.value;
-    if (marcador.value) {
+    if (marcador.confirmed && marcador.value) {
       estado.scoreA = marcador.value.scoreA;
       estado.scoreB = marcador.value.scoreB;
     }
 
     return {
+      // Un gameState PARCIAL es valido: que no se sepa el marcador no puede
+      // bloquear el mercado, y que no se sepa el reloj no puede inventarlo.
       gameState: Object.keys(estado).length ? estado : null,
-      diagnostics: { clock: reloj, period: cuarto, score: marcador },
+      diagnostics: {
+        clock: reloj,
+        period: cuarto,
+        score: {
+          ...lecturaMarcador,
+          status: marcador.status,
+          confirmed: marcador.confirmed,
+          published: marcador.confirmed ? marcador.value : null,
+          candidate: marcador.candidate || null,
+          reason: marcador.reason || lecturaMarcador.reason,
+        },
+        underReview: marcador.status === 'UNDER_REVIEW',
+      },
       memory: {
         clock: reloj.value ? { seconds: secondsOf(reloj.value), value: reloj.value } : anterior.clock,
         period: cuarto.value ? { value: cuarto.value } : anterior.period,
-        score: marcador.value ? { value: marcador.value } : anterior.score,
+        score: {
+          value: marcador.value,
+          confirmed: marcador.confirmed,
+          confidence: marcador.confidence,
+          streak: marcador.streak,
+          candidate: marcador.candidate || null,
+          candidateStreak: marcador.candidateStreak || 0,
+          pending: marcador.pending || null,
+          pendingStreak: marcador.pendingStreak || 0,
+        },
       },
     };
   }
@@ -211,6 +715,11 @@
     return match ? Number(match[1]) * 60 + Number(match[2]) : null;
   }
 
-  return { CLOCK_RE, findClockCandidates, findPeriodCandidates, findScoreCandidates,
-           pickBest, clockValidator, periodValidator, scoreValidator, extractGameState };
+  return { CLOCK_RE, MAX_SCORE, MAX_JUMP, UMBRAL_INICIAL, UMBRAL_REPETIDO,
+           UMBRAL_CONTINUACION,
+           REPETICIONES, pareceNombreDeEquipo, periodoDe, continuaDe,
+           findClockCandidates, findPeriodCandidates, findScoreCandidates,
+           pickBest, stabilizeScore, clockValidator, periodValidator,
+           scoreValidator, collectCandidates, extractGameState,
+           extractGameStateFromRoots };
 });

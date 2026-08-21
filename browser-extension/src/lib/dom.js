@@ -229,16 +229,57 @@
     }
   }
 
+  //: Atributos que dicen algo sobre QUE es un elemento. Se leen para decidir
+  //: si un numero esta en un marcador o en un bloque de apuestas; nunca se
+  //: usan como selector fijo, que en BetPlay seria construir sobre arena.
+  const ATRIBUTOS_SEMANTICOS = ['role', 'aria-label', 'aria-labelledby', 'title',
+                                'data-testid', 'itemprop'];
+
+  /**
+   * Todo lo que un elemento dice de si mismo, en una cadena en minusculas:
+   * etiqueta, id, clases, atributos semanticos y data-*.
+   *
+   * Sirve para preguntar "esto huele a marcador" o "esto huele a cuota" sin
+   * atarse a una clase concreta de BetPlay.
+   */
+  function attrText(node) {
+    if (!node) return '';
+    const partes = [];
+    try {
+      if (node.tagName) partes.push(String(node.tagName));
+      if (node.id) partes.push(String(node.id));
+      const clase = typeof node.className === 'string'
+        ? node.className
+        : (node.getAttribute ? node.getAttribute('class') : '');
+      if (clase) partes.push(String(clase));
+      if (typeof node.getAttribute === 'function') {
+        for (const nombre of ATRIBUTOS_SEMANTICOS) {
+          const valor = node.getAttribute(nombre);
+          if (valor) partes.push(String(valor));
+        }
+      }
+      for (const atributo of Array.from(node.attributes || [])) {
+        if (atributo && typeof atributo.name === 'string' &&
+            atributo.name.startsWith('data-') && atributo.value) {
+          partes.push(`${atributo.name} ${atributo.value}`);
+        }
+      }
+    } catch (error) { /* nodo desmontado a mitad */ }
+    return partes.join(' ').toLowerCase();
+  }
+
   /** Adaptador que usa el escaneo estructural sobre el DOM real. */
   function createAdapter() {
     return {
       children: childElements,
       text: extractText,
       ownText,
+      attrText,
     };
   }
 
   return { NODE, SHOW_TEXT, SHOW_ELEMENT, nodeTypeOf, documentForNode,
            showTextFor, showElementFor, isUsableRoot,
-           extractText, ownText, childElements, collectTextManually, createAdapter };
+           extractText, ownText, attrText, childElements, collectTextManually,
+           createAdapter };
 });
