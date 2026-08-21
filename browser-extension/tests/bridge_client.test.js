@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { decideSend, retryDelay, nextLinkState, LINK } = require('../src/lib/bridge_client.js');
+const bridge = require('../src/lib/bridge_client.js');
 const { buildPayload, payloadSignature } = require('../src/lib/payload.js');
 
 function payload(cuota) {
@@ -99,4 +100,63 @@ test('recuperacion automatica sin tener que recargar la pagina', () => {
   // ...y en cuanto responde, se vuelve a enviar sin intervencion.
   estado = nextLinkState(estado, 'ok');
   assert.equal(estado.state, LINK.CONNECTED);
+});
+
+// --------------------------------------------------- los dos ejes, separados
+
+test('el sondeo NO depende de que haya payload', () => {
+  const desconectado = { state: bridge.LINK.DISCONNECTED, attempt: 0, error: '' };
+  // No se le pasa payload por ningun lado: la decision no lo necesita.
+  assert.equal(bridge.shouldProbe({ link: desconectado, now: 1000, nextProbeAt: 0 }), true);
+  assert.equal(bridge.shouldProbe({ link: desconectado, now: 1000, nextProbeAt: 5000 }), false,
+               'todavia dentro de la espera del reintento');
+});
+
+test('estando conectados se vuelve a comprobar cada cierto tiempo', () => {
+  const conectado = { state: bridge.LINK.CONNECTED, attempt: 0, error: '' };
+  assert.equal(bridge.shouldProbe({ link: conectado, now: 10000, lastOkAt: 9000 }), false);
+  assert.equal(bridge.shouldProbe({ link: conectado, now: 15000, lastOkAt: 9000 }), true);
+});
+
+test('no se lanzan dos sondeos a la vez', () => {
+  const desconectado = { state: bridge.LINK.DISCONNECTED, attempt: 0, error: '' };
+  assert.equal(bridge.shouldProbe(
+    { link: desconectado, now: 1000, nextProbeAt: 0, probeInFlight: true }), false);
+});
+
+test('CONNECTING mientras se comprueba, sin parpadear si ya estaba conectado', () => {
+  const nada = bridge.nextLinkState(null, 'probing');
+  assert.equal(nada.state, bridge.LINK.CONNECTING);
+
+  const conectado = { state: bridge.LINK.CONNECTED, attempt: 0, error: '' };
+  assert.equal(bridge.nextLinkState(conectado, 'probing').state, bridge.LINK.CONNECTED);
+});
+
+test('la espera crece mientras sigue fallando, tambien desde CONNECTING', () => {
+  let link = bridge.nextLinkState(null, 'probing');
+  link = bridge.nextLinkState(link, 'aplicacion no disponible');
+  assert.equal(link.attempt, 1);
+  link = bridge.nextLinkState(bridge.nextLinkState(link, 'probing'), 'no disponible');
+  assert.equal(link.attempt, 2, 'pasar por CONNECTING no reinicia la cuenta');
+});
+
+test('conectado pero sin confirmar hace demasiado: STALE', () => {
+  const conectado = { state: bridge.LINK.CONNECTED, attempt: 0, error: '' };
+  assert.equal(bridge.linkStateFor(conectado, 1000, 5000), bridge.LINK.CONNECTED);
+  assert.equal(bridge.linkStateFor(conectado, 1000, 60000), bridge.LINK.STALE);
+  const caido = { state: bridge.LINK.DISCONNECTED, attempt: 3, error: 'x' };
+  assert.equal(bridge.linkStateFor(caido, 1000, 60000), bridge.LINK.DISCONNECTED,
+               'lo que esta caido no se disfraza de STALE');
+});
+
+test('el estado del mercado habla solo de los datos', () => {
+  assert.equal(bridge.marketState({ payload: null }), bridge.MARKET.NONE);
+  assert.equal(bridge.marketState({ payload: {} }), bridge.MARKET.VALID);
+  assert.equal(bridge.marketState({ payload: {}, validation: { valid: false } }),
+               bridge.MARKET.REJECTED);
+  assert.equal(bridge.marketState({ payload: {}, underReview: true }),
+               bridge.MARKET.UNDER_REVIEW);
+  assert.equal(bridge.marketState({ payload: null, underReview: true }),
+               bridge.MARKET.UNDER_REVIEW,
+               'una lectura dudosa sin publicar tampoco es "no hay nada"');
 });

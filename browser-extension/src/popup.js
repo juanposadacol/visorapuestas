@@ -34,19 +34,49 @@
     }
   }
 
+  //: Como se dice cada estado del ENLACE. Habla solo de la conexion.
+  const TEXTO_ENLACE = {
+    CONNECTED: { texto: 'CONECTADA ✓', clase: 'si' },
+    CONNECTING: { texto: 'comprobando...', clase: 'oculto' },
+    STALE: { texto: 'CONECTADA (sin confirmar)', clase: 'oculto' },
+    DISCONNECTED: { texto: 'DESCONECTADA', clase: 'no' },
+  };
+
+  //: Como se dice cada estado del MERCADO. Habla solo de los datos.
+  const TEXTO_MERCADO = {
+    VALID: { texto: 'mercado valido', clase: 'si' },
+    NONE: { texto: 'todavia sin mercado identificado', clase: 'oculto' },
+    UNDER_REVIEW: { texto: 'lectura en revision, no se publica', clase: 'oculto' },
+    REJECTED: { texto: 'lectura descartada por el contrato', clase: 'no' },
+  };
+
+  /**
+   * Pinta los DOS ejes por separado.
+   *
+   * Antes una sola palabra ("DESCONECTADA") mezclaba dos cosas distintas: que
+   * la aplicacion no estuviera abierta y que todavia no hubiera mercado. En la
+   * prueba real la aplicacion respondia perfectamente por /health y el popup
+   * seguia diciendo DESCONECTADA.
+   */
   function pintarPuente(puente) {
     if (!puente) {
       $('app-local').textContent = 'sin respuesta del service worker';
+      $('app-local').className = 'valor no';
       return;
     }
-    const conectada = puente.link === 'CONNECTED';
-    $('app-local').textContent = conectada
-      ? `CONECTADA ✓${puente.appVersion ? `  (v${puente.appVersion})` : ''}`
-      : 'DESCONECTADA';
-    $('app-local').className = conectada ? 'valor si' : 'valor no';
-    $('enviando').textContent = puente.hasPayload
-      ? `${puente.sent} envio(s), ${puente.failed} fallo(s)`
-      : 'todavia sin mercado que enviar';
+    const enlace = TEXTO_ENLACE[puente.link] || TEXTO_ENLACE.DISCONNECTED;
+    const version = puente.appVersion ? `  (v${puente.appVersion})` : '';
+    $('app-local').textContent =
+      enlace.texto + (puente.link === 'CONNECTED' ? version : '');
+    $('app-local').className = `valor ${enlace.clase}`;
+
+    const mercado = TEXTO_MERCADO[puente.market] || TEXTO_MERCADO.NONE;
+    const contadores = `${puente.sent} envio(s), ${puente.failed} fallo(s)`;
+    $('enviando').textContent = puente.market === 'VALID'
+      ? contadores
+      : `${mercado.texto}${puente.sent ? ` · ${contadores}` : ''}`;
+    $('enviando').className = `valor ${mercado.clase}`;
+
     $('ultimo-envio').textContent = puente.lastSentAt
       ? `hace ${((Date.now() - puente.lastSentAt) / 1000).toFixed(1)} s`
       : '--';

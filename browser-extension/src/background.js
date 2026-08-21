@@ -23,15 +23,20 @@ const SEND_TIMEOUT_MS = 2500;
 
 const estado = {
   port: DEFAULT_PORT,
+  // EJE 1: la conexion con la aplicacion local. No sabe nada de mercados.
   link: { state: bridgeClient.LINK.DISCONNECTED, attempt: 0, error: '' },
+  probeInFlight: false,
+  nextProbeAt: 0,
+  lastOkAt: 0,
+  appVersion: '',
+  // EJE 2: los datos. No sabe nada de la conexion.
+  market: bridgeClient.MARKET.NONE,
+  lastPayload: null,
+  lastRejected: [],
   lastSignature: null,
   lastSentAt: 0,
-  lastOkAt: 0,
-  lastPayload: null,
   sent: 0,
   failed: 0,
-  appVersion: '',
-  nextProbeAt: 0,
 };
 
 function baseUrl() {
@@ -48,8 +53,19 @@ async function conFetch(url, opciones, timeoutMs) {
   }
 }
 
-/** Comprueba si la aplicacion esta abierta. Sin ruido si no lo esta. */
+/**
+ * Comprueba si la aplicacion esta abierta.
+ *
+ * IMPORTANTE: esto no depende de que haya un mercado que enviar. La prueba
+ * real dejo el caso clarisimo: `Invoke-RestMethod http://127.0.0.1:8765/health`
+ * respondia `status: ok` mientras el popup decia DESCONECTADA, porque el
+ * sondeo solo se lanzaba dentro del camino del payload y sin mercado nunca se
+ * llegaba a el.
+ */
 async function probe() {
+  if (estado.probeInFlight) return estado.link.state === bridgeClient.LINK.CONNECTED;
+  estado.probeInFlight = true;
+  estado.link = bridgeClient.nextLinkState(estado.link, 'probing');
   try {
     const respuesta = await conFetch(`${baseUrl()}/health`, {
       method: 'GET',
@@ -60,6 +76,7 @@ async function probe() {
     estado.appVersion = cuerpo.version || '';
     estado.link = bridgeClient.nextLinkState(estado.link, 'ok');
     estado.lastOkAt = Date.now();
+    estado.nextProbeAt = 0;
     return true;
   } catch (error) {
     // La aplicacion cerrada es una situacion NORMAL, no un error que reportar
@@ -67,7 +84,31 @@ async function probe() {
     estado.link = bridgeClient.nextLinkState(estado.link, 'aplicacion no disponible');
     estado.nextProbeAt = Date.now() + bridgeClient.retryDelay(estado.link.attempt);
     return false;
+  } finally {
+    estado.probeInFlight = false;
   }
+}
+
+/**
+ * Mantiene vivo el enlace, HAYA O NO mercado.
+ *
+ * Se llama desde todo lo que despierta al service worker: el payload de un
+ * escaneo, el latido del content script y la apertura del popup. Es la forma
+ * de sobrevivir a que Manifest V3 duerma al worker sin pedir el permiso
+ * "alarms": no hace falta un temporizador propio si la pestana ya nos habla.
+ */
+async function mantenerEnlace() {
+  const ahora = Date.now();
+  if (!bridgeClient.shouldProbe({
+    link: estado.link,
+    now: ahora,
+    lastOkAt: estado.lastOkAt,
+    nextProbeAt: estado.nextProbeAt,
+    probeInFlight: estado.probeInFlight,
+  })) {
+    return estado.link.state === bridgeClient.LINK.CONNECTED;
+  }
+  return probe();
 }
 
 async function enviar(payload) {
@@ -81,6 +122,7 @@ async function enviar(payload) {
       estado.failed += 1;
       if (respuesta.status >= 500 || respuesta.status === 0) {
         estado.link = bridgeClient.nextLinkState(estado.link, `error ${respuesta.status}`);
+        estado.nextProbeAt = Date.now() + bridgeClient.retryDelay(estado.link.attempt);
       }
       return false;
     }
@@ -97,59 +139,88 @@ async function enviar(payload) {
   }
 }
 
-/** Recibe el payload de una pestana y decide si toca enviarlo. */
-async function procesar(payload) {
+/**
+ * Recibe lo ultimo que vio una pestana.
+ *
+ * Los dos ejes se actualizan por separado:
+ *   1. el enlace se mantiene SIEMPRE, haya mercado o no;
+ *   2. el estado del mercado describe los datos, sin hablar de la conexion.
+ */
+async function procesar(mensaje) {
+  const payload = (mensaje && mensaje.payload) || null;
   estado.lastPayload = payload;
-  if (!payload) return;
+  estado.lastRejected = (mensaje && mensaje.rejected) || [];
 
-  const ahora = Date.now();
-  if (estado.link.state !== bridgeClient.LINK.CONNECTED) {
-    if (ahora < estado.nextProbeAt) return;      // todavia no toca reintentar
-    const vivo = await probe();
-    if (!vivo) return;
-  }
+  const validacion = payload ? payloadLib.validatePayload(payload) : null;
+  estado.market = bridgeClient.marketState({
+    payload,
+    validation: validacion,
+    underReview: !!(mensaje && mensaje.underReview),
+  });
+
+  // 1) El enlace, pase lo que pase con los datos.
+  const vivo = await mantenerEnlace();
+
+  // 2) Los datos, solo si hay algo que valga la pena enviar.
+  if (!payload || !vivo) return;
+  if (validacion && !validacion.valid) return;    // no se envia lo que no cumple
 
   const decision = bridgeClient.decideSend({
     payload,
     lastSignature: estado.lastSignature,
     lastSentAt: estado.lastSentAt,
-    now: ahora,
+    now: Date.now(),
   });
   if (!decision.send) return;
 
-  const validacion = payloadLib.validatePayload(payload);
-  if (!validacion.valid) return;                 // no se envia lo que no cumple
-
   const ok = await enviar(payload);
   if (ok) estado.lastSignature = decision.signature;
+}
+
+/** Vista del puente para el popup: los dos ejes, separados y con su motivo. */
+function vistaDelPuente() {
+  const ahora = Date.now();
+  return {
+    url: baseUrl(),
+    port: estado.port,
+    link: bridgeClient.linkStateFor(estado.link, estado.lastOkAt, ahora),
+    rawLink: estado.link.state,
+    attempt: estado.link.attempt,
+    error: estado.link.error,
+    appVersion: estado.appVersion,
+    market: estado.market,
+    marketRejected: estado.lastRejected,
+    sent: estado.sent,
+    failed: estado.failed,
+    lastSentAt: estado.lastSentAt,
+    lastOkAt: estado.lastOkAt,
+    hasPayload: !!estado.lastPayload,
+  };
 }
 
 chrome.runtime.onMessage.addListener((mensaje, sender, sendResponse) => {
   if (!mensaje || typeof mensaje !== 'object') return undefined;
 
   if (mensaje.type === 'VDIAG_PAYLOAD') {
-    procesar(mensaje.payload || null);
+    procesar(mensaje);
     sendResponse({ ok: true });
     return true;
   }
 
+  // Latido del content script. Existe para MANTENER EL ENLACE cuando no hay
+  // nada que enviar: en Manifest V3 el service worker se duerme, asi que el
+  // temporizador vive en la pestana y cada mensaje suyo lo despierta. Con esto
+  // no hace falta el permiso "alarms".
+  if (mensaje.type === 'VDIAG_HEARTBEAT') {
+    mantenerEnlace();
+    sendResponse({ ok: true, link: estado.link.state });
+    return true;
+  }
+
   if (mensaje.type === 'VDIAG_BRIDGE_STATE') {
-    sendResponse({
-      ok: true,
-      bridge: {
-        url: baseUrl(),
-        port: estado.port,
-        link: estado.link.state,
-        attempt: estado.link.attempt,
-        error: estado.link.error,
-        appVersion: estado.appVersion,
-        sent: estado.sent,
-        failed: estado.failed,
-        lastSentAt: estado.lastSentAt,
-        lastOkAt: estado.lastOkAt,
-        hasPayload: !!estado.lastPayload,
-      },
-    });
+    // Abrir el popup tambien es una ocasion para reconectar.
+    mantenerEnlace();
+    sendResponse({ ok: true, bridge: vistaDelPuente() });
     return true;
   }
 
@@ -159,6 +230,8 @@ chrome.runtime.onMessage.addListener((mensaje, sender, sendResponse) => {
       estado.port = puerto;
       estado.link = bridgeClient.nextLinkState(null, 'puerto cambiado');
       estado.nextProbeAt = 0;
+      estado.lastOkAt = 0;
+      mantenerEnlace();
       chrome.storage.local.set({ bridgePort: puerto });
     }
     sendResponse({ ok: true, port: estado.port });

@@ -406,9 +406,9 @@
 
     mergeIntoState(encontrados);
     state.payload = buildVisiblePayload();
-    // El envio lo decide el service worker: aqui solo se le entrega lo ultimo.
-    // Si la aplicacion esta cerrada, el no envia nada y no pasa nada.
-    enviarAlPuente(state.payload.payload);
+    // El envio lo decide el service worker: aqui solo se le entrega lo ultimo,
+    // haya mercado o no. Si la aplicacion esta cerrada, el no envia nada.
+    enviarAlPuente(state.payload);
     state.lastScanAt = now();
     state.scanCount += 1;
     state.lastScanMs = performance.now() - inicio;
@@ -551,12 +551,13 @@
       attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'aria-selected', 'data-state'],
     });
     pushHistory('observerStarted', {});
+    arrancarLatido();
   }
 
-  /** Entrega el payload al service worker. Nunca lanza si el no responde. */
-  function enviarAlPuente(payload) {
+  /** Envia un mensaje al service worker sin lanzar nunca si no responde. */
+  function avisarAlPuente(mensaje) {
     try {
-      chrome.runtime.sendMessage({ type: 'VDIAG_PAYLOAD', payload }, () => {
+      chrome.runtime.sendMessage(mensaje, () => {
         // Leer lastError evita el aviso "Unchecked runtime.lastError" cuando
         // el service worker esta dormido. No es un fallo que deba salir.
         void chrome.runtime.lastError;
@@ -564,6 +565,37 @@
     } catch (error) {
       // La extension se recargo: la pagina seguira funcionando igualmente.
     }
+  }
+
+  /**
+   * Entrega al service worker lo ultimo que se vio.
+   *
+   * Se manda TAMBIEN cuando no hay mercado, con el motivo: sin mercado el
+   * puente tiene que poder seguir comprobando /health. Antes, si no habia
+   * payload el service worker no hacia nada y el enlace se quedaba
+   * DESCONECTADO para siempre aunque la aplicacion estuviera abierta.
+   */
+  function enviarAlPuente(resultado) {
+    avisarAlPuente({
+      type: 'VDIAG_PAYLOAD',
+      payload: (resultado && resultado.payload) || null,
+      rejected: (resultado && resultado.rejected) || [],
+      underReview: !!(state.gameDiagnostics && state.gameDiagnostics.underReview),
+    });
+  }
+
+  //: Latido de la pestana. En Manifest V3 el service worker se duerme, asi que
+  //: el temporizador vive aqui: cada mensaje lo despierta y le da ocasion de
+  //: reconectar. Con esto no hace falta el permiso "alarms".
+  const HEARTBEAT_MS = 5000;
+  let latido = null;
+
+  function arrancarLatido() {
+    if (latido) return;
+    latido = setInterval(() => {
+      avisarAlPuente({ type: 'VDIAG_HEARTBEAT' });
+    }, HEARTBEAT_MS);
+    avisarAlPuente({ type: 'VDIAG_HEARTBEAT' });   // sin esperar al primer ciclo
   }
 
   // ------------------------------------------------------------- mensajeria
