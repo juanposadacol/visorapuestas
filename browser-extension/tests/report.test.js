@@ -215,3 +215,11 @@ test('los errores se pintan agrupados, con su cuenta', () => {
   assert.equal(lineas.length, 1);
   assert.match(lineas[0], /createTreeWalker \/ iframe \(live\)  x43/);
 });
+
+test('el escaner muestra el coste del escaneo cuando hay medida', () => {
+  const d = report.describeScanner({ scanCount: 40, lastScanMs: 18, avgScanMs: 22,
+                                     scansPerMinute: 12.5, rootCount: 6, rootsScanned: 6 });
+  assert.match(d.texto, /18 ms/);
+  assert.match(d.texto, /media 22 ms/);
+  assert.match(d.texto, /12\.5\/min/);
+});

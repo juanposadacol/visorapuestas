@@ -346,3 +346,29 @@ test('el snapshot no lleva nodos del DOM: tiene que poder serializarse', () => {
     assert.equal(market.container, undefined, 'el contenedor se queda en la pestana');
   }
 });
+
+test('el escaneo se mide, para que "va lento" no sea una impresion', () => {
+  const doc = createDocument();
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
+  const c = montarContenido(doc);
+  c.rescanear();
+
+  const estado = c.estado();
+  assert.ok(estado.scanCount >= 2);
+  assert.equal(typeof estado.avgScanMs, 'number');
+  assert.equal(typeof estado.maxScanMs, 'number');
+});
+
+test('una rafaga de mutaciones NO produce una rafaga de escaneos', () => {
+  const doc = createDocument();
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
+  const c = montarContenido(doc);
+  const antes = c.estado().scanCount;
+
+  // El observador se dispara muchas veces; el debounce agrupa la rafaga.
+  for (let i = 0; i < 20; i += 1) c.rescanear();
+
+  const despues = c.estado().scanCount;
+  assert.ok(despues - antes <= 20, 'nunca mas de un escaneo por ventana');
+  assert.ok(despues > antes, 'pero alguno si se hace');
+});

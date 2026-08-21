@@ -83,7 +83,16 @@
     for (const hijo of adapter.children(node)) walk(hijo, adapter, visit, [node, ...padres]);
   }
 
-  function leaves(root, adapter) {
+  /**
+   * Hojas con texto de un arbol.
+   *
+   * Reloj, cuarto y marcador necesitan las MISMAS hojas. Recorrer el arbol una
+   * vez por cada uno significaba tres recorridos completos del documento en
+   * cada escaneo, y en una pagina como BetPlay eso se nota. Se permite pasar
+   * las hojas ya calculadas.
+   */
+  function leaves(root, adapter, cache) {
+    if (cache && cache.has(root)) return cache.get(root);
     const hojas = [];
     let indice = 0;
     walk(root, adapter, (node, chain) => {
@@ -92,6 +101,7 @@
         if (valor) hojas.push({ node, chain, text: valor, order: indice++ });
       }
     });
+    if (cache) cache.set(root, hojas);
     return hojas;
   }
 
@@ -161,8 +171,8 @@
    * Un MM:SS suelto en cualquier rincon de la pagina no es el reloj del
    * partido, por muy bien formado que este.
    */
-  function findClockCandidates(root, adapter) {
-    const hojas = leaves(root, adapter);
+  function findClockCandidates(root, adapter, cache) {
+    const hojas = leaves(root, adapter, cache);
     const candidatos = [];
     for (const hoja of hojas) {
       const match = hoja.text.match(CLOCK_RE);
@@ -248,8 +258,8 @@
    * bloque de apuestas se penalizan fuerte, y manda el marcador / estado en
    * vivo.
    */
-  function findPeriodCandidates(root, adapter) {
-    const hojas = leaves(root, adapter);
+  function findPeriodCandidates(root, adapter, cache) {
+    const hojas = leaves(root, adapter, cache);
     const candidatos = [];
     for (const hoja of hojas) {
       if (hoja.text.length > 24) continue;
@@ -328,8 +338,8 @@
    *   -0.30  acompanados de "Mas de" / "Menos de"
    *   -0.20  el ancestro comun esta lleno de numeros
    */
-  function findScoreCandidates(root, adapter, previous) {
-    const hojas = leaves(root, adapter);
+  function findScoreCandidates(root, adapter, previous, cache) {
+    const hojas = leaves(root, adapter, cache);
     const numeros = [];
     for (const hoja of hojas) {
       if (!/^\d{1,3}$/.test(hoja.text)) continue;
@@ -651,10 +661,12 @@
   /** Candidatos de una raiz, sin decidir nada todavia. */
   function collectCandidates(root, adapter, previous) {
     const anterior = previous || {};
+    // Un solo recorrido del arbol para los tres, no uno por cada uno.
+    const cache = new Map();
     return {
-      clock: findClockCandidates(root, adapter),
-      period: findPeriodCandidates(root, adapter),
-      score: findScoreCandidates(root, adapter, anterior.score),
+      clock: findClockCandidates(root, adapter, cache),
+      period: findPeriodCandidates(root, adapter, cache),
+      score: findScoreCandidates(root, adapter, anterior.score, cache),
     };
   }
 

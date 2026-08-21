@@ -268,8 +268,11 @@
     const activos = datos.activeErrors || 0;
     const inestables = (datos.unstableRoots || []).length;
     if (!activos && !inestables) {
+      const coste = datos.avgScanMs
+        ? `${datos.lastScanMs} ms, media ${datos.avgScanMs} ms, ${datos.scansPerMinute}/min`
+        : `${datos.lastScanMs} ms`;
       return { texto: `ACTIVO ✓  (${datos.rootsScanned || 0}/${datos.rootCount || 0} raices, ` +
-                      `${datos.lastScanMs} ms)`, clase: 'si' };
+                      `${coste})`, clase: 'si' };
     }
     const partes = [];
     if (activos) partes.push(`${activos} error(es) activos`);

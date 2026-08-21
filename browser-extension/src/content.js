@@ -44,6 +44,9 @@
     //: Una raiz que falla sin parar descansa un rato; las sanas siguen.
     breaker: erroresLib.createCircuitBreaker(),
     skippedRoots: [],
+    //: Medida del coste del escaneo. Sin esto, "va lento" es una impresion.
+    scanMsTotal: 0,
+    scanMsMax: 0,
   };
 
   /** Anota un error agrupandolo. Devuelve la entrada, ya con su cuenta. */
@@ -463,6 +466,8 @@
     state.lastScanAt = now();
     state.scanCount += 1;
     state.lastScanMs = performance.now() - inicio;
+    state.scanMsTotal += state.lastScanMs;
+    state.scanMsMax = Math.max(state.scanMsMax, state.lastScanMs);
     state.headerCount = cabecerasTotales;
     state.rootCount = roots.length;
     state.rootsScanned = raicesRecorridas;
@@ -676,6 +681,13 @@
       lastScanAt: state.lastScanAt,
       scanCount: state.scanCount,
       lastScanMs: Math.round(state.lastScanMs),
+      avgScanMs: state.scanCount
+        ? Math.round(state.scanMsTotal / state.scanCount) : 0,
+      maxScanMs: Math.round(state.scanMsMax),
+      scansPerMinute: state.scanCount && state.lastScanAt
+        ? Number((state.scanCount / Math.max(1, (state.lastScanAt - state.startedAt) / 60000))
+            .toFixed(1))
+        : 0,
       headerCount: state.headerCount || 0,
       pendingMutations: mutacionesDesdeElUltimoEscaneo,
       eventId: state.eventId === undefined ? null : state.eventId,
