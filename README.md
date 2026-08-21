@@ -439,8 +439,8 @@ No hay servidor, ni nube, ni cuenta, ni suscripción.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                              # 323 tests de Python
-cd browser-extension && node --test tests/*.test.js   # 254 tests de JavaScript
+python -m pytest                              # 336 tests de Python
+cd browser-extension && node --test tests/*.test.js   # 286 tests de JavaScript
 ```
 
 La arquitectura y las decisiones técnicas están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).

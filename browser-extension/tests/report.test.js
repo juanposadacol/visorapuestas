@@ -223,3 +223,20 @@ test('el escaner muestra el coste del escaneo cuando hay medida', () => {
   assert.match(d.texto, /media 22 ms/);
   assert.match(d.texto, /12\.5\/min/);
 });
+
+test('un reloj en otra semantica NO se anuncia como reloj ausente', () => {
+  // BetPlay muestra el tiempo JUGADO del partido. La casa SI da reloj.
+  const d = report.describeGamePart(
+    { period: 4, clockRaw: '33:52', clockSemantics: 'GAME_ELAPSED' },
+    { clock: { semantics: 'GAME_ELAPSED' } }, 'reloj');
+  assert.match(d.texto, /33:52 jugado del partido/);
+  assert.match(d.texto, /lo convierte la app/);
+  assert.equal(d.clase, 'si');
+});
+
+test('un reloj que de verdad no esta sigue diciendose "no disponible"', () => {
+  const d = report.describeGamePart({ period: 4 },
+                                    { clock: { reason: 'sin candidatos' } }, 'reloj');
+  assert.match(d.texto, /no disponible/);
+  assert.match(d.texto, /sin candidatos/);
+});

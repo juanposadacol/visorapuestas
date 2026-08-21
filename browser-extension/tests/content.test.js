@@ -376,3 +376,66 @@ test('una rafaga de mutaciones NO produce una rafaga de escaneos', () => {
   assert.ok(despues - antes <= 20, 'nunca mas de un escaneo por ventana');
   assert.ok(despues > antes, 'pero alguno si se hace');
 });
+
+// ============================================================================
+// El scoreboard REAL de BetPlay/Kambi, de extremo a extremo
+// ============================================================================
+
+const { scoreboardKambi } = require('./kambi_fixture.js');
+
+test('K. el marcador de Kambi llega al payload como 76-69', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboardKambi(doc));
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.78', '1.86'));
+  const c = montarContenido(doc);
+
+  const ultimo = c.payloads().pop();
+  assert.ok(ultimo.payload, `payload nulo: ${JSON.stringify(ultimo.rejected)}`);
+  const estado = ultimo.payload.gameState;
+
+  assert.equal(estado.scoreA, 76);
+  assert.equal(estado.scoreB, 69);
+  assert.notEqual(estado.scoreB, 22, 'el parcial del Q1 no es medio marcador');
+  assert.equal(estado.period, 4);
+  assert.equal(estado.teamA, 'Dallas Wings (F)');
+  assert.equal(estado.teamB, 'Indiana Fever (F)');
+
+  // Y el mercado sigue llegando entero, con su UNDER.
+  assert.deepEqual(ultimo.payload.lines, [{ line: 44.5, overOdds: 1.78, underOdds: 1.86 }]);
+});
+
+test('K. el reloj acumulado viaja crudo, nunca disfrazado de restante', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboardKambi(doc));
+  doc.body.appendChild(mercadoQ4(doc, '44.5', '1.78', '1.86'));
+  const c = montarContenido(doc);
+
+  // Primera lectura: todavia no se sabe si sube o baja.
+  let estado = c.payloads().pop().payload.gameState;
+  assert.equal(estado.clock, undefined);
+  assert.equal(estado.clockRaw, undefined);
+
+  // El reloj avanza un segundo y el escaneo lo vuelve a leer.
+  const marcador = doc.body.children[0];
+  const relojNodo = marcador.children[0].children[0].children[0].children[0].children[2];
+  relojNodo.childNodes[0].nodeValue = '33:53';
+  c.rescanear();
+
+  estado = c.payloads().pop().payload.gameState;
+  assert.equal(estado.clockRaw, '33:53');
+  assert.equal(estado.clockSemantics, 'GAME_ELAPSED');
+  assert.equal(estado.clock, undefined,
+               'la extension no convierte: no sabe cuanto dura un cuarto');
+});
+
+test('K. la estructura del scoreboard que se copia es la del marcador de verdad', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboardKambi(doc));
+  const c = montarContenido(doc);
+
+  const respuesta = c.pedir({ type: 'VDIAG_COPY_STRUCTURE', what: 'scoreboard' });
+  assert.ok(respuesta.ok);
+  assert.match(respuesta.texto, /marcador: 76-69/);
+  assert.match(respuesta.texto, /"Dallas Wings \(F\)"/);
+  assert.match(respuesta.texto, /scoreboard-grid-score/);
+});

@@ -309,6 +309,15 @@
 
     const valor = campo === 'cuarto' ? estado.period : estado.clock;
     if (valor === undefined || valor === null) {
+      // Un reloj en otra semantica NO es un reloj ausente: la casa lo muestra,
+      // solo que como tiempo jugado, y quien lo convierte es la aplicacion.
+      // Decir "no disponible" aqui mandaria el diagnostico por el camino
+      // contrario, que es justo el error que ya nos costo una prueba real.
+      if (campo === 'reloj' && estado.clockRaw &&
+          estado.clockSemantics === 'GAME_ELAPSED') {
+        return { texto: `${estado.clockRaw} jugado del partido  (lo convierte la app)`,
+                 clase: 'si' };
+      }
       return { texto: `no disponible  (${diag.reason || 'sin datos'})`, clase: 'oculto' };
     }
     return { texto: `${campo === 'cuarto' ? `Q${valor}` : valor} ✓`, clase: 'si' };
