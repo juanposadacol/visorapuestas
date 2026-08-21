@@ -31,12 +31,32 @@ test('un payload correcto pasa su propia validacion', () => {
   assert.equal(validatePayload(p).valid, true);
 });
 
-test('rechaza lo que no debe viajar', () => {
+test('sin lineas conserva una observacion tipada del mercado', () => {
+  const { payload, rejected } = buildPayload({
+    marketKey: 'Q3_TOTAL', confidence: 0.95, eventId: '123456', lines: [],
+  });
+  assert.ok(payload);
+  assert.equal(payload.visibleMarket.marketType, 'QUARTER_TOTAL');
+  assert.deepEqual(payload.lines, []);
+  assert.equal(validatePayload(payload).valid, true);
+  assert.ok(rejected.some((reason) => /sin lineas actuales/.test(reason)));
+});
+
+test('gameState viaja sin depender de mercado ni lineas', () => {
+  const { payload } = buildPayload({
+    eventId: '123456', gameState: { scoreA: 89, scoreB: 66, period: 4 },
+  });
+  assert.ok(payload);
+  assert.equal(payload.visibleMarket, null);
+  assert.deepEqual(payload.lines, []);
+  assert.equal(payload.gameState.scoreA, 89);
+  assert.equal(validatePayload(payload).valid, true);
+});
+
+test('rechaza solo cuando no queda ningun eje util que enviar', () => {
   const casos = [
-    [{ lines: [] }, 'sin lineas'],
     [{ confidence: 0.5 }, 'confianza'],
     [{ marketKey: 'UNKNOWN' }, 'mercado'],
-    [{ lines: [{ line: 43.5 }] }, 'sin lineas'],
   ];
   for (const [extra, esperado] of casos) {
     const { payload, rejected } = buildPayload({
@@ -84,6 +104,18 @@ test('la firma cambia cuando cambia una cuota', () => {
   const b = payloadValido({ lines: [{ line: 43.5, overOdds: 1.80, underOdds: 1.95 }] });
   assert.notEqual(payloadSignature(a), payloadSignature(b));
   assert.equal(payloadSignature(a), payloadSignature(payloadValido()));
+});
+
+test('la validacion rechaza lineas sin mercado y paquetes completamente vacios', () => {
+  const conLineasHuerfanas = payloadValido();
+  conLineasHuerfanas.visibleMarket = null;
+  assert.equal(validatePayload(conLineasHuerfanas).valid, false);
+  assert.match(validatePayload(conLineasHuerfanas).errors.join(' '), /lineas sin visibleMarket/);
+
+  const vacio = payloadValido({ lines: [] });
+  vacio.visibleMarket = null;
+  assert.equal(validatePayload(vacio).valid, false);
+  assert.match(validatePayload(vacio).errors.join(' '), /sin mercado ni gameState/);
 });
 
 test('el marcador y los parciales en vivo forman parte de la firma', () => {

@@ -240,3 +240,13 @@ test('un reloj que de verdad no esta sigue diciendose "no disponible"', () => {
   assert.match(d.texto, /no disponible/);
   assert.match(d.texto, /sin candidatos/);
 });
+
+test('los parciales validos se diagnostican separados del mercado', () => {
+  const gameState = {
+    teamA: { periods: { Q1: 24, Q2: 26, Q3: 36, Q4: 3 } },
+    teamB: { periods: { Q1: 21, Q2: 28, Q3: 17, Q4: 0 } },
+  };
+  const descripcion = report.describeGamePart(gameState, {}, 'parciales');
+  assert.equal(descripcion.clase, 'si');
+  assert.match(descripcion.texto, /Q1, Q2, Q3, Q4 validos/);
+});

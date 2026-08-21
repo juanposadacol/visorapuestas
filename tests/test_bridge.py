@@ -52,7 +52,6 @@ def test_payload_real_valido():
     ({"protocol": 99}, "protocolo"),
     ({"source": "otra"}, "fuente"),
     ({"observedAt": ""}, "observedAt"),
-    ({"lines": []}, "sin lineas"),
     ({"lines": [{"line": 5000.0, "overOdds": 1.8}]}, "fuera de rango"),
     ({"lines": [{"line": 44.5, "overOdds": 0.2}]}, "fuera de rango"),
     ({"lines": [{"line": 44.5}]}, "sin ninguna cuota"),
@@ -113,6 +112,21 @@ def test_estado_de_juego_opcional_y_validado():
         assert not validate_browser_payload(p)[0], malo
 
 
+def test_actualizaciones_parciales_de_mercado_y_partido_son_validas():
+    sin_lineas = payload_valido(lines=[])
+    assert validate_browser_payload(sin_lineas)[0]
+
+    solo_estado = payload_valido(
+        visibleMarket=None, lines=[],
+        gameState={"scoreA": 89, "scoreB": 66, "period": 4})
+    valido, errores = validate_browser_payload(solo_estado)
+    assert valido, errores
+
+    vacio = payload_valido(visibleMarket=None, lines=[], gameState=None)
+    valido, errores = validate_browser_payload(vacio)
+    assert not valido and any("sin mercado ni gameState" in error for error in errores)
+
+
 def test_scoreboard_estructural_con_parciales_cumple_el_contrato():
     game_state = {
         "scoreA": 65, "scoreB": 47, "period": 3,
@@ -142,7 +156,7 @@ def test_scoreboard_estructural_rechaza_periodos_mal_formados(romper):
 
 def test_ensure_valid_lanza_con_los_motivos():
     with pytest.raises(BridgeValidationError) as info:
-        ensure_valid(payload_valido(lines=[]))
+        ensure_valid(payload_valido(visibleMarket=None, lines=[], gameState=None))
     assert info.value.errors
 
 
@@ -197,6 +211,16 @@ def test_payload_valido_se_acepta_y_se_entrega(servidor):
     assert estado == 200 and cuerpo["accepted"] is True
     assert len(recibidos) == 1
     assert recibidos[0]["lines"][0]["underOdds"] == 1.90
+
+
+def test_game_state_sin_lineas_se_acepta_y_se_entrega(servidor):
+    server, recibidos = servidor
+    parcial = payload_valido(
+        visibleMarket=None, lines=[],
+        gameState={"scoreA": 89, "scoreB": 66, "period": 4})
+    estado, cuerpo = _post(server, parcial)
+    assert estado == 200 and cuerpo["accepted"] is True
+    assert recibidos[-1]["gameState"]["scoreA"] == 89
 
 
 def test_payload_invalido_se_rechaza_sin_entregarse(servidor):

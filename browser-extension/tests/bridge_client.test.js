@@ -151,7 +151,16 @@ test('conectado pero sin confirmar hace demasiado: STALE', () => {
 
 test('el estado del mercado habla solo de los datos', () => {
   assert.equal(bridge.marketState({ payload: null }), bridge.MARKET.NONE);
-  assert.equal(bridge.marketState({ payload: {} }), bridge.MARKET.VALID);
+  assert.equal(bridge.marketState({ payload: {} }), bridge.MARKET.NONE);
+  assert.equal(bridge.marketState({ payload: {
+    visibleMarket: { marketType: 'GAME_TOTAL' }, lines: [], gameState: null,
+  }}), bridge.MARKET.NO_LINES);
+  assert.equal(bridge.marketState({ payload: {
+    visibleMarket: null, lines: [], gameState: { scoreA: 89, scoreB: 66 },
+  }}), bridge.MARKET.STATE_ONLY);
+  assert.equal(bridge.marketState({ payload: {
+    visibleMarket: { marketType: 'GAME_TOTAL' }, lines: [{ line: 195.5 }],
+  }}), bridge.MARKET.VALID);
   assert.equal(bridge.marketState({ payload: {}, validation: { valid: false } }),
                bridge.MARKET.REJECTED);
   assert.equal(bridge.marketState({ payload: {}, underReview: true }),

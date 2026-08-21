@@ -82,6 +82,11 @@ def payload_to_snapshot(payload: Dict[str, Any],
                           raw_text=str((payload.get("visibleMarket") or {}).get("rawTitle") or ""))
 
 
+def has_market_update(payload: Dict[str, Any]) -> bool:
+    """True cuando el paquete observa un mercado, tenga lineas o no."""
+    return isinstance(payload.get("visibleMarket"), dict)
+
+
 def sides_confirmed(payload: Dict[str, Any]) -> bool:
     """False si el reparto OVER/UNDER salio de la posicion y no de una palabra."""
     return bool((payload.get("visibleMarket") or {}).get("sidesConfirmed"))

@@ -483,7 +483,7 @@
     const elegido = scanLib.chooseVisibleMarket(Array.from(encontrados.values()),
                                                 markets.CONFIDENCE_THRESHOLD);
     const nuevoVisible = elegido ? elegido.key : null;
-    if (nuevoVisible && nuevoVisible !== state.visibleMarket) {
+    if (nuevoVisible !== state.visibleMarket) {
       pushHistory('marketVisibleChanged', { from: state.visibleMarket, to: nuevoVisible });
       state.visibleMarket = nuevoVisible;
     }
@@ -548,18 +548,17 @@
    */
   function buildVisiblePayload() {
     const clave = state.visibleMarket;
-    if (!clave) return { payload: null, rejected: ['no hay mercado visible identificado'] };
-    const registro = state.markets.get(clave);
-    if (!registro) return { payload: null, rejected: ['el mercado visible no tiene registro'] };
+    const registro = clave ? state.markets.get(clave) : null;
     return payloadLib.buildPayload({
-      marketKey: registro.key,
-      confidence: registro.confidence,
-      rawTitle: registro.headerText,
+      marketKey: registro ? registro.key : null,
+      confidence: registro ? registro.confidence : 0,
+      rawTitle: registro ? registro.headerText : '',
       eventId: state.eventId,
       eventName: eventName(),
-      lines: registro.strictLines || registro.lines,
-      sideMarkers: registro.sideMarkers,
-      observedAt: registro.lastSeenAt || now(),
+      lines: registro && registro.existsInDom
+        ? (registro.strictLines || registro.lines) : [],
+      sideMarkers: registro ? registro.sideMarkers : null,
+      observedAt: registro && registro.lastSeenAt ? registro.lastSeenAt : now(),
       gameState: state.gameState || null,
     });
   }

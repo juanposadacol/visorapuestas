@@ -101,6 +101,10 @@ class MarketState:
             return FreshnessState.UNAVAILABLE
         if criteria.forget_after_seconds and age > criteria.forget_after_seconds:
             return FreshnessState.UNAVAILABLE
+        # Se conserva la ultima lectura para mostrar su antiguedad, pero una
+        # observacion explicita de `lines=[]` significa que ya no es actual.
+        if self.suspended:
+            return FreshnessState.STALE
         if self.visible and age <= criteria.recent_after_seconds:
             return FreshnessState.LIVE
         if age <= criteria.stale_after_seconds:
@@ -167,6 +171,15 @@ class EventMarkets:
                 # nadie lo esta validando.
                 state.under_review = False
                 state.pending_lines = ()
+
+    def mark_suspended(self, key: MarketKey) -> MarketState:
+        """Mercado visible sin lineas actuales; preserva la ultima buena."""
+        state = self.ensure(key)
+        state.suspended = True
+        state.under_review = False
+        state.pending_lines = ()
+        self.set_visible(key)
+        return state
 
     def clear(self) -> None:
         self.markets.clear()

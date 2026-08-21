@@ -25,7 +25,7 @@ from ..capture.roi import OcrHints, RoiKind
 from ..capture.roi_manager import RoiFrame, RoiManager
 from ..config.profiles import resolve_default_market
 from ..diagnostics.logbus import LogBus
-from ..bridge.source import BrowserSource, SourceKind
+from ..bridge.source import BrowserSource, MarketUpdateStatus, SourceKind
 from ..domain.event_markets import EventMarkets, MarketState
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, MarketSnapshot
@@ -585,15 +585,31 @@ class LiveReader:
             if valor is not None and campo not in self.field_sources:
                 self.field_sources[campo] = SourceKind.OCR
 
+        market_status, market_key = fuente.market_update(now)
         snapshot = fuente.snapshot(now)
         if snapshot is not None and snapshot.lines:
             tracker_key = snapshot.key
-            self.markets.observe(tracker_key, snapshot, confirmed=True, now=now)
+            self.markets.observe(tracker_key, snapshot, confirmed=True,
+                                 now=fuente.market_available_at() or now)
             self.field_sources["market"] = SourceKind.BROWSER_DOM
             self.field_sources["lines"] = SourceKind.BROWSER_DOM
+        elif market_status is MarketUpdateStatus.NO_LINES and market_key is not None:
+            self.markets.mark_suspended(market_key)
+            self.field_sources["market"] = SourceKind.BROWSER_DOM
+            if self.field_sources.get("lines") is SourceKind.BROWSER_DOM:
+                self.field_sources.pop("lines", None)
+        elif market_status is MarketUpdateStatus.ABSENT:
+            self.markets.set_visible(None)
+            for campo in ("market", "lines"):
+                if self.field_sources.get(campo) is SourceKind.BROWSER_DOM:
+                    self.field_sources.pop(campo, None)
 
         estado = fuente.game_state(now)
         if not estado:
+            for campo in ("score_a", "score_b", "period", "clock_seconds",
+                          "team_a", "team_b", "breakdown"):
+                if self.field_sources.get(campo) is SourceKind.BROWSER_DOM:
+                    self.field_sources.pop(campo, None)
             return
 
         self._apply_browser_field("score_a", estado.get("score_a"),

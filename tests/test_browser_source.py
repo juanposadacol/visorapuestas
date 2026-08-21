@@ -6,7 +6,7 @@ import pytest
 
 from visorunder.bridge import converter
 from visorunder.bridge.source import (BrowserSource, BrowserSourceSettings, ExtensionState,
-                                      LinkState, SourceKind)
+                                      LinkState, MarketUpdateStatus, SourceKind)
 from visorunder.domain.market import MarketKey, MarketType
 
 
@@ -249,6 +249,43 @@ def test_sin_gameState_el_mercado_llega_igual():
     assert snapshot is not None
     assert snapshot.lines[0].under_odds == 1.90
     assert fuente.available_fields(now=5000.5) == ["market", "lines"]
+
+
+def test_game_state_sigue_actualizandose_con_lineas_retiradas_y_mercado_stale():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={"scoreA": 89, "scoreB": 66, "period": 4}),
+                  now=9000.0)
+    ultima = fuente.last_snapshot_any_age()
+
+    fuente.accept(payload(lines=[], gameState={"scoreA": 91, "scoreB": 66, "period": 4}),
+                  now=9020.0)
+
+    assert fuente.game_state(now=9020.5)["score_a"] == 91
+    assert fuente.snapshot(now=9020.5) is None
+    assert fuente.last_snapshot_any_age() is ultima
+    assert fuente.market_update(now=9020.5) == (
+        MarketUpdateStatus.NO_LINES, MarketKey.quarter(4))
+    assert fuente.market_available_at() == 9000.0, "el state update no rejuvenece la cuota"
+
+
+def test_market_update_no_borra_game_state_y_cada_eje_caduca_por_separado():
+    fuente = BrowserSource()
+    fuente.accept(payload(visibleMarket=None, lines=[],
+                          gameState={"scoreA": 89, "scoreB": 66}), now=10000.0)
+    fuente.accept(payload(gameState=None), now=10005.0)
+    assert fuente.snapshot(now=10005.5) is not None
+    assert fuente.game_state(now=10005.5)["score_a"] == 89
+    assert fuente.game_state(now=10020.0) == {}, "el mercado no rejuvenece el marcador"
+
+
+def test_cambio_de_evento_con_payload_solo_mercado_limpia_scoreboard_anterior():
+    fuente = BrowserSource()
+    fuente.accept(payload(visibleMarket=None, lines=[],
+                          gameState={"scoreA": 89, "scoreB": 66}), now=11000.0)
+    fuente.accept(payload(event={"id": "nuevo", "name": "C vs D"}, gameState=None),
+                  now=11001.0)
+    assert fuente.game_state(now=11001.5) == {}
+    assert fuente.event_id == "nuevo"
 
 
 # ------------------------------- el reloj que NO es el restante de un cuarto

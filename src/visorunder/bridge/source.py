@@ -75,6 +75,14 @@ class ExtensionState(str, Enum):
                 "STALE": "EXTENSION SIN CONFIRMAR"}[self.value]
 
 
+class MarketUpdateStatus(str, Enum):
+    """Estado actual del eje mercado en el ultimo paquete del evento."""
+
+    AVAILABLE = "AVAILABLE"   # mercado y lineas actuales
+    NO_LINES = "NO_LINES"     # mercado reconocido, oferta retirada/suspendida
+    ABSENT = "ABSENT"         # el escaneo actual no reconoce mercado
+
+
 @dataclass
 class BrowserSourceSettings:
     """Cuando dejar de fiarse de lo que llego del navegador."""
@@ -129,6 +137,11 @@ class BrowserSource:
         self._last: Optional[BrowserPacket] = None
         self._snapshot: Optional[MarketSnapshot] = None
         self._game_state: Dict[str, Any] = {}
+        self._market_status = MarketUpdateStatus.ABSENT
+        self._market_key: Optional[MarketKey] = None
+        self._market_received_at: Optional[float] = None
+        self._market_available_at: Optional[float] = None
+        self._game_received_at: Optional[float] = None
         self._event_id: Optional[str] = None
         self._event_name: str = ""
         self.packets = 0
@@ -155,13 +168,30 @@ class BrowserSource:
                     "name": converter.event_name(payload), "at": now,
                 }
                 self.event_changes += 1
-                self._snapshot = None
+                self._clear_event_data()
             self._event_id = identificador or self._event_id
             self._event_name = converter.event_name(payload) or self._event_name
 
             try:
-                self._snapshot = converter.payload_to_snapshot(payload)
-                self._game_state = converter.payload_to_game_state(payload)
+                estado = payload.get("gameState")
+                if isinstance(estado, dict):
+                    self._game_state = converter.payload_to_game_state(payload)
+                    self._game_received_at = now
+
+                self._market_received_at = now
+                if converter.has_market_update(payload):
+                    self._market_key = converter.payload_to_market_key(payload)
+                    if payload.get("lines"):
+                        self._snapshot = converter.payload_to_snapshot(payload)
+                        self._market_status = MarketUpdateStatus.AVAILABLE
+                        self._market_available_at = now
+                    else:
+                        # La ultima linea buena se conserva para mostrarla con
+                        # su timestamp, pero deja de ser la oferta actual.
+                        self._market_status = MarketUpdateStatus.NO_LINES
+                else:
+                    self._market_key = None
+                    self._market_status = MarketUpdateStatus.ABSENT
                 self.last_error = ""
             except (ValueError, KeyError, TypeError) as exc:
                 self.last_error = f"payload no convertible: {exc}"
@@ -173,6 +203,17 @@ class BrowserSource:
             self._last = paquete
             self.packets += 1
             return paquete
+
+    def _clear_event_data(self) -> None:
+        """Borra todos los ejes asociados al evento anterior."""
+        self._snapshot = None
+        self._game_state = {}
+        self._market_status = MarketUpdateStatus.ABSENT
+        self._market_key = None
+        self._market_received_at = None
+        self._market_available_at = None
+        self._game_received_at = None
+        self._event_name = ""
 
     def note_contact(self, now: Optional[float] = None) -> None:
         """La extension ha dado senales de vida.
@@ -215,10 +256,8 @@ class BrowserSource:
     def reset(self) -> None:
         with self._lock:
             self._last = None
-            self._snapshot = None
-            self._game_state = {}
+            self._clear_event_data()
             self._event_id = None
-            self._event_name = ""
             self.pending_event_change = None
             # El contacto NO se borra: la extension sigue estando ahi aunque se
             # reinicie la sesion de lectura.
@@ -246,10 +285,33 @@ class BrowserSource:
 
     def snapshot(self, now: Optional[float] = None) -> Optional[MarketSnapshot]:
         """Mercado vigente. None si el enlace ya no es de fiar."""
-        if self.link_state(now) is LinkState.DISCONNECTED:
-            return None
         with self._lock:
+            if self._market_status is not MarketUpdateStatus.AVAILABLE:
+                return None
+            if self._age_from(self._market_received_at, now) > \
+                    self.settings.disconnected_after_seconds:
+                return None
             return self._snapshot
+
+    @staticmethod
+    def _age_from(timestamp: Optional[float], now: Optional[float]) -> float:
+        if timestamp is None:
+            return float("inf")
+        return max(0.0, (now if now is not None else time.time()) - timestamp)
+
+    def market_update(self, now: Optional[float] = None) -> tuple[MarketUpdateStatus,
+                                                                  Optional[MarketKey]]:
+        """Ultima observacion del mercado, separada del estado del partido."""
+        with self._lock:
+            if self._age_from(self._market_received_at, now) > \
+                    self.settings.disconnected_after_seconds:
+                return MarketUpdateStatus.ABSENT, None
+            return self._market_status, self._market_key
+
+    def market_available_at(self) -> Optional[float]:
+        """Recepcion de la ultima oferta con lineas; no cambia con ticks."""
+        with self._lock:
+            return self._market_available_at
 
     def last_snapshot_any_age(self) -> Optional[MarketSnapshot]:
         """Ultimo mercado observado, sin importar la antiguedad.
@@ -261,9 +323,10 @@ class BrowserSource:
             return self._snapshot
 
     def game_state(self, now: Optional[float] = None) -> Dict[str, Any]:
-        if self.link_state(now) is LinkState.DISCONNECTED:
-            return {}
         with self._lock:
+            if self._age_from(self._game_received_at, now) > \
+                    self.settings.disconnected_after_seconds:
+                return {}
             return dict(self._game_state)
 
     def available_fields(self, now: Optional[float] = None) -> List[str]:

@@ -88,27 +88,40 @@
   }
 
   /**
-   * Construye el payload. Devuelve { payload, rejected } donde `payload` es
-   * null si no hay confianza suficiente, con el motivo en `rejected`.
+   * Construye una actualizacion tipada del mismo evento.
+   *
+   * Mercado y estado del partido son independientes: un mercado reconocido
+   * puede viajar con `lines: []` (suspendido/sin oferta actual), y un
+   * `gameState` puede viajar con `visibleMarket: null`. Solo se devuelve null
+   * cuando no hay ninguna observacion util de ninguno de los dos ejes.
    */
   function buildPayload(input) {
     const datos = input || {};
     const motivos = [];
 
     const wire = toWireMarket(datos.marketKey);
-    if (!wire) motivos.push(`mercado no reconocido: ${datos.marketKey || '(ninguno)'}`);
+    if (!wire && datos.marketKey) {
+      motivos.push(`mercado no reconocido: ${datos.marketKey}`);
+    }
 
     const confianza = Number(datos.confidence || 0);
-    if (confianza < MIN_MARKET_CONFIDENCE) {
+    if (wire && confianza < MIN_MARKET_CONFIDENCE) {
       motivos.push(`confianza del mercado ${confianza.toFixed(2)} < ${MIN_MARKET_CONFIDENCE}`);
     }
 
     const lineas = (datos.lines || []).filter(
       (l) => l && typeof l.line === 'number' && (l.overOdds != null || l.underOdds != null));
-    if (!lineas.length) motivos.push('sin lineas con cuota');
+    if (wire && !lineas.length) motivos.push('sin lineas actuales');
     if (lineas.length > MAX_LINES) motivos.push(`demasiadas lineas: ${lineas.length}`);
 
-    if (motivos.length) return { payload: null, rejected: motivos };
+    const marketUsable = !!wire && confianza >= MIN_MARKET_CONFIDENCE &&
+      lineas.length <= MAX_LINES;
+    const gameState = datos.gameState && typeof datos.gameState === 'object'
+      ? datos.gameState : null;
+    if (!marketUsable && !gameState) {
+      if (!motivos.length) motivos.push('sin estado del partido ni mercado identificado');
+      return { payload: null, rejected: motivos };
+    }
 
     const sides = datos.sideMarkers || {};
     return {
@@ -120,22 +133,22 @@
           id: datos.eventId || null,
           name: datos.eventName || null,
         },
-        visibleMarket: {
+        visibleMarket: marketUsable ? {
           ...wire,
           confidence: Number(confianza.toFixed(3)),
           rawTitle: String(datos.rawTitle || '').slice(0, 160),
           // Si la pagina no marca "Mas de"/"Menos de", el reparto OVER/UNDER
           // es posicional y no se puede garantizar. Se dice, no se disimula.
           sidesConfirmed: !!sides.both,
-        },
-        lines: lineas.slice(0, MAX_LINES).map((l) => ({
+        } : null,
+        lines: (marketUsable ? lineas : []).slice(0, MAX_LINES).map((l) => ({
           line: Number(l.line),
           overOdds: l.overOdds == null ? null : Number(l.overOdds),
           underOdds: l.underOdds == null ? null : Number(l.underOdds),
         })),
-        gameState: datos.gameState || null,
+        gameState,
       },
-      rejected: [],
+      rejected: motivos,
     };
   }
 
@@ -153,9 +166,9 @@
     if (!p.observedAt || Number.isNaN(Date.parse(p.observedAt))) errores.push('observedAt invalido');
 
     const market = p.visibleMarket;
-    if (!market || typeof market !== 'object') {
-      errores.push('falta visibleMarket');
-    } else {
+    if (market != null && typeof market !== 'object') {
+      errores.push('visibleMarket invalido');
+    } else if (market) {
       const tipos = ['GAME_TOTAL', 'HALF_TOTAL', 'QUARTER_TOTAL'];
       if (!tipos.includes(market.marketType)) errores.push('marketType desconocido');
       if (market.marketType === 'QUARTER_TOTAL' &&
@@ -171,8 +184,8 @@
       }
     }
 
-    if (!Array.isArray(p.lines) || !p.lines.length) {
-      errores.push('sin lineas');
+    if (!Array.isArray(p.lines)) {
+      errores.push('lines no es una lista');
     } else if (p.lines.length > MAX_LINES) {
       errores.push('demasiadas lineas');
     } else {
@@ -194,6 +207,9 @@
           errores.push(`linea sin cuotas: ${linea.line}`);
         }
       }
+    }
+    if (Array.isArray(p.lines) && p.lines.length && !market) {
+      errores.push('lineas sin visibleMarket');
     }
 
     const gameState = p.gameState;
@@ -230,6 +246,7 @@
         }
       }
     }
+    if (!market && !gameState) errores.push('actualizacion sin mercado ni gameState');
 
     return { valid: errores.length === 0, errors: errores };
   }
@@ -238,12 +255,13 @@
   function payloadSignature(payload) {
     if (!payload) return '';
     const market = payload.visibleMarket;
-    const lineas = payload.lines
+    const lineas = (payload.lines || [])
       .map((l) => `${l.line}|${l.overOdds ?? '-'}|${l.underOdds ?? '-'}`)
       .join(';');
     const state = payload.gameState ? JSON.stringify(payload.gameState) : '-';
-    return `${payload.event.id || '-'}#${market.marketType}:${market.period ?? '-'}:` +
-      `${market.half ?? '-'}#${lineas}#${state}`;
+    const marketKey = market
+      ? `${market.marketType}:${market.period ?? '-'}:${market.half ?? '-'}` : '-';
+    return `${payload.event.id || '-'}#${marketKey}#${lineas}#${state}`;
   }
 
   return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, WIRE_MARKET,

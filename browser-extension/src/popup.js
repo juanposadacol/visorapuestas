@@ -45,6 +45,8 @@
   //: Como se dice cada estado del MERCADO. Habla solo de los datos.
   const TEXTO_MERCADO = {
     VALID: { texto: 'mercado valido', clase: 'si' },
+    NO_LINES: { texto: 'mercado detectado · lineas 0 (sin oferta actual)', clase: 'oculto' },
+    STATE_ONLY: { texto: 'estado del partido enviado · sin mercado actual', clase: 'oculto' },
     NONE: { texto: 'todavia sin mercado identificado', clase: 'oculto' },
     UNDER_REVIEW: { texto: 'lectura en revision, no se publica', clase: 'oculto' },
     REJECTED: { texto: 'lectura descartada por el contrato', clase: 'no' },
@@ -70,7 +72,10 @@
       enlace.texto + (puente.link === 'CONNECTED' ? version : '');
     $('app-local').className = `valor ${enlace.clase}`;
 
-    const mercado = TEXTO_MERCADO[puente.market] || TEXTO_MERCADO.NONE;
+    const mercado = { ...(TEXTO_MERCADO[puente.market] || TEXTO_MERCADO.NONE) };
+    if (puente.market === 'NO_LINES' && puente.marketType) {
+      mercado.texto = `${puente.marketType} detectado · lineas 0 (sin oferta actual)`;
+    }
     const contadores = `${puente.sent} envio(s), ${puente.failed} fallo(s)`;
     $('enviando').textContent = puente.market === 'VALID'
       ? contadores
@@ -119,6 +124,10 @@
     $('visible').textContent = estado.visibleMarket
       ? markets.labelFor(estado.visibleMarket)
       : 'no identificado';
+    const actual = estado.visibleMarket
+      ? estado.markets.find((market) => market.key === estado.visibleMarket) : null;
+    $('lineas-actuales').textContent = actual
+      ? String((actual.lines || []).length) : '0 (sin mercado actual)';
     $('escaneo').textContent =
       `${report.formatClock(estado.lastScanAt)}  (${estado.lastScanMs} ms, ${estado.scanCount})`;
     const pistas = (estado.environment && estado.environment.hints) || [];
@@ -126,7 +135,7 @@
 
     // Marcador, cuarto y reloj CADA UNO por su cuenta: que falte el reloj no
     // puede ensuciar lo que se sabe del marcador, ni al reves.
-    for (const campo of ['marcador', 'cuarto', 'reloj']) {
+    for (const campo of ['marcador', 'cuarto', 'reloj', 'parciales']) {
       poner(campo, report.describeGamePart(estado.gameState, estado.gameDiagnostics, campo));
     }
 

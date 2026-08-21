@@ -100,9 +100,9 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                     errors.append(f"event.{campo} demasiado largo")
 
     market = data.get("visibleMarket")
-    if not isinstance(market, dict):
-        errors.append("falta visibleMarket")
-    else:
+    if market is not None and not isinstance(market, dict):
+        errors.append("visibleMarket no es un objeto")
+    elif isinstance(market, dict):
         errors += _unknown_fields(market, MARKET_FIELDS, "visibleMarket")
         tipo = market.get("marketType")
         if tipo not in MARKET_TYPES:
@@ -126,8 +126,8 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
             errors.append("rawTitle invalido")
 
     lineas = data.get("lines")
-    if not isinstance(lineas, list) or not lineas:
-        errors.append("sin lineas")
+    if not isinstance(lineas, list):
+        errors.append("lines no es una lista")
     elif len(lineas) > MAX_LINES:
         errors.append(f"demasiadas lineas: {len(lineas)}")
     else:
@@ -142,6 +142,8 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                               f"lines[{indice}].{lado}", errors, allow_none=True)
             if linea.get("overOdds") is None and linea.get("underOdds") is None:
                 errors.append(f"lines[{indice}] sin ninguna cuota")
+    if isinstance(lineas, list) and lineas and not isinstance(market, dict):
+        errors.append("lineas sin visibleMarket")
 
     estado = data.get("gameState")
     if estado is not None:
@@ -202,6 +204,9 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                                               not (0 <= value <= 300)):
                         errors.append(
                             f"gameState.{campo}.periods.{label} invalido: {value!r}")
+
+    if not isinstance(market, dict) and not isinstance(estado, dict):
+        errors.append("actualizacion sin mercado ni gameState")
 
     return (not errors), errors
 

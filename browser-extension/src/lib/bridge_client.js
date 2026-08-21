@@ -69,6 +69,8 @@
    */
   const MARKET = {
     VALID: 'VALID',
+    NO_LINES: 'NO_LINES',
+    STATE_ONLY: 'STATE_ONLY',
     NONE: 'NONE',
     UNDER_REVIEW: 'UNDER_REVIEW',
     REJECTED: 'REJECTED',
@@ -184,7 +186,10 @@
     if (datos.underReview) return MARKET.UNDER_REVIEW;
     if (!datos.payload) return MARKET.NONE;
     if (datos.validation && datos.validation.valid === false) return MARKET.REJECTED;
-    return MARKET.VALID;
+    if (datos.payload.visibleMarket && (datos.payload.lines || []).length) return MARKET.VALID;
+    if (datos.payload.visibleMarket) return MARKET.NO_LINES;
+    if (datos.payload.gameState) return MARKET.STATE_ONLY;
+    return MARKET.NONE;
   }
 
   return { DEFAULTS, LINK, MARKET, decideSend, retryDelay, nextLinkState,

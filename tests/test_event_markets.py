@@ -111,6 +111,18 @@ def test_mercado_sin_lineas_es_no_disponible():
     assert estado.freshness(_criteria(), now=1000.0) is FreshnessState.UNAVAILABLE
 
 
+def test_retirar_lineas_conserva_la_ultima_buena_pero_la_marca_stale():
+    markets = EventMarkets()
+    markets.observe(GAME, _snapshot(GAME, (195.5, 1.67, 2.00)),
+                    confirmed=True, now=1000.0)
+    markets.mark_suspended(GAME)
+    estado = markets.get(GAME)
+    assert [line.line for line in estado.lines] == [195.5]
+    assert estado.suspended is True
+    assert estado.freshness(_criteria(), now=1001.0) is FreshnessState.STALE
+    assert estado.describe_age(now=1001.0) == "ahora"
+
+
 def test_umbrales_configurables():
     markets = EventMarkets()
     markets.observe(Q2, _snapshot(Q2, (40.5, 2.0, 1.80)), confirmed=True, now=1000.0)

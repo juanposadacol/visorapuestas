@@ -19,6 +19,7 @@ from visorunder.capture.roi import Rect, RoiKind
 from visorunder.capture.screen_capture import NullCapture
 from visorunder.config.profiles import SportsbookProfile
 from visorunder.domain.market import MarketKey
+from visorunder.domain.event_markets import FreshnessState
 
 
 def payload(**cambios):
@@ -390,3 +391,59 @@ def test_fixture_real_llega_hasta_metricas_sin_marcador_manual(app):
     assert general.period_pace == pytest.approx(22 / 4.7)
     assert general.half_points == 22
     assert general.first_half_points == 90
+
+
+def test_lineas_suspendidas_no_detienen_scoreboard_ni_rejuvenecen_la_ultima_cuota(app):
+    app.start_bridge()
+    estado_89 = {
+        "scoreA": 89, "scoreB": 66, "period": 4, "clock": "08:00",
+        "teamA": {"name": "Alemania", "total": 89,
+                  "periods": {"Q1": 24, "Q2": 26, "Q3": 36, "Q4": 3}},
+        "teamB": {"name": "República Checa", "total": 66,
+                  "periods": {"Q1": 21, "Q2": 28, "Q3": 17, "Q4": 0}},
+    }
+    enviar(app, payload(
+        visibleMarket={"marketType": "GAME_TOTAL", "period": None, "half": None,
+                       "confidence": 0.95,
+                       "rawTitle": "Total de puntos - Prórroga incluida",
+                       "sidesConfirmed": True},
+        lines=[{"line": 195.5, "overOdds": 1.67, "underOdds": 2.00}],
+        gameState=estado_89))
+
+    lector = app.start_session(None)
+    lector.stop()
+    primero = lector.tick()
+    assert primero.state.score_a_value == 89
+    assert primero.markets.get(MarketKey.game()).freshness(
+        app.freshness_criteria, primero.ts) is FreshnessState.LIVE
+
+    estado_91 = {**estado_89, "scoreA": 91,
+                 "teamA": {**estado_89["teamA"], "total": 91,
+                           "periods": {**estado_89["teamA"]["periods"], "Q4": 5}}}
+    enviar(app, payload(
+        visibleMarket={"marketType": "GAME_TOTAL", "period": None, "half": None,
+                       "confidence": 0.95,
+                       "rawTitle": "Total de puntos - Prórroga incluida",
+                       "sidesConfirmed": True},
+        lines=[], gameState=estado_91))
+    segundo = lector.tick()
+    mercado = segundo.markets.get(MarketKey.game())
+
+    assert segundo.state.score_a_value == 91
+    assert [line.line for line in mercado.lines] == [195.5], "se conserva la ultima buena"
+    assert mercado.freshness(app.freshness_criteria, segundo.ts) is FreshnessState.STALE
+    assert segundo.field_sources["score_a"] == SourceKind.BROWSER_DOM.value
+    assert "lines" not in segundo.field_sources, "la linea vieja no figura como actual"
+
+    enviar(app, payload(
+        visibleMarket={"marketType": "GAME_TOTAL", "period": None, "half": None,
+                       "confidence": 0.95,
+                       "rawTitle": "Total de puntos - Prórroga incluida",
+                       "sidesConfirmed": True},
+        lines=[{"line": 197.5, "overOdds": 2.06, "underOdds": 1.62}],
+        gameState=None))
+    tercero = lector.tick()
+    mercado = tercero.markets.get(MarketKey.game())
+    assert [line.line for line in mercado.lines] == [197.5]
+    assert mercado.freshness(app.freshness_criteria, tercero.ts) is FreshnessState.LIVE
+    assert tercero.state.score_a_value == 91, "el market update no borra el gameState"

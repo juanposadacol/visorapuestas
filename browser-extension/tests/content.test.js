@@ -185,6 +185,35 @@ test('el marcador del scoreboard viaja dentro del payload', () => {
   });
 });
 
+test('scoreboard sigue enviandose cuando el mercado queda sin lineas o desaparece', () => {
+  const doc = createDocument();
+  const marcador = scoreboard(doc, 89, 66);
+  const mercado = mercadoQ4(doc, '195.5', '1.67', '2.00');
+  doc.body.appendChild(marcador);
+  doc.body.appendChild(mercado);
+  const c = montarContenido(doc);
+
+  // BetPlay suspende las opciones pero conserva la cabecera del mercado.
+  marcador.children[0].children[1].childNodes[0].nodeValue = '91';
+  mercado.children[1].childNodes.length = 0;
+  c.rescanear();
+  let ultimo = c.payloads().pop();
+  assert.ok(ultimo.payload, JSON.stringify(ultimo.rejected));
+  assert.equal(ultimo.payload.gameState.scoreA, 91);
+  assert.equal(ultimo.payload.visibleMarket.marketType, 'QUARTER_TOTAL');
+  assert.deepEqual(ultimo.payload.lines, []);
+  assert.equal(c.estado().markets.find((m) => m.key === 'Q4_TOTAL').lines.length, 0);
+
+  // Si desaparece tambien la cabecera, el estado viaja como state-only.
+  mercado.remove();
+  c.rescanear();
+  ultimo = c.payloads().pop();
+  assert.ok(ultimo.payload);
+  assert.equal(ultimo.payload.gameState.scoreA, 91);
+  assert.equal(ultimo.payload.visibleMarket, null);
+  assert.deepEqual(ultimo.payload.lines, []);
+});
+
 test('un marcador dudoso NO bloquea el envio del mercado', () => {
   const doc = createDocument();
   // Dos numeros sueltos, sin ninguna evidencia de ser un marcador.

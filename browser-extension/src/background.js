@@ -189,6 +189,11 @@ function vistaDelPuente() {
     error: estado.link.error,
     appVersion: estado.appVersion,
     market: estado.market,
+    marketType: estado.lastPayload && estado.lastPayload.visibleMarket
+      ? estado.lastPayload.visibleMarket.marketType : null,
+    currentLines: estado.lastPayload && Array.isArray(estado.lastPayload.lines)
+      ? estado.lastPayload.lines.length : 0,
+    hasGameState: !!(estado.lastPayload && estado.lastPayload.gameState),
     marketRejected: estado.lastRejected,
     sent: estado.sent,
     failed: estado.failed,

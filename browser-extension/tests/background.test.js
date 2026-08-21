@@ -75,7 +75,8 @@ function montarWorker(opciones) {
     Error,
     importScripts: () => {},
     fetch: async (url, opts) => {
-      peticiones.push({ url, method: (opts && opts.method) || 'GET' });
+      peticiones.push({ url, method: (opts && opts.method) || 'GET',
+                         body: opts && opts.body ? JSON.parse(opts.body) : null });
       if (!cfg.appViva) throw new Error('Failed to fetch');
       if (String(url).endsWith('/health')) {
         return { ok: true, status: 200,
@@ -193,6 +194,36 @@ test('con aplicacion viva y mercado valido se envia y el mercado es VALID', asyn
   assert.equal(w.envios(), 1);
   assert.equal(puente.sent, 1);
   assert.ok(puente.lastSentAt > 0);
+});
+
+test('un payload solo de gameState se valida y llega al mismo puente', async () => {
+  const w = montarWorker({ appViva: true });
+  const parcial = payloadValido();
+  parcial.visibleMarket = null;
+  parcial.lines = [];
+  parcial.gameState = { scoreA: 89, scoreB: 66, period: 4 };
+  await w.enviar({ type: 'VDIAG_PAYLOAD', payload: parcial, rejected: [] });
+
+  const puente = await w.puente();
+  assert.equal(puente.market, 'STATE_ONLY');
+  assert.equal(puente.hasGameState, true);
+  assert.equal(w.envios(), 1);
+  const enviado = w.peticiones.find((p) => p.url.includes('/v1/browser-state'));
+  assert.equal(enviado.body.gameState.scoreA, 89);
+  assert.deepEqual(enviado.body.lines, []);
+});
+
+test('mercado detectado sin lineas se envia como NO_LINES', async () => {
+  const w = montarWorker({ appViva: true });
+  const parcial = payloadValido();
+  parcial.lines = [];
+  parcial.gameState = { scoreA: 91, scoreB: 66, period: 4 };
+  await w.enviar({ type: 'VDIAG_PAYLOAD', payload: parcial,
+                   rejected: ['sin lineas actuales'] });
+  const puente = await w.puente();
+  assert.equal(puente.market, 'NO_LINES');
+  assert.equal(puente.currentLines, 0);
+  assert.equal(w.envios(), 1);
 });
 
 test('un payload que no cumple el contrato es REJECTED y no se envia', async () => {

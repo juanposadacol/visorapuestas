@@ -289,8 +289,20 @@
    */
   function describeGamePart(gameState, diagnostics, campo) {
     const estado = gameState || {};
-    const diag = (diagnostics || {})[campo === 'marcador' ? 'score'
-                 : campo === 'cuarto' ? 'period' : 'clock'] || {};
+    const diagKey = campo === 'marcador' ? 'score'
+      : campo === 'cuarto' ? 'period' : campo === 'reloj' ? 'clock' : null;
+    const diag = diagKey ? ((diagnostics || {})[diagKey] || {}) : {};
+
+    if (campo === 'parciales') {
+      const a = estado.teamA && estado.teamA.periods;
+      const b = estado.teamB && estado.teamB.periods;
+      if (!a || !b) return { texto: 'no disponibles', clase: 'oculto' };
+      const labels = Array.from(new Set([...Object.keys(a), ...Object.keys(b)]));
+      const completos = labels.filter((label) => Number.isInteger(a[label]) &&
+        Number.isInteger(b[label]));
+      if (!completos.length) return { texto: 'sin pares completos', clase: 'oculto' };
+      return { texto: `${completos.join(', ')} validos ✓`, clase: 'si' };
+    }
 
     if (campo === 'marcador') {
       if (diag.status === 'UNDER_REVIEW') {
