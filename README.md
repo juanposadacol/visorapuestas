@@ -79,7 +79,8 @@ una sesión nueva (te pregunta antes si tienes una apuesta fijada).
 El panel **CONEXIÓN**, arriba a la izquierda, dice de dónde sale cada dato:
 
 ```
-EXTENSIÓN              BETPLAY CONECTADO
+EXTENSIÓN              EXTENSIÓN CONECTADA
+DATOS DEL DOM          BETPLAY CONECTADO
 ÚLTIMO DATO            hace 0.3 s  (120 ms)
 MERCADO                DOM ✓
 LÍNEAS Y CUOTAS        DOM ✓
@@ -87,6 +88,27 @@ MARCADOR               DOM ✓   (o OCR ✓, o --)
 CUARTO                 DOM ✓
 RELOJ                  DOM ✓
 ```
+
+Las dos primeras líneas responden **dos preguntas distintas**, y conviene no
+confundirlas:
+
+* **EXTENSIÓN** — ¿está ahí la extensión? Lo dice su latido, que llega cada pocos
+  segundos aunque no haya ningún mercado que enviar.
+* **DATOS DEL DOM** — ¿siguen frescos los datos que manda?
+
+Que todavía no haya mercado **no** significa que la extensión esté caída. Antes una
+sola línea mezclaba las dos cosas y decía `EXTENSIÓN DESCONECTADA` con la extensión
+perfectamente conectada, lo que llevó una prueba real entera a buscar un problema de
+conexión que no existía.
+
+Mientras falte algún dato, el panel dice **qué** falta:
+
+```
+Esperando marcador, reloj
+```
+
+y no «no se puede iniciar: faltan regiones». Las regiones son el último recurso, no
+el camino normal.
 
 Instalación de la extensión: ver [`browser-extension/README.md`](browser-extension/README.md).
 
@@ -96,6 +118,7 @@ Instalación de la extensión: ver [`browser-extension/README.md`](browser-exten
 |---|---|
 | VisorApuestas cerrado | la extensión reintenta sola; al abrir la app conecta sin recargar BetPlay |
 | Chrome cerrado | la app abre igual y muestra `EXTENSIÓN DESCONECTADA`; puedes usar OCR, perfil manual o modo demo |
+| Extensión conectada, sin mercado aún | `EXTENSIÓN CONECTADA` + `SIN DATOS DEL DOM`, y abajo qué falta. No es un error |
 | El DOM no da marcador/reloj | esos campos pasan a OCR si tienes ROIs; si no, aparecen como `--` |
 | Dejan de llegar datos | `DATOS DOM DESACTUALIZADOS`, y las líneas dejan de presentarse como actuales |
 
@@ -416,8 +439,8 @@ No hay servidor, ni nube, ni cuenta, ni suscripción.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest                              # 307 tests de Python
-cd browser-extension && node --test tests/*.test.js   # 128 tests de JavaScript
+python -m pytest                              # 323 tests de Python
+cd browser-extension && node --test tests/*.test.js   # 249 tests de JavaScript
 ```
 
 La arquitectura y las decisiones técnicas están en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).

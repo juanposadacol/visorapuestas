@@ -199,3 +199,99 @@ def test_cerrar_la_aplicacion_libera_el_puerto(tmp_path):
     assert controlador.bridge.is_running
     controlador.shutdown()
     assert not controlador.bridge.is_running
+
+
+# ------------------------------------- la extension conectada, aunque sin mercado
+#
+# El caso REAL que dio origen a esto: `Invoke-RestMethod http://127.0.0.1:8765/health`
+# respondia `status: ok` y el panel decia EXTENSION DESCONECTADA, porque la
+# aplicacion solo se enteraba de la extension cuando llegaba un mercado. La
+# extension consulta /health cada pocos segundos aunque no tenga nada que enviar.
+
+def _health(app):
+    peticion = urllib.request.Request(f"{app.bridge.url}/health", method="GET")
+    peticion.add_header(BRIDGE_HEADER, "1")
+    with urllib.request.urlopen(peticion, timeout=5) as respuesta:
+        return json.loads(respuesta.read().decode("utf-8"))
+
+
+def test_un_latido_de_health_ya_cuenta_como_extension_conectada(app):
+    from visorunder.app import SessionState
+    from visorunder.bridge.source import ExtensionState
+
+    app.start_bridge()
+    assert app.browser.extension_state() is ExtensionState.DISCONNECTED
+
+    cuerpo = _health(app)
+    assert cuerpo["status"] == "ok"
+
+    assert app.browser.extension_state() is ExtensionState.CONNECTED, \
+        "la extension esta ahi aunque todavia no haya reconocido ningun mercado"
+    assert app.browser.link_state() is LinkState.DISCONNECTED, \
+        "pero los datos siguen sin llegar, y eso se dice aparte"
+    assert app.session_state is SessionState.WAITING_FOR_DATA
+    assert "mercado y lineas" in app.missing_requirements(None)
+
+
+def test_health_sin_la_cabecera_del_protocolo_no_cuenta_como_extension(app):
+    from visorunder.bridge.source import ExtensionState
+
+    app.start_bridge()
+    with urllib.request.urlopen(f"{app.bridge.url}/health", timeout=5) as respuesta:
+        assert respuesta.status == 200
+    assert app.browser.extension_state() is ExtensionState.DISCONNECTED, \
+        "cualquiera puede pedir /health; solo la extension manda la cabecera"
+
+
+def test_el_puente_cuenta_los_latidos(app):
+    app.start_bridge()
+    _health(app)
+    _health(app)
+    assert app.bridge.stats.health_checks == 2
+    assert app.bridge.stats.last_extension_contact_at is not None
+
+
+# ------------------------------------------------------- arranque por estados
+def test_los_estados_del_arranque(app):
+    from visorunder.app import SessionState
+
+    app.start_bridge()
+    assert app.session_state is SessionState.WAITING_FOR_DATA
+    assert app.session_state.label == "ESPERANDO DATOS"
+
+    enviar(app, payload(gameState={"scoreA": 58, "scoreB": 52,
+                                   "period": 4, "clock": "06:24"}))
+    assert app.session_state is SessionState.READY
+
+    lector = app.start_session(app.profile)
+    assert lector is not None
+    assert app.session_state is SessionState.RUNNING
+    lector.stop()
+
+
+def test_un_mercado_sin_marcador_deja_la_sesion_esperando_pero_no_la_rompe(app):
+    from visorunder.app import SessionState
+    from visorunder.bridge.source import ExtensionState
+
+    app.start_bridge()
+    enviar(app, payload(gameState=None))
+
+    # El mercado SI llega: que falte el marcador no lo bloquea.
+    assert app.browser.snapshot() is not None
+    assert app.browser.snapshot().lines[0].under_odds == 1.90
+    assert app.dom_fields() == ["market", "lines"]
+
+    # Y el arranque espera, diciendo exactamente que falta.
+    assert app.extension_state is ExtensionState.CONNECTED
+    assert app.session_state is SessionState.WAITING_FOR_DATA
+    faltan = app.missing_requirements(None)
+    assert "marcador" in faltan and "reloj" in faltan and "cuarto" in faltan
+    assert "mercado y lineas" not in faltan
+
+
+def test_un_gameState_parcial_reduce_lo_que_falta(app):
+    app.start_bridge()
+    enviar(app, payload(gameState={"period": 4, "clock": "06:24"}))
+    faltan = app.missing_requirements(None)
+    assert "marcador" in faltan
+    assert "reloj" not in faltan and "cuarto" not in faltan

@@ -12,7 +12,7 @@ from typing import Dict, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QWidget
 
-from ..bridge.source import LinkState, SourceKind
+from ..bridge.source import ExtensionState, LinkState, SourceKind
 from .styles import COLOR_DANGER, COLOR_MUTED, COLOR_OK, COLOR_WARN
 
 #: Etiquetas de los datos que puede aportar cada fuente.
@@ -28,6 +28,12 @@ COLORES_ENLACE = {
     LinkState.LIVE: COLOR_OK,
     LinkState.STALE: COLOR_WARN,
     LinkState.DISCONNECTED: COLOR_MUTED,
+}
+
+COLORES_EXTENSION = {
+    ExtensionState.CONNECTED: COLOR_OK,
+    ExtensionState.STALE: COLOR_WARN,
+    ExtensionState.DISCONNECTED: COLOR_DANGER,
 }
 
 
@@ -53,6 +59,14 @@ class ConnectionPanel(QWidget):
         rejilla.setContentsMargins(12, 10, 12, 10)
         rejilla.setSpacing(4)
 
+        # Dos filas distintas para dos preguntas distintas: "¿esta la
+        # extension?" y "¿siguen frescos sus datos?". Una sola linea que
+        # mezclara las dos fue lo que hizo perder una prueba real entera
+        # buscando un problema de conexion que no existia.
+        self.extension_label = QLabel(ExtensionState.DISCONNECTED.label)
+        self.extension_label.setObjectName("metricValue")
+        self.extension_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self.state_label = QLabel(LinkState.DISCONNECTED.label)
         self.state_label.setObjectName("metricValue")
         self.state_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -62,12 +76,14 @@ class ConnectionPanel(QWidget):
         self.age_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         rejilla.addWidget(_title("EXTENSION"), 0, 0)
-        rejilla.addWidget(self.state_label, 0, 1)
-        rejilla.addWidget(_title("ULTIMO DATO"), 1, 0)
-        rejilla.addWidget(self.age_label, 1, 1)
+        rejilla.addWidget(self.extension_label, 0, 1)
+        rejilla.addWidget(_title("DATOS DEL DOM"), 1, 0)
+        rejilla.addWidget(self.state_label, 1, 1)
+        rejilla.addWidget(_title("ULTIMO DATO"), 2, 0)
+        rejilla.addWidget(self.age_label, 2, 1)
 
         self.field_labels: Dict[str, QLabel] = {}
-        for fila, (clave, titulo) in enumerate(CAMPOS, start=2):
+        for fila, (clave, titulo) in enumerate(CAMPOS, start=3):
             valor = QLabel("--")
             valor.setObjectName("metricValue")
             valor.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -75,17 +91,28 @@ class ConnectionPanel(QWidget):
             rejilla.addWidget(_title(titulo.upper()), fila, 0)
             rejilla.addWidget(valor, fila, 1)
 
+        self.waiting_label = QLabel("")
+        self.waiting_label.setObjectName("metricValue")
+        self.waiting_label.setWordWrap(True)
+        rejilla.addWidget(self.waiting_label, len(CAMPOS) + 3, 0, 1, 2)
+
         self.conflict_label = QLabel("")
         self.conflict_label.setObjectName("danger")
         self.conflict_label.setWordWrap(True)
-        rejilla.addWidget(self.conflict_label, len(CAMPOS) + 2, 0, 1, 2)
+        rejilla.addWidget(self.conflict_label, len(CAMPOS) + 4, 0, 1, 2)
 
         rejilla.setColumnStretch(0, 1)
         rejilla.setColumnMinimumWidth(1, 130)
 
     def update_view(self, link_state: LinkState, age_seconds: Optional[float],
                     field_sources: Dict[str, str], latency_ms: Optional[float] = None,
-                    conflicts: Optional[list] = None) -> None:
+                    conflicts: Optional[list] = None,
+                    extension_state: ExtensionState = ExtensionState.DISCONNECTED,
+                    waiting_for: Optional[list] = None) -> None:
+        self.extension_label.setText(extension_state.label)
+        self.extension_label.setStyleSheet(
+            f"color: {COLORES_EXTENSION.get(extension_state, COLOR_MUTED)}; font-weight: 700;")
+
         self.state_label.setText(link_state.label)
         self.state_label.setStyleSheet(
             f"color: {COLORES_ENLACE.get(link_state, COLOR_MUTED)}; font-weight: 700;")
@@ -116,6 +143,20 @@ class ConnectionPanel(QWidget):
             else:
                 etiqueta.setText("--")
                 etiqueta.setStyleSheet(f"color: {COLOR_MUTED};")
+
+        # Lo que falta para arrancar se dice en positivo: "esperando marcador"
+        # y no "no se puede iniciar: faltan regiones". Las regiones son el
+        # ultimo recurso, no el camino normal.
+        faltan = waiting_for or []
+        if faltan and extension_state is not ExtensionState.DISCONNECTED:
+            self.waiting_label.setText("Esperando " + ", ".join(faltan))
+            self.waiting_label.setStyleSheet(f"color: {COLOR_WARN};")
+        elif faltan:
+            self.waiting_label.setText(
+                "Abre VisorApuestas y BetPlay, o define las regiones como ultimo recurso.")
+            self.waiting_label.setStyleSheet(f"color: {COLOR_MUTED};")
+        else:
+            self.waiting_label.setText("")
 
         pendientes = conflicts or []
         if pendientes:

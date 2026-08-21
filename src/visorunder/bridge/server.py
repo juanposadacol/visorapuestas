@@ -87,6 +87,13 @@ class BridgeStats:
     last_rejected_at: Optional[float] = None
     last_error: str = ""
     last_origin: str = ""
+    #: Latidos de /health que vienen de la extension.
+    health_checks: int = 0
+    #: Ultima vez que la EXTENSION dio senales de vida, con mercado o sin el.
+    #: Es lo que permite decir "extension conectada, todavia sin mercado" en
+    #: lugar de "extension desconectada", que es lo que se veia antes.
+    last_extension_contact_at: Optional[float] = None
+    extension_version: str = ""
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -146,11 +153,30 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _note_extension_contact(self) -> None:
+        """Anota que la extension esta ahi, aunque no traiga mercado.
+
+        La extension consulta /health cada pocos segundos aunque no haya nada
+        que enviar. Sin esta marca, la aplicacion solo sabia de ella cuando
+        llegaba un mercado, y el panel decia EXTENSION DESCONECTADA mientras la
+        extension estaba perfectamente conectada esperando a reconocer uno.
+        """
+        stats: BridgeStats = self.server.bridge_stats  # type: ignore[attr-defined]
+        if self.headers.get(BRIDGE_HEADER) != "1":
+            return                       # no viene de la extension
+        stats.last_extension_contact_at = time.time()
+        aviso = getattr(self.server, "bridge_contact", None)
+        if aviso is not None:
+            aviso()
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path.split("?")[0] != "/health":
             self._send(404, {"error": "ruta desconocida"})
             return
         server = self.server
+        stats: BridgeStats = server.bridge_stats  # type: ignore[attr-defined]
+        stats.health_checks += 1
+        self._note_extension_contact()
         self._send(200, {
             "status": "ok",
             "app": "VisorApuestas",
@@ -180,6 +206,7 @@ class _Handler(BaseHTTPRequestHandler):
             stats.last_error = "falta la cabecera del protocolo"
             self._send(400, {"error": f"falta {BRIDGE_HEADER}"})
             return
+        self._note_extension_contact()
 
         tipo = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if tipo != "application/json":
@@ -240,9 +267,12 @@ class BridgeServer:
     def __init__(self, settings: Optional[BridgeSettings] = None,
                  on_payload: Optional[Callable[[Dict[str, Any]], None]] = None,
                  version: str = "1.0.0",
-                 log: Optional[Callable[[str, str], None]] = None) -> None:
+                 log: Optional[Callable[[str, str], None]] = None,
+                 on_contact: Optional[Callable[[], None]] = None) -> None:
         self.settings = (settings or BridgeSettings()).validate()
         self.on_payload = on_payload or (lambda _payload: None)
+        #: Se llama en CADA senal de vida de la extension, traiga mercado o no.
+        self.on_contact = on_contact or (lambda: None)
         self.version = version
         self.log = log
         self.stats = BridgeStats()
@@ -275,6 +305,7 @@ class BridgeServer:
 
         httpd.bridge_settings = self.settings          # type: ignore[attr-defined]
         httpd.bridge_callback = self._handle_payload   # type: ignore[attr-defined]
+        httpd.bridge_contact = self._handle_contact    # type: ignore[attr-defined]
         httpd.bridge_stats = self.stats                # type: ignore[attr-defined]
         httpd.bridge_version = self.version            # type: ignore[attr-defined]
         httpd.bridge_log = (lambda nivel, mensaje: self.log(nivel, mensaje)) if self.log else None
@@ -289,6 +320,12 @@ class BridgeServer:
 
     def _handle_payload(self, payload: Dict[str, Any]) -> None:
         self.on_payload(payload)
+
+    def _handle_contact(self) -> None:
+        try:
+            self.on_contact()
+        except Exception:            # noqa: BLE001 - un aviso no puede tumbar el puente
+            pass
 
     def stop(self) -> None:
         """Cierra el servidor y libera el puerto. Seguro de llamar dos veces."""

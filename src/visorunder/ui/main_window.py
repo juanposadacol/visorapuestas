@@ -29,7 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..app import AppController
+from ..app import AppController, SessionState
+from ..bridge.source import ExtensionState
 from ..capture.screen_capture import CaptureError
 from ..domain.market import Side
 from .diagnostics_panel import DiagnosticsPanel
@@ -341,6 +342,15 @@ class MainWindow(QMainWindow):
         snapshot = reader.last_snapshot if reader else None
         view = self.controller.build_view_model(snapshot)
         if view.snapshot is None or view.general is None:
+            # Todavia sin sesion: el panel de conexion es justo lo que hay que
+            # poder mirar ahora, para saber que falta.
+            self.connection_panel.update_view(
+                link_state=view.link_state, age_seconds=view.link_age_seconds,
+                field_sources=view.field_sources, latency_ms=view.link_latency_ms,
+                conflicts=view.source_conflicts,
+                extension_state=view.extension_state, waiting_for=view.waiting_for,
+            )
+            self._update_waiting_status(view)
             return
 
         self.metrics_panel.update_view(
@@ -356,6 +366,7 @@ class MainWindow(QMainWindow):
             link_state=view.link_state, age_seconds=view.link_age_seconds,
             field_sources=view.field_sources, latency_ms=view.link_latency_ms,
             conflicts=view.source_conflicts,
+            extension_state=view.extension_state, waiting_for=view.waiting_for,
         )
         self.entry_board.update_board(
             blocks=view.blocks, criteria=view.criteria, focus=view.focus,
@@ -364,6 +375,23 @@ class MainWindow(QMainWindow):
         )
         self._update_status(view)
         self._check_event_change()
+
+    def _update_waiting_status(self, view) -> None:
+        """Que se ve mientras no hay sesion. Nunca un error como primera opcion."""
+        if view.session_state is SessionState.RUNNING:
+            # La sesion acaba de arrancar y todavia no ha completado un ciclo:
+            # el mensaje del arranque sigue siendo el bueno.
+            return
+        if view.session_state is SessionState.READY:
+            self.status_label.setText("LISTO PARA EMPEZAR")
+            return
+        if view.extension_state is ExtensionState.DISCONNECTED:
+            self.status_label.setText(
+                "Esperando a la extension. Abre BetPlay en un partido en vivo, "
+                "o define las regiones como ultimo recurso.")
+            return
+        faltan = ", ".join(view.waiting_for) or "datos"
+        self.status_label.setText(f"EXTENSION CONECTADA. Esperando {faltan}.")
 
     def _check_event_change(self) -> None:
         """La extension cambio de partido: no se mezclan eventos."""
@@ -387,6 +415,10 @@ class MainWindow(QMainWindow):
     def _update_status(self, view) -> None:
         snapshot = view.snapshot
         parts = [view.mode.label]
+        # Esperar datos NO es un error: se dice lo que falta, no "no se puede
+        # iniciar, faltan regiones". El ROI es el ultimo recurso.
+        if view.session_state is SessionState.WAITING_FOR_DATA and view.waiting_for:
+            parts.append(f"ESPERANDO: {', '.join(view.waiting_for)}")
         if self.controller.reader is not None:
             estado = "PAUSADO" if self.controller.reader.is_paused else "LEYENDO"
             parts.append(estado)

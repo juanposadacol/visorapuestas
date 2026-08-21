@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .bridge.server import BridgeServer
-from .bridge.source import BrowserSource, LinkState, SourceKind
+from .bridge.source import BrowserSource, ExtensionState, LinkState, SourceKind
 from .calculations import entry as entry_mod
 from .calculations import metrics as metrics_mod
 from .calculations.entry import LineEvaluation, MarketEvaluation
@@ -63,6 +63,25 @@ class AppMode(str, Enum):
 APP_VERSION = "1.1.0"
 
 
+class SessionState(str, Enum):
+    """En que punto esta el arranque de la sesion.
+
+    Existe para que la aplicacion no intente arrancar una y otra vez ni diga
+    "no se puede iniciar: faltan regiones" como primera respuesta. Las regiones
+    son el ultimo recurso; lo normal es esperar a que lleguen los datos.
+    """
+
+    WAITING_FOR_DATA = "WAITING_FOR_DATA"   # falta algun dato necesario
+    READY = "READY"                         # se puede arrancar ya
+    RUNNING = "RUNNING"                     # sesion en marcha
+
+    @property
+    def label(self) -> str:
+        return {"WAITING_FOR_DATA": "ESPERANDO DATOS",
+                "READY": "LISTO PARA EMPEZAR",
+                "RUNNING": "RADAR ACTIVO"}[self.value]
+
+
 @dataclass
 class ViewModel:
     """Todo lo que la interfaz necesita para pintar un ciclo."""
@@ -86,9 +105,17 @@ class ViewModel:
     current_market_line: Optional[MarketLine] = None
     criteria: EntryCriteria = field(default_factory=EntryCriteria)
     freshness: FreshnessCriteria = field(default_factory=FreshnessCriteria)
-    #: Estado del enlace con la extension y de donde viene cada dato.
+    #: DOS EJES SEPARADOS. `extension_state` dice si la extension esta ahi;
+    #: `link_state` dice si los DATOS que manda siguen frescos. Que no haya
+    #: datos no significa que la extension este caida, y confundirlos fue lo
+    #: que hizo que el panel dijera EXTENSION DESCONECTADA con la extension
+    #: perfectamente conectada.
+    extension_state: ExtensionState = ExtensionState.DISCONNECTED
     link_state: LinkState = LinkState.DISCONNECTED
     link_age_seconds: Optional[float] = None
+    #: Que falta para poder arrancar. Vacio = listo.
+    waiting_for: List[str] = field(default_factory=list)
+    session_state: SessionState = SessionState.WAITING_FOR_DATA
     link_latency_ms: Optional[float] = None
     field_sources: Dict[str, str] = field(default_factory=dict)
     source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
@@ -116,6 +143,7 @@ class AppController:
         self.browser = BrowserSource(self.settings.browser)
         self.bridge = BridgeServer(
             self.settings.bridge, on_payload=self._on_browser_payload,
+            on_contact=self.browser.note_contact,
             version=APP_VERSION, log=lambda nivel, mensaje: self.log.log(nivel, mensaje))
         self.engine: Optional[OcrEngine] = None
         self.profile: Optional[SportsbookProfile] = None
@@ -185,8 +213,25 @@ class AppController:
     def link_state(self) -> LinkState:
         return self.browser.link_state()
 
+    @property
+    def extension_state(self) -> ExtensionState:
+        return self.browser.extension_state()
+
+    @property
+    def session_state(self) -> SessionState:
+        """WAITING_FOR_DATA / READY / RUNNING, sin efectos secundarios."""
+        if self.reader is not None:
+            return SessionState.RUNNING
+        if self.missing_requirements(self.profile):
+            return SessionState.WAITING_FOR_DATA
+        return SessionState.READY
+
     def dom_fields(self) -> List[str]:
         return self.browser.available_fields()
+
+    def dom_field_sources(self) -> Dict[str, str]:
+        """Que campos cubre el DOM ahora mismo, en el formato del panel."""
+        return {campo: SourceKind.BROWSER_DOM.value for campo in self.dom_fields()}
 
     # ---------------------------------------------------------------- requisitos
     def missing_requirements(self, profile: Optional[SportsbookProfile] = None) -> List[str]:
@@ -471,7 +516,14 @@ class AppController:
         menor cadencia: lo que se mueve rapido es el reloj.
         """
         if snapshot is None:
+            # Sin sesion todavia, pero el panel tiene que poder decir QUE cubre
+            # ya el DOM: es justo lo que hace falta para entender por que no
+            # arranca, en vez de un "faltan regiones" que no explica nada.
             return ViewModel(criteria=self.criteria, link_state=self.browser.link_state(),
+                             extension_state=self.browser.extension_state(),
+                             waiting_for=self.missing_requirements(self.profile),
+                             session_state=self.session_state,
+                             field_sources=self.dom_field_sources(),
                              link_age_seconds=self.browser.age_seconds())
         state = snapshot.state
         criteria = self.criteria
@@ -522,6 +574,9 @@ class AppController:
         paquete = self.browser.last_packet
         return ViewModel(
             link_state=self.browser.link_state(),
+            extension_state=self.browser.extension_state(),
+            waiting_for=self.missing_requirements(self.profile),
+            session_state=self.session_state,
             link_age_seconds=self.browser.age_seconds(),
             link_latency_ms=paquete.latency_ms if paquete else None,
             field_sources=dict(snapshot.field_sources or {}),

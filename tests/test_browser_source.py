@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from visorunder.bridge import converter
-from visorunder.bridge.source import BrowserSource, BrowserSourceSettings, LinkState, SourceKind
+from visorunder.bridge.source import (BrowserSource, BrowserSourceSettings, ExtensionState,
+                                      LinkState, SourceKind)
 from visorunder.domain.market import MarketKey, MarketType
 
 
@@ -175,5 +176,76 @@ def test_reset_deja_la_fuente_como_nueva():
 def test_las_etiquetas_son_legibles():
     assert LinkState.LIVE.label == "BETPLAY CONECTADO"
     assert LinkState.STALE.label == "DATOS DOM DESACTUALIZADOS"
-    assert LinkState.DISCONNECTED.label == "EXTENSION DESCONECTADA"
+    # LinkState habla de los DATOS; ExtensionState, de la extension. Que no
+    # haya datos NO es que la extension este caida.
+    assert LinkState.DISCONNECTED.label == "SIN DATOS DEL DOM"
+    assert ExtensionState.CONNECTED.label == "EXTENSION CONECTADA"
+    assert ExtensionState.STALE.label == "EXTENSION SIN CONFIRMAR"
+    assert ExtensionState.DISCONNECTED.label == "EXTENSION DESCONECTADA"
     assert SourceKind.BROWSER_DOM.label == "DOM"
+
+
+# --------------------------------- extension conectada frente a datos disponibles
+#
+# El fallo real: `Invoke-RestMethod http://127.0.0.1:8765/health` respondia
+# `status: ok` y el panel decia EXTENSION DESCONECTADA, porque solo se sabia de
+# la extension cuando llegaba un mercado. Son dos ejes distintos.
+
+def test_la_extension_puede_estar_conectada_sin_haber_mandado_ningun_mercado():
+    fuente = BrowserSource()
+    assert fuente.extension_state() is ExtensionState.DISCONNECTED
+
+    fuente.note_contact(now=1000.0)
+
+    assert fuente.extension_state(now=1000.5) is ExtensionState.CONNECTED
+    assert fuente.link_state(now=1000.5) is LinkState.DISCONNECTED
+    assert fuente.snapshot(now=1000.5) is None
+    assert "EXTENSION CONECTADA" in fuente.describe(now=1000.5)
+    assert "sin mercado" in fuente.describe(now=1000.5)
+
+
+def test_sin_latidos_la_extension_se_da_por_caida():
+    fuente = BrowserSource(BrowserSourceSettings(
+        extension_alive_within_seconds=10.0, extension_lost_after_seconds=20.0))
+    fuente.note_contact(now=1000.0)
+    assert fuente.extension_state(now=1005.0) is ExtensionState.CONNECTED
+    assert fuente.extension_state(now=1015.0) is ExtensionState.STALE
+    assert fuente.extension_state(now=1030.0) is ExtensionState.DISCONNECTED
+
+
+def test_un_mercado_tambien_cuenta_como_senal_de_vida():
+    fuente = BrowserSource()
+    fuente.accept(payload(), now=2000.0)
+    # Nunca se llamo a note_contact, pero es evidente que la extension esta.
+    assert fuente.extension_state(now=2001.0) is ExtensionState.CONNECTED
+
+
+def test_reiniciar_la_sesion_no_desconecta_la_extension():
+    fuente = BrowserSource()
+    fuente.note_contact(now=3000.0)
+    fuente.accept(payload(), now=3000.0)
+    fuente.reset()
+    assert fuente.extension_state(now=3001.0) is ExtensionState.CONNECTED
+    assert fuente.snapshot(now=3001.0) is None
+
+
+def test_un_gameState_parcial_se_acepta_tal_cual():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={"period": 4, "clock": "06:24"}), now=4000.0)
+    estado = fuente.game_state(now=4000.5)
+    assert estado["period"] == 4
+    assert estado["clock_seconds"] == 6 * 60 + 24
+    # Lo que el DOM no sabe, no se inventa.
+    assert "score_a" not in estado
+    assert "score_b" not in estado
+    assert fuente.snapshot(now=4000.5) is not None, "el mercado llega igual"
+
+
+def test_sin_gameState_el_mercado_llega_igual():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState=None), now=5000.0)
+    assert fuente.game_state(now=5000.5) == {}
+    snapshot = fuente.snapshot(now=5000.5)
+    assert snapshot is not None
+    assert snapshot.lines[0].under_odds == 1.90
+    assert fuente.available_fields(now=5000.5) == ["market", "lines"]

@@ -512,3 +512,56 @@ def test_cambiar_de_partido_cierra_la_sesion_anterior(window_bridge):
 
     assert controller.session_id != primera
     assert "Nuevo partido" in win.status_label.text() or controller.reader is not None
+
+
+# ---------------------------------- el panel distingue extension y datos
+#
+# Antes una sola linea decia EXTENSION DESCONECTADA tanto si la extension no
+# estaba como si estaba y todavia no habia reconocido ningun mercado. En la
+# prueba real eso mando el diagnostico por el camino contrario.
+
+def test_el_panel_distingue_extension_conectada_de_datos_disponibles(window_bridge):
+    from visorunder.bridge.source import ExtensionState, LinkState
+
+    win, controller = window_bridge
+    controller.browser.note_contact()
+    win._refresh()
+
+    panel = win.connection_panel
+    assert panel.extension_label.text() == ExtensionState.CONNECTED.label
+    assert panel.state_label.text() == LinkState.DISCONNECTED.label
+    assert "SIN DATOS DEL DOM" in panel.state_label.text()
+    assert controller.reader is None, "sin marcador todavia no arranca"
+
+
+def test_el_panel_dice_que_falta_en_vez_de_pedir_regiones(window_bridge):
+    win, controller = window_bridge
+    controller.browser.note_contact()
+    _enviar_al_puente(controller, _payload_betplay(gameState=None))
+    win._refresh()
+
+    texto = win.connection_panel.waiting_label.text()
+    assert texto.startswith("Esperando"), texto
+    assert "marcador" in texto
+    assert "region" not in texto.lower(), "las regiones son el ultimo recurso"
+    assert "Esperando" in win.status_label.text()
+
+
+def test_sin_extension_se_explica_que_hacer(window_bridge):
+    win, controller = window_bridge
+    win._refresh()
+    assert "extension" in win.status_label.text().lower()
+    assert win.connection_panel.extension_label.text() == "EXTENSION DESCONECTADA"
+
+
+def test_un_mercado_sin_marcador_llega_igual_al_panel(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay(gameState=None))
+    win._refresh()
+
+    panel = win.connection_panel
+    assert panel.field_labels["market"].text() == "DOM ✓"
+    assert panel.field_labels["lines"].text() == "DOM ✓"
+    # Lo que el DOM no sabe se dice con un guion, no con un dato inventado.
+    assert panel.field_labels["score_a"].text() == "--"
+    assert panel.field_labels["clock_seconds"].text() == "--"

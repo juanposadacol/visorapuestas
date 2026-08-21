@@ -38,7 +38,13 @@ class SourceKind(str, Enum):
 
 
 class LinkState(str, Enum):
-    """Estado del enlace con la extension."""
+    """Frescura de los DATOS que llegan del navegador.
+
+    Ojo con la distincion, que costo una prueba real entera: esto habla de los
+    DATOS, no de la extension. Que no llegue ningun mercado no significa que la
+    extension este caida; puede estar perfectamente conectada y todavia sin
+    reconocer un mercado que enviar. Para eso esta `ExtensionState`.
+    """
 
     DISCONNECTED = "DISCONNECTED"   # nunca llego nada, o hace mucho
     LIVE = "LIVE"                   # paquetes recientes
@@ -46,9 +52,27 @@ class LinkState(str, Enum):
 
     @property
     def label(self) -> str:
-        return {"DISCONNECTED": "EXTENSION DESCONECTADA",
+        return {"DISCONNECTED": "SIN DATOS DEL DOM",
                 "LIVE": "BETPLAY CONECTADO",
                 "STALE": "DATOS DOM DESACTUALIZADOS"}[self.value]
+
+
+class ExtensionState(str, Enum):
+    """Estado de la EXTENSION, independiente de que traiga datos o no.
+
+    La extension consulta /health cada pocos segundos aunque no tenga nada que
+    enviar. Esa senal es la que decide este estado.
+    """
+
+    DISCONNECTED = "DISCONNECTED"   # no da senales de vida
+    CONNECTED = "CONNECTED"         # latido reciente
+    STALE = "STALE"                 # dio senales, pero hace demasiado
+
+    @property
+    def label(self) -> str:
+        return {"DISCONNECTED": "EXTENSION DESCONECTADA",
+                "CONNECTED": "EXTENSION CONECTADA",
+                "STALE": "EXTENSION SIN CONFIRMAR"}[self.value]
 
 
 @dataclass
@@ -59,11 +83,20 @@ class BrowserSourceSettings:
     live_within_seconds: float = 3.0
     #: Mas alla de esto, se da por desconectado.
     disconnected_after_seconds: float = 12.0
+    #: La extension late cada 5 s: con el doble de margen basta para no
+    #: parpadear si un latido se pierde.
+    extension_alive_within_seconds: float = 12.0
+    #: Sin latidos durante este tiempo, la extension se da por caida.
+    extension_lost_after_seconds: float = 30.0
 
     def validate(self) -> "BrowserSourceSettings":
         self.live_within_seconds = max(0.5, float(self.live_within_seconds))
         self.disconnected_after_seconds = max(self.live_within_seconds + 1.0,
                                               float(self.disconnected_after_seconds))
+        self.extension_alive_within_seconds = max(1.0,
+                                                  float(self.extension_alive_within_seconds))
+        self.extension_lost_after_seconds = max(self.extension_alive_within_seconds + 1.0,
+                                                float(self.extension_lost_after_seconds))
         return self
 
 
@@ -101,6 +134,8 @@ class BrowserSource:
         self.packets = 0
         self.event_changes = 0
         self.last_error: str = ""
+        #: Ultimo latido de la extension, con mercado o sin el.
+        self._last_contact: Optional[float] = None
         #: Se marca cuando cambia el evento, para que la aplicacion decida.
         self.pending_event_change: Optional[Dict[str, Any]] = None
 
@@ -139,6 +174,39 @@ class BrowserSource:
             self.packets += 1
             return paquete
 
+    def note_contact(self, now: Optional[float] = None) -> None:
+        """La extension ha dado senales de vida.
+
+        Se llama desde el puente en CADA /health, no solo cuando llega un
+        mercado. Es lo que separa "la extension no esta" de "la extension esta
+        pero todavia no reconoce ningun mercado", que el panel confundia.
+        """
+        with self._lock:
+            self._last_contact = now if now is not None else time.time()
+
+    def contact_age_seconds(self, now: Optional[float] = None) -> Optional[float]:
+        with self._lock:
+            if self._last_contact is None:
+                return None
+            return max(0.0, (now if now is not None else time.time()) - self._last_contact)
+
+    def extension_state(self, now: Optional[float] = None) -> ExtensionState:
+        """Estado de la EXTENSION. No mira los datos, solo los latidos.
+
+        Un paquete de mercado tambien cuenta como latido: si llega un mercado,
+        evidentemente la extension esta ahi.
+        """
+        edades = [e for e in (self.contact_age_seconds(now), self.age_seconds(now))
+                  if e is not None]
+        if not edades:
+            return ExtensionState.DISCONNECTED
+        edad = min(edades)
+        if edad <= self.settings.extension_alive_within_seconds:
+            return ExtensionState.CONNECTED
+        if edad <= self.settings.extension_lost_after_seconds:
+            return ExtensionState.STALE
+        return ExtensionState.DISCONNECTED
+
     def clear_event_change(self) -> Optional[Dict[str, Any]]:
         with self._lock:
             cambio, self.pending_event_change = self.pending_event_change, None
@@ -152,6 +220,8 @@ class BrowserSource:
             self._event_id = None
             self._event_name = ""
             self.pending_event_change = None
+            # El contacto NO se borra: la extension sigue estando ahi aunque se
+            # reinicie la sesion de lectura.
 
     # -------------------------------------------------------------- consulta
     def age_seconds(self, now: Optional[float] = None) -> Optional[float]:
@@ -227,8 +297,14 @@ class BrowserSource:
         return paquete.latency_ms if paquete else None
 
     def describe(self, now: Optional[float] = None) -> str:
+        extension = self.extension_state(now)
         estado = self.link_state(now)
         edad = self.age_seconds(now)
         if edad is None:
-            return estado.label
+            # Sin datos, lo que importa es si la extension esta o no: decir
+            # "desconectada" cuando esta conectada mandaba el diagnostico por
+            # el camino contrario.
+            if extension is ExtensionState.CONNECTED:
+                return f"{extension.label} · todavia sin mercado reconocido"
+            return extension.label
         return f"{estado.label} · ultimo paquete hace {edad:.1f} s"

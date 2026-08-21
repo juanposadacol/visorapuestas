@@ -53,6 +53,43 @@ cualquier script suyo podría hablar con el puente—. Desde el service worker e
 `chrome-extension://<id>`, que es justo lo que el servidor acepta. Además centraliza la
 reconexión y el latido en un sitio, en vez de una copia por pestaña abierta.
 
+### Diagnóstico estructural
+
+Si el mercado o el marcador vuelven a leerse mal, el popup trae dos botones que
+copian la **estructura real** del bloque, saneada:
+
+* `COPIAR ESTRUCTURA DEL MERCADO`
+* `COPIAR ESTRUCTURA SCOREBOARD`
+
+Sale la jerarquía con etiquetas, clases, roles y los textos del mercado, que es lo
+que permite ajustar el lector contra HTML de verdad en lugar de a ciegas. **No** sale
+nada de la cuenta: los bloques de boleto, saldo, login y chat se omiten enteros, los
+atributos que huelen a autenticación no se copian ni por su nombre, y los textos
+pasan por la misma redacción que enmascara correos, importes e identificadores.
+
+Si el marcador vive en un iframe de otro origen, el informe lo dice y ahí se queda:
+el navegador impide leerlo y no se intenta rodear.
+
+### Qué mirar en el popup
+
+```
+App local     CONECTADA ✓ (v1.1.0)      <- la conexión con VisorApuestas
+BetPlay       DETECTADO ✓               <- el sitio
+Escáner       ACTIVO ✓ (13/13 raíces)   <- el recorrido del DOM
+Mercados      3 detectado(s), 3 con líneas
+Enviando      mercado válido
+Marcador      56-69 ✓  Las Vegas Aces / Atlanta Dream
+Cuarto        Q3 ✓
+Reloj         06:42 ✓
+```
+
+Cada línea responde **una** pregunta. `App local` habla solo de la conexión con la
+aplicación; `Enviando` habla solo de los datos. Que no haya mercado no significa que
+la aplicación esté cerrada.
+
+Si aparece la tarjeta **Errores**, los errores vienen agrupados por causa y raíz con
+su cuenta (`createTreeWalker / iframe x43`), no repetidos cuarenta y tres veces.
+
 ---
 
 ## Instalación
@@ -174,7 +211,7 @@ pégamelo. Si prefieres, **DESCARGAR JSON** genera el fichero
 
 ```bash
 cd browser-extension
-node --test tests/*.test.js     # 128 tests, sin dependencias
+node --test tests/*.test.js     # 249 tests, sin dependencias
 ```
 
 Se usa el runner incorporado de Node (18+), así que **no hay `node_modules`, ni
