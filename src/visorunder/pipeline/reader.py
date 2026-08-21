@@ -604,6 +604,16 @@ class LiveReader:
                                   self.state.period, now)
         self._apply_browser_field("clock_seconds", self._browser_clock(estado),
                                   self.state.clock_seconds, now)
+        self._apply_browser_field("team_a", estado.get("team_a"),
+                                  self.state.team_a, now)
+        self._apply_browser_field("team_b", estado.get("team_b"),
+                                  self.state.team_b, now)
+
+        if "periods_a" in estado and "periods_b" in estado:
+            self.state.tracker.replace_dom_breakdown(estado["periods_a"],
+                                                     estado["periods_b"])
+            if self.state.tracker.has_dom_breakdown:
+                self.field_sources["breakdown"] = SourceKind.BROWSER_DOM
 
     def _browser_clock(self, estado: Dict[str, Any]) -> Optional[int]:
         """Restante del cuarto a partir de lo que manda la extension.

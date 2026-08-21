@@ -364,3 +364,29 @@ def test_el_reloj_acumulado_no_bloquea_el_arranque(app):
     assert app.session_state is SessionState.READY, \
         "el DOM da marcador, cuarto y reloj: no falta nada para empezar"
     assert app.missing_requirements(None) == []
+
+
+def test_fixture_real_llega_hasta_metricas_sin_marcador_manual(app):
+    from visorunder.calculations.metrics import compute_general_metrics
+
+    app.start_bridge()
+    enviar(app, payload(gameState={
+        "scoreA": 65, "scoreB": 47, "period": 3,
+        "clockRaw": "24:42", "clockSemantics": "GAME_ELAPSED",
+        "teamA": {"name": "Baréin", "total": 65,
+                  "periods": {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0}},
+        "teamB": {"name": "Arabia Saudí", "total": 47,
+                  "periods": {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": 0}},
+    }))
+    reader = app.start_session(app.profile)
+    assert reader is not None
+    reader.stop()
+    snapshot = reader.tick()
+    general = compute_general_metrics(snapshot.state)
+
+    assert snapshot.state.team_a.usable_value() == "Baréin"
+    assert snapshot.needs_period_baseline is False
+    assert general.period_points == 22
+    assert general.period_pace == pytest.approx(22 / 4.7)
+    assert general.half_points == 22
+    assert general.first_half_points == 90

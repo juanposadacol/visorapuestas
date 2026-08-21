@@ -39,15 +39,21 @@ Q3 - Total de puntos                                            EN VIVO
 Y a la izquierda, el contexto más la línea enfocada:
 
 ```
-CAL IRVINE           40      LÍNEA ENFOCADA (SIN FIJAR)
-CHINESE TAIPEI       35      UNDER 40.5 @ 1.74
-TOTAL PARTIDO        75
+RESULTADOS ACTUALES          LÍNEA ENFOCADA (SIN FIJAR)
+             Q1 Q2 Q3 Q4 TOTAL
+CAL IRVINE   18 22 10  0    50
+CHINESE TPE  20 18  7  0    45
+TOTAL        38 40 17  0    95
                              LÍMITE PARA PERDER          41
 Q3                04:00      PUNTOS PARA SUPERAR LA LÍNEA
 JUGADO DEL CUARTO 06:00              21 PUNTOS
                              RITMO NECESARIO PARA SUPERARLA
 PUNTOS Q3      20 (10-10)            5.25 pts/min
-PROMEDIO CUARTO 3.33/min                MUY EXIGENTE
+PROMEDIO Q3     3.33/min                MUY EXIGENTE
+PUNTOS 2H             17
+PROMEDIO 2H     3.33/min
+PUNTOS 1H             78
+PROMEDIO 1H     3.90/min
 PROMEDIO PARTIDO 2.88/min
 MI REFERENCIA   4.00/min     MARGEN VS REFERENCIA (4.00)  +1.25
 MI CUOTA OBJETIVO   1.80     MARGEN VS Q3                 +1.92
@@ -348,13 +354,20 @@ que es la verdad.
 La aplicación **nunca** supone que el marcador que ve al abrirse son los puntos del cuarto.
 Los obtiene, por orden de prioridad:
 
-1. **Desglose de la casa**, si has configurado esas regiones.
-2. **Historial propio**, si la app estaba abierta cuando empezó el cuarto.
-3. **Tú**, pulsando *Introducir marcador al empezar el cuarto*.
+1. **Desglose estructural del DOM**, si la extensión lo encuentra en el scoreboard.
+2. **Desglose de la casa por OCR**, si has configurado esas regiones.
+3. **Historial propio**, si la app estaba abierta cuando empezó el cuarto.
+4. **Tú**, pulsando *Introducir marcador al empezar el cuarto*.
 
 Hasta entonces, las líneas de ese cuarto aparecen como **NO EVALUABLE — FALTA MARCADOR
 INICIAL Q3**, sin puntos ni ritmo inventados. El bloqueo es **por línea**: un mercado de
 partido sigue funcionando con normalidad en el mismo tablero.
+
+En BetPlay/Kambi la extensión distingue las celdas de parcial
+`scoreboard-grid-item` de la celda `scoreboard-grid-score` de cada equipo en el mismo
+recorrido estructural. Un `0` visible viaja como cero; una celda vacía o ausente viaja
+como desconocida y se muestra `--`. Los promedios de cuarto, mitad y partido se derivan
+en Python con `GameRules`, incluida la duración NBA y las prórrogas.
 
 ---
 

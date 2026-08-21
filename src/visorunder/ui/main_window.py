@@ -16,12 +16,14 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -90,7 +92,12 @@ class MainWindow(QMainWindow):
         columna.setContentsMargins(0, 0, 0, 0)
         columna.setSpacing(8)
         columna.addWidget(self.connection_panel)
-        columna.addWidget(self.metrics_panel, 1)
+        self.metrics_scroll = QScrollArea()
+        self.metrics_scroll.setWidgetResizable(True)
+        self.metrics_scroll.setFrameShape(QFrame.NoFrame)
+        self.metrics_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.metrics_scroll.setWidget(self.metrics_panel)
+        columna.addWidget(self.metrics_scroll, 1)
         splitter.addWidget(izquierda)
         splitter.addWidget(self.entry_board)
         # El tablero de lineas es el elemento dominante: es donde se detecta

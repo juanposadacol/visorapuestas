@@ -219,8 +219,15 @@ class GeneralMetrics:
     #: Ritmo real de la mitad en curso (Q1+Q2 o Q3+Q4).
     half_pace: Optional[float] = None
     half_points: Optional[int] = None
+    half_points_a: Optional[int] = None
+    half_points_b: Optional[int] = None
     half_number: Optional[int] = None
     half_elapsed_seconds: Optional[int] = None
+    #: Primera mitad ya terminada, conservada como referencia en Q3/Q4.
+    first_half_pace: Optional[float] = None
+    first_half_points: Optional[int] = None
+    first_half_points_a: Optional[int] = None
+    first_half_points_b: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -274,17 +281,34 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
     # los cuartos de la mitad y devolver UNKNOWN si falta alguno.
     half = current_half(state.rules, state.period_value)
     half_points = None
+    half_points_a = None
+    half_points_b = None
     half_elapsed = None
     if half is not None:
         hs = state.half_score(half)
         half_points = hs.total
+        half_points_a = hs.points_a
+        half_points_b = hs.points_b
         half_elapsed = elapsed_half_seconds(state.rules, state.period_value, state.clock_value)
+
+    first_half = state.half_score(1)
+    first_half_finished = (state.period_value is not None and
+                           state.period_value > state.rules.halftime_after_period)
+    first_half_points = first_half.total if first_half_finished else None
+    first_half_seconds = (sum(state.rules.period_seconds(p) for p in range(
+        1, state.rules.halftime_after_period + 1)) if first_half_finished else None)
 
     return GeneralMetrics(
         half_pace=points_per_minute(half_points, half_elapsed),
         half_points=half_points,
+        half_points_a=half_points_a,
+        half_points_b=half_points_b,
         half_number=half,
         half_elapsed_seconds=half_elapsed,
+        first_half_pace=points_per_minute(first_half_points, first_half_seconds),
+        first_half_points=first_half_points,
+        first_half_points_a=first_half.points_a if first_half_finished else None,
+        first_half_points_b=first_half.points_b if first_half_finished else None,
         total_points=state.total_points,
         period_points=ps.total,
         period_points_a=ps.points_a,

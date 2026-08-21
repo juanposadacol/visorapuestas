@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from .rules import FIBA, GameRules
 from .values import Observed, ValueStatus
@@ -74,6 +74,9 @@ class PeriodPointsTracker:
         self.rules = rules
         self.baselines: Dict[int, Tuple[int, int, PointsSource]] = {}
         self.breakdown: Dict[int, Tuple[int, int]] = {}
+        #: Foto completa del desglose estructural del DOM. Cada lado puede ser
+        #: None: una celda desconocida no equivale a cero.
+        self.dom_breakdown: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
         self.closed_periods: Dict[int, Tuple[int, int, PointsSource]] = {}
 
     # ---------------------------------------------------------------- fuentes
@@ -95,10 +98,49 @@ class PeriodPointsTracker:
         """Desglose leido directamente de la casa (maxima prioridad)."""
         self.breakdown[period] = (int(points_a), int(points_b))
 
+    def replace_dom_breakdown(self, periods_a: Mapping[str, Optional[int]],
+                              periods_b: Mapping[str, Optional[int]]) -> None:
+        """Reemplaza atomica y completamente los parciales observados por DOM.
+
+        La extension envia etiquetas Q1..Q4 y OT1..OTn. Al reemplazar en vez
+        de acumular, una celda que deja de estar disponible no conserva un
+        valor viejo ni contamina un partido nuevo.
+        """
+        merged: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
+        for label in set(periods_a) | set(periods_b):
+            period = self._period_from_label(label)
+            if period is None:
+                continue
+            value_a = periods_a.get(label)
+            value_b = periods_b.get(label)
+            merged[period] = (
+                int(value_a) if value_a is not None else None,
+                int(value_b) if value_b is not None else None,
+            )
+        self.dom_breakdown = merged
+
+    def _period_from_label(self, label: str) -> Optional[int]:
+        text = str(label or "").upper()
+        if text.startswith("Q") and text[1:].isdigit():
+            value = int(text[1:])
+            return value if 1 <= value <= self.rules.regulation_quarters else None
+        if text.startswith("OT") and text[2:].isdigit() and int(text[2:]) >= 1:
+            return self.rules.regulation_quarters + int(text[2:])
+        return None
+
+    @property
+    def has_dom_breakdown(self) -> bool:
+        return bool(self.dom_breakdown)
+
     def has_baseline(self, period: int) -> bool:
-        return period in self.baselines or period in self.breakdown
+        dom = self.dom_breakdown.get(period)
+        return (dom is not None and dom[0] is not None and dom[1] is not None) or \
+            period in self.baselines or period in self.breakdown
 
     def baseline_source(self, period: int) -> PointsSource:
+        dom = self.dom_breakdown.get(period)
+        if dom is not None and dom[0] is not None and dom[1] is not None:
+            return PointsSource.BREAKDOWN
         if period in self.breakdown:
             return PointsSource.BREAKDOWN
         entry = self.baselines.get(period)
@@ -126,18 +168,24 @@ class PeriodPointsTracker:
     def period_score(self, period: int, current_period: Optional[int],
                      score_a: Optional[int], score_b: Optional[int]) -> PeriodScore:
         """Puntos del periodo pedido. Devuelve UNKNOWN si no se puede saber."""
-        # 1. Desglose leido de la casa: es el dato mas directo.
+        # 1. Desglose estructural del DOM: dato mas directo y actualizado.
+        dom = self.dom_breakdown.get(period)
+        if dom is not None and dom[0] is not None and dom[1] is not None:
+            closed = current_period is not None and period < current_period
+            return PeriodScore(period, dom[0], dom[1], PointsSource.BREAKDOWN, closed)
+
+        # 2. Desglose leido por OCR.
         if period in self.breakdown:
             pa, pb = self.breakdown[period]
             closed = current_period is not None and period < current_period
             return PeriodScore(period, pa, pb, PointsSource.BREAKDOWN, closed)
 
-        # 2. Periodo ya cerrado durante esta sesion.
+        # 3. Periodo ya cerrado durante esta sesion.
         if period in self.closed_periods:
             pa, pb, src = self.closed_periods[period]
             return PeriodScore(period, pa, pb, src, True)
 
-        # 3. Periodo pasado del que se conocen los marcadores de inicio y de
+        # 4. Periodo pasado del que se conocen los marcadores de inicio y de
         #    fin: la diferencia entre dos bases consecutivas son exactamente
         #    los puntos de ese periodo. Es un hecho, no una inferencia, y es
         #    lo que permite evaluar el mercado de la 2.a mitad cuando ya se
@@ -152,7 +200,7 @@ class PeriodPointsTracker:
                 return PeriodScore(period, siguiente[0] - base[0], siguiente[1] - base[1],
                                    peor, True)
 
-        # 4. Periodo en curso con baseline conocido.
+        # 5. Periodo en curso con baseline conocido.
         if current_period is not None and period == current_period:
             entry = self.baselines.get(period)
             if entry is not None and score_a is not None and score_b is not None:
@@ -160,11 +208,40 @@ class PeriodPointsTracker:
                 return PeriodScore(period, int(score_a) - base_a, int(score_b) - base_b, src, False)
             return PeriodScore(period)
 
-        # 5. Periodo futuro: todavia no se ha jugado, 0 puntos es un hecho.
+        # 6. Periodo futuro: todavia no se ha jugado, 0 puntos es un hecho.
         if current_period is not None and period > current_period:
             return PeriodScore(period, 0, 0, PointsSource.HISTORY, False)
 
         return PeriodScore(period)
+
+    def grid_scores(self, current_period: Optional[int], score_a: Optional[int],
+                    score_b: Optional[int]) -> List[PeriodScore]:
+        """Filas/columnas que puede pintar el cuadro de resultados.
+
+        Si existe una rejilla DOM se conserva exactamente: una celda ausente o
+        vacia se pinta desconocida. Solo se agregan columnas OT observadas.
+        Sin DOM se muestran las fuentes fallback, pero no se inventan ceros en
+        periodos futuros para la tabla visual.
+        """
+        periods = list(range(1, self.rules.regulation_quarters + 1))
+        periods += sorted(p for p in self.dom_breakdown
+                          if p > self.rules.regulation_quarters)
+        if self.has_dom_breakdown:
+            return [PeriodScore(
+                period=p,
+                points_a=self.dom_breakdown.get(p, (None, None))[0],
+                points_b=self.dom_breakdown.get(p, (None, None))[1],
+                source=PointsSource.BREAKDOWN
+                if p in self.dom_breakdown else PointsSource.UNKNOWN,
+                closed=current_period is not None and p < current_period,
+            ) for p in periods]
+        rows: List[PeriodScore] = []
+        for p in periods:
+            if current_period is not None and p > current_period:
+                rows.append(PeriodScore(p))
+            else:
+                rows.append(self.period_score(p, current_period, score_a, score_b))
+        return rows
 
     def half_score(self, half: int, rules: GameRules, current_period: Optional[int],
                    score_a: Optional[int], score_b: Optional[int]) -> PeriodScore:
@@ -295,6 +372,10 @@ class GameState:
     def half_score(self, half: int) -> PeriodScore:
         return self.tracker.half_score(half, self.rules, self.period_value,
                                        self.score_a_value, self.score_b_value)
+
+    def period_grid_scores(self) -> List[PeriodScore]:
+        return self.tracker.grid_scores(self.period_value, self.score_a_value,
+                                        self.score_b_value)
 
     def label(self) -> str:
         p = self.period_value

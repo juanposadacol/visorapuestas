@@ -31,7 +31,7 @@ debe saberlo.
 
 | Fuente | Aporta | Prioridad |
 |---|---|---|
-| `BrowserSource` (extensión → puente local) | mercado, líneas, cuotas y, si BetPlay los expone, marcador, cuarto y reloj | 1 |
+| `BrowserSource` (extensión → puente local) | mercado, líneas, cuotas y, si BetPlay los expone, marcador, nombres, parciales, cuarto y reloj | 1 |
 | OCR de pantalla | lo que no llegue por DOM | 2 |
 | Manual (ROI, marcador inicial) | último recurso | 3 |
 
@@ -213,6 +213,19 @@ corrompe silenciosamente todas las métricas del cuarto.
 Con el enfoque de detección de entrada esto pesa más: las líneas de ese cuarto quedan
 **NO EVALUABLE** con su motivo visible en la propia fila. El bloqueo es **por línea**, de
 modo que un mercado de partido sigue operativo en el mismo tablero.
+
+El desglose estructural del DOM vive en una foto reemplazable separada del OCR y de los
+baselines. `scoreboard.js` conserva el orden de todas las celdas semánticas, incluso las
+vacías, y transporta por equipo `name`, `total` y `periods` (`Q1`…`Q4`, `OT1`…). Python
+reemplaza esa foto en cada lectura: no acumula valores antiguos. `None` significa celda
+desconocida y nunca se convierte en cero; un cero solo existe cuando Kambi lo publicó.
+Si el parcial del periodo actual está completo, el botón de marcador inicial desaparece;
+si falta, siguen disponibles OCR, historial y entrada manual.
+
+`compute_general_metrics` deriva, usando segundos y `GameRules`, el ritmo del cuarto, el
+ritmo de la mitad en curso y el ritmo de la primera mitad ya terminada. El radar reutiliza
+`LineEvaluation.margin_vs_half_pace = required_pace - half_pace`; no existe una segunda
+fórmula de margen en la UI.
 
 ### 4.3 Ruido del OCR
 `ocr/stabilization.py` implementa `Stabilizer`: N lecturas iguales para confirmar, más un
