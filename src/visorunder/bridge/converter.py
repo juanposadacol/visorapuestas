@@ -117,6 +117,17 @@ def payload_to_game_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         segundos = try_clock_to_seconds(reloj)
         if segundos is not None:
             salida["clock_seconds"] = segundos
+
+    # Reloj en OTRA semantica: viaja crudo y lo convierte quien conoce las
+    # reglas de la competicion (el lector, con su GameRules). Aqui solo se
+    # traslada, porque este modulo no sabe cuanto dura un cuarto.
+    crudo = estado.get("clockRaw")
+    semantica = estado.get("clockSemantics")
+    if isinstance(crudo, str) and isinstance(semantica, str):
+        segundos = try_clock_to_seconds(crudo)
+        if segundos is not None:
+            salida["clock_raw_seconds"] = segundos
+            salida["clock_semantics"] = semantica
     for origen, destino in (("teamA", "team_a"), ("teamB", "team_b")):
         valor = estado.get(origen)
         if isinstance(valor, str) and valor.strip():

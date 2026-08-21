@@ -30,6 +30,7 @@ from ..domain.event_markets import EventMarkets, MarketState
 from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, MarketSnapshot
 from ..domain.rules import FIBA, GameRules
+from ..domain.time_utils import period_remaining_from_game_elapsed, seconds_to_clock
 from ..domain.values import Observed, ValueStatus
 from ..ocr import preprocessing
 from ..ocr.base import OcrEngine, OcrResult
@@ -601,8 +602,47 @@ class LiveReader:
                                   self.state.score_b, now)
         self._apply_browser_field("period", estado.get("period"),
                                   self.state.period, now)
-        self._apply_browser_field("clock_seconds", estado.get("clock_seconds"),
+        self._apply_browser_field("clock_seconds", self._browser_clock(estado),
                                   self.state.clock_seconds, now)
+
+    def _browser_clock(self, estado: Dict[str, Any]) -> Optional[int]:
+        """Restante del cuarto a partir de lo que manda la extension.
+
+        La extension envia `clock_seconds` cuando la casa muestra directamente
+        el restante del cuarto. BetPlay (Kambi) no lo hace: muestra el tiempo
+        JUGADO del partido ("Q4 - 33:52"), y lo manda como `clock_raw_seconds`
+        con su semantica. Convertirlo necesita saber cuanto dura un cuarto y
+        cuantos van, y eso lo sabe este lector a traves de `self.rules`, no la
+        extension: con FIBA 33:52 en el cuarto 4 deja 06:08, y con NBA ese
+        valor ni siquiera cae dentro del cuarto 4.
+
+        Si la conversion no cuadra devuelve None: sin reloj se puede seguir, con
+        un reloj equivocado no.
+        """
+        directo = estado.get("clock_seconds")
+        if directo is not None:
+            return directo
+
+        crudo = estado.get("clock_raw_seconds")
+        semantica = estado.get("clock_semantics")
+        if crudo is None or semantica != "GAME_ELAPSED":
+            return None
+
+        periodo = estado.get("period")
+        if periodo is None:
+            periodo_actual = self.state.period.usable_value()
+            periodo = periodo_actual if periodo_actual is not None else None
+        if periodo is None:
+            return None
+
+        restante = period_remaining_from_game_elapsed(crudo, periodo, self.rules)
+        if restante is None:
+            self.log.warn(
+                f"El reloj del DOM dice {seconds_to_clock(crudo)} de juego acumulado en el "
+                f"periodo {periodo}, y con las reglas {self.rules.name} eso no cuadra. "
+                "Se deja sin reloj antes que publicar uno equivocado.",
+                region="BRIDGE")
+        return restante
 
     def _apply_browser_field(self, campo: str, valor: Any, actual: Observed, now: float) -> None:
         """Aplica un dato del DOM al estado, anotando la fuente y el conflicto."""

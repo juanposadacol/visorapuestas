@@ -307,3 +307,49 @@ def test_si_el_puerto_esta_ocupado_no_revienta():
     finally:
         server.stop()
         ocupado.close()
+
+
+# ------------------------------- el reloj crudo dentro del contrato del puente
+
+def test_el_esquema_acepta_el_reloj_con_su_semantica():
+    from visorunder.bridge.schema import validate_browser_payload
+
+    base = payload_valido()
+    base["gameState"] = {"period": 4, "clockRaw": "33:52",
+                         "clockSemantics": "GAME_ELAPSED"}
+    valido, errores = validate_browser_payload(base)
+    assert valido, errores
+
+
+def test_el_esquema_rechaza_un_reloj_crudo_sin_semantica():
+    from visorunder.bridge.schema import validate_browser_payload
+
+    base = payload_valido()
+    base["gameState"] = {"period": 4, "clockRaw": "33:52"}
+    valido, errores = validate_browser_payload(base)
+    assert not valido
+    assert any("clockRaw sin clockSemantics" in e for e in errores)
+
+
+def test_el_esquema_rechaza_una_semantica_inventada():
+    from visorunder.bridge.schema import validate_browser_payload
+
+    base = payload_valido()
+    base["gameState"] = {"period": 4, "clockRaw": "33:52", "clockSemantics": "LO_QUE_SEA"}
+    valido, errores = validate_browser_payload(base)
+    assert not valido
+    assert any("clockSemantics" in e for e in errores)
+
+
+def test_el_reloj_crudo_admite_mas_de_99_minutos_y_el_publicado_no_miente():
+    from visorunder.bridge.schema import validate_browser_payload
+
+    base = payload_valido()
+    base["gameState"] = {"period": 4, "clockRaw": "100:30",
+                         "clockSemantics": "GAME_ELAPSED"}
+    valido, _ = validate_browser_payload(base)
+    assert valido, "un acumulado puede pasar de 99 minutos en otros deportes"
+
+    base["gameState"] = {"period": 4, "clock": "99:99"}
+    valido, errores = validate_browser_payload(base)
+    assert not valido and any("clock" in e for e in errores)

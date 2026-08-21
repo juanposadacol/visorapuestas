@@ -33,7 +33,15 @@ TOP_LEVEL_FIELDS = {"protocol", "source", "observedAt", "event", "visibleMarket"
 EVENT_FIELDS = {"id", "name"}
 MARKET_FIELDS = {"marketType", "period", "half", "confidence", "rawTitle", "sidesConfirmed"}
 LINE_FIELDS = {"line", "overOdds", "underOdds"}
-GAME_STATE_FIELDS = {"scoreA", "scoreB", "period", "clock", "teamA", "teamB", "confidence"}
+#: `clock` es el RESTANTE del cuarto, que es lo que usa el motor temporal.
+#: `clockRaw` + `clockSemantics` existen porque no todas las casas muestran eso:
+#: BetPlay/Kambi muestra el tiempo JUGADO del partido ("Q4 - 33:52"), y
+#: convertirlo exige conocer la duracion del cuarto, que la extension no sabe.
+GAME_STATE_FIELDS = {"scoreA", "scoreB", "period", "clock", "clockRaw",
+                     "clockSemantics", "teamA", "teamB", "confidence"}
+
+#: Que representa el reloj que manda la extension.
+CLOCK_SEMANTICS = {"PERIOD_REMAINING", "GAME_ELAPSED"}
 
 
 class BridgeValidationError(ValueError):
@@ -150,11 +158,18 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
             if periodo is not None and (isinstance(periodo, bool) or
                                         not isinstance(periodo, int) or not (1 <= periodo <= 9)):
                 errors.append(f"gameState.period invalido: {periodo!r}")
-            reloj = estado.get("clock")
-            if reloj is not None:
-                import re
-                if not isinstance(reloj, str) or not re.fullmatch(r"\d{1,2}:[0-5]\d", reloj):
-                    errors.append(f"gameState.clock invalido: {reloj!r}")
+            import re
+            for campo in ("clock", "clockRaw"):
+                reloj = estado.get(campo)
+                if reloj is None:
+                    continue
+                if not isinstance(reloj, str) or not re.fullmatch(r"\d{1,3}:[0-5]\d", reloj):
+                    errors.append(f"gameState.{campo} invalido: {reloj!r}")
+            semantica = estado.get("clockSemantics")
+            if semantica is not None and semantica not in CLOCK_SEMANTICS:
+                errors.append(f"gameState.clockSemantics invalida: {semantica!r}")
+            if estado.get("clockRaw") is not None and semantica is None:
+                errors.append("gameState.clockRaw sin clockSemantics: no se puede interpretar")
 
     return (not errors), errors
 

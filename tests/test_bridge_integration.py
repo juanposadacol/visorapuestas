@@ -295,3 +295,72 @@ def test_un_gameState_parcial_reduce_lo_que_falta(app):
     faltan = app.missing_requirements(None)
     assert "marcador" in faltan
     assert "reloj" not in faltan and "cuarto" not in faltan
+
+
+# ------------------------- el reloj de Kambi: "Q4 - 33:52" es tiempo jugado
+#
+# Caso real de BetPlay. 33:52 no puede ser el restante de un cuarto. Con FIBA
+# (4x10) el cuarto 4 va de 30:00 a 40:00, asi que quedan 06:08. Con NBA (4x12)
+# ese mismo valor no cae dentro del cuarto 4: el mismo numero, dos respuestas.
+# Por eso convierte quien conoce las reglas, y no la extension.
+
+def _payload_kambi(**cambios):
+    estado = {"scoreA": 76, "scoreB": 69, "period": 4,
+              "clockRaw": "33:52", "clockSemantics": "GAME_ELAPSED",
+              "teamA": "Dallas Wings (F)", "teamB": "Indiana Fever (F)"}
+    estado.update(cambios)
+    return payload(gameState=estado)
+
+
+def test_el_tiempo_jugado_se_convierte_a_restante_del_cuarto(app):
+    from visorunder.domain.rules import FIBA
+
+    app.start_bridge()
+    enviar(app, _payload_kambi())
+    lector = app.start_session(app.profile)
+    assert lector is not None
+    lector.rules = FIBA
+    lector.stop()
+    lector.tick()
+
+    # 40:00 - 33:52 = 06:08
+    assert lector.state.clock_value == 6 * 60 + 8
+    assert lector.state.score_a.usable_value() == 76
+    assert lector.state.score_b.usable_value() == 69
+    assert lector.field_sources["clock_seconds"] is SourceKind.BROWSER_DOM
+
+
+def test_con_reglas_que_no_cuadran_se_prefiere_quedarse_sin_reloj(app):
+    from visorunder.domain.rules import NBA
+
+    app.start_bridge()
+    enviar(app, _payload_kambi())
+    lector = app.start_session(app.profile)
+    lector.rules = NBA           # 4x12: el cuarto 4 empieza en 36:00
+    lector.stop()
+    lector.tick()
+
+    assert lector.state.clock_value is None, \
+        "33:52 no cae dentro del cuarto 4 con NBA: mejor sin reloj que equivocado"
+    # Pero el marcador SI llega: un reloj dudoso no bloquea el resto.
+    assert lector.state.score_a.usable_value() == 76
+
+
+def test_el_restante_directo_sigue_funcionando_igual(app):
+    app.start_bridge()
+    enviar(app, payload(gameState={"scoreA": 58, "scoreB": 52, "period": 4,
+                                   "clock": "06:24"}))
+    lector = app.start_session(app.profile)
+    lector.stop()
+    lector.tick()
+    assert lector.state.clock_value == 6 * 60 + 24
+
+
+def test_el_reloj_acumulado_no_bloquea_el_arranque(app):
+    from visorunder.app import SessionState
+
+    app.start_bridge()
+    enviar(app, _payload_kambi())
+    assert app.session_state is SessionState.READY, \
+        "el DOM da marcador, cuarto y reloj: no falta nada para empezar"
+    assert app.missing_requirements(None) == []

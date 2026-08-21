@@ -272,9 +272,14 @@ class BrowserSource:
         if self.snapshot(now) is not None:
             campos += ["market", "lines"]
         estado = self.game_state(now)
-        for clave in ("score_a", "score_b", "period", "clock_seconds"):
+        for clave in ("score_a", "score_b", "period"):
             if clave in estado:
                 campos.append(clave)
+        # El reloj cuenta como cubierto tanto si la casa da directamente el
+        # restante del cuarto como si da el tiempo acumulado del partido: la
+        # conversion la hace el lector, que es quien conoce las reglas.
+        if "clock_seconds" in estado or "clock_raw_seconds" in estado:
+            campos.append("clock_seconds")
         return campos
 
     @property

@@ -249,3 +249,45 @@ def test_sin_gameState_el_mercado_llega_igual():
     assert snapshot is not None
     assert snapshot.lines[0].under_odds == 1.90
     assert fuente.available_fields(now=5000.5) == ["market", "lines"]
+
+
+# ------------------------------- el reloj que NO es el restante de un cuarto
+#
+# BetPlay (Kambi) muestra "Q4 - 33:52": tiempo JUGADO del partido, no restante
+# del cuarto. La extension lo manda crudo con su semantica y la conversion la
+# hace quien conoce las reglas de la competicion.
+
+def test_el_reloj_acumulado_viaja_crudo_con_su_semantica():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={
+        "scoreA": 76, "scoreB": 69, "period": 4,
+        "clockRaw": "33:52", "clockSemantics": "GAME_ELAPSED",
+        "teamA": "Dallas Wings (F)", "teamB": "Indiana Fever (F)",
+    }), now=6000.0)
+
+    estado = fuente.game_state(now=6000.5)
+    assert estado["clock_raw_seconds"] == 33 * 60 + 52
+    assert estado["clock_semantics"] == "GAME_ELAPSED"
+    # NO se publica como restante: eso seria un dato matematicamente incorrecto.
+    assert "clock_seconds" not in estado
+    assert estado["score_a"] == 76 and estado["score_b"] == 69
+    assert estado["team_a"] == "Dallas Wings (F)"
+
+
+def test_el_reloj_acumulado_cuenta_como_reloj_cubierto():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={"period": 4, "clockRaw": "33:52",
+                                     "clockSemantics": "GAME_ELAPSED"}), now=7000.0)
+    # Para "que falta para empezar", el reloj esta cubierto: el lector lo
+    # convertira con sus reglas.
+    assert "clock_seconds" in fuente.available_fields(now=7000.5)
+
+
+def test_el_reloj_directo_sigue_llegando_como_restante():
+    fuente = BrowserSource()
+    fuente.accept(payload(gameState={"period": 4, "clock": "06:08",
+                                     "clockRaw": "06:08",
+                                     "clockSemantics": "PERIOD_REMAINING"}), now=8000.0)
+    estado = fuente.game_state(now=8000.5)
+    assert estado["clock_seconds"] == 6 * 60 + 8
+    assert estado["clock_semantics"] == "PERIOD_REMAINING"

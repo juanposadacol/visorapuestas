@@ -88,6 +88,57 @@ def try_clock_to_seconds(text: str) -> Optional[int]:
         return None
 
 
+def period_remaining_from_game_elapsed(elapsed_seconds: int, period: int, rules) -> Optional[int]:
+    """Convierte TIEMPO JUGADO DEL PARTIDO en RESTANTE DEL CUARTO ACTUAL.
+
+    Existe por un caso real. BetPlay (plataforma Kambi) muestra en su marcador:
+
+        Q4 • 33:52
+
+    33:52 no puede ser el restante de un cuarto —ninguno dura tanto—: es el
+    tiempo de juego acumulado. Pero toda la aplicacion razona con
+    `clock_seconds` = RESTANTE DEL CUARTO (`elapsed_period = duracion -
+    restante`), asi que hay que convertirlo.
+
+    La conversion NECESITA las reglas de la competicion, y por eso vive aqui y
+    no en la extension: con FIBA (4x10) el cuarto 4 va de 30:00 a 40:00 y 33:52
+    deja 06:08; con NBA (4x12) el cuarto 4 empieza en 36:00 y 33:52 ni siquiera
+    caeria dentro. El mismo numero, dos respuestas: adivinarlo seria inventar.
+
+    Devuelve None —y quien llame debe tratarlo como dato NO DISPONIBLE— si el
+    valor no encaja en el periodo indicado. Esa incoherencia es informacion:
+    significa que las reglas configuradas no son las de este partido, y es
+    preferible quedarse sin reloj a publicar uno equivocado.
+
+    >>> from .rules import FIBA, NBA
+    >>> period_remaining_from_game_elapsed(33 * 60 + 52, 4, FIBA)
+    368
+    >>> period_remaining_from_game_elapsed(33 * 60 + 52, 4, NBA) is None
+    True
+    """
+    if elapsed_seconds is None or period is None:
+        return None
+    try:
+        transcurrido = int(elapsed_seconds)
+        periodo = int(period)
+    except (TypeError, ValueError):
+        return None
+    if transcurrido < 0 or periodo <= 0:
+        return None
+
+    try:
+        antes = rules.seconds_before_period(periodo)
+        duracion = rules.period_seconds(periodo)
+    except (AttributeError, ValueError):
+        return None
+
+    dentro = transcurrido - antes
+    if dentro < 0 or dentro > duracion:
+        # El acumulado no cae dentro del periodo que dice la casa.
+        return None
+    return duracion - dentro
+
+
 def seconds_to_clock(seconds: int) -> str:
     """Formatea segundos como MM:SS (o HH:MM:SS jamas: aqui MM puede pasar de 59).
 
