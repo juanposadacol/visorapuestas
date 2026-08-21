@@ -60,6 +60,14 @@ de la extensión, **nunca `*`**. El ID de una extensión sin empaquetar depende 
 instalación y no se puede fijar de antemano; por eso se acepta cualquier origen
 `chrome-extension://` y se deja `pinned_origin` para cerrarlo del todo una vez instalada.
 
+El protocolo v1 transporta dos ejes independientes dentro del mismo paquete y el mismo
+endpoint: `gameState` (marcador, nombres, parciales, periodo y reloj) y
+`visibleMarket` + `lines` (mercado y oferta). `visibleMarket: null` con `lines: []` es
+un update válido si trae `gameState`; un mercado reconocido también puede viajar con
+`lines: []` para indicar que la oferta está suspendida. `BrowserSource` mantiene tiempos
+de vigencia separados: un update de marcador no rejuvenece la última cuota, y un update
+de mercado no rejuvenece el marcador.
+
 ### Lo que el DOM NO puede dar
 
 El experimento real lo dejó claro: **los mercados que dejas de ver desaparecen del DOM**.
@@ -186,6 +194,16 @@ Tres salvaguardas que no conviene tocar:
    al mercado equivocado, que es el peor fallo posible de esta herramienta.
 3. **Una lectura sin confirmar nunca sustituye a la publicada.** `EventMarkets.observe`
    solo reemplaza el snapshot cuando la lectura está confirmada.
+
+Si la casa retira las líneas, `EventMarkets.mark_suspended` conserva el último snapshot
+con su timestamp pero fuerza `STALE`; nunca lo vuelve a presentar como oferta actual. Al
+cambiar `event.id`, `BrowserSource` limpia a la vez mercado, líneas, scoreboard,
+parciales y tiempos de cada eje antes de aceptar el nuevo evento.
+
+En Kambi, cada nodo semántico `bet-offer-subcategory` es una frontera fuerte de mercado.
+`findMarketContainer` procesa esa unidad —título y opciones— y no puede subir a su `ul`
+padre, aunque los mercados hermanos (hándicap, ganador, margen) no sean títulos candidatos
+del escáner de totales. Para otras casas se conserva el límite genérico por cabeceras.
 
 La detección del mercado visible sigue esta prioridad: título confirmado por OCR →
 mercado forzado a mano por el usuario → mercado por defecto del perfil. Si nada resuelve,

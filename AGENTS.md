@@ -34,6 +34,9 @@ node --test tests/*.test.js
 - `GameRules` decide duraciones FIBA/NBA y overtime; no codificar diez minutos en cálculos.
 - Reutilizar `GeneralMetrics.half_pace` y `LineEvaluation.margin_vs_half_pace`; no duplicar fórmulas de ritmo o margen.
 - El cambio de event ID debe iniciar estado/sesión nuevos sin conservar equipos, parciales ni métricas del partido anterior.
+- `gameState` y `visibleMarket`/`lines` son ejes independientes del mismo protocolo: un update de uno no rejuvenece ni borra silenciosamente el otro.
+- Una observación `lines=[]` conserva la última línea solo como histórica y debe marcar el mercado `STALE`; nunca actualizar su timestamp de confirmación.
+- Un ancestro semántico `bet-offer-subcategory` es una frontera física: el escáner no puede subir al contenedor de submercados hermanos.
 
 ## Publicación y prueba real
 

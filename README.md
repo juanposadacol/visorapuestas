@@ -262,6 +262,11 @@ la vista**:
 | **EN REVISIÓN** | visible, con una lectura nueva pendiente de confirmar |
 | **NO DISPONIBLE** | sin datos suficientes |
 
+Si BetPlay mantiene el marcador pero suspende las cuotas, el marcador, los parciales y
+los promedios siguen actualizándose. La última línea buena se conserva con su hora y pasa
+a **DESACTUALIZADO**; `lines = []` nunca la refresca ni la presenta como actual. Cuando
+las cuotas reaparecen, el mercado vuelve a **EN VIVO** con la nueva lectura.
+
 Los umbrales (5 s y 15 s por defecto) se configuran en **CRITERIOS**.
 
 **Limitación inherente, dicha sin rodeos:** un mercado que no está visible **no puede
@@ -368,6 +373,11 @@ En BetPlay/Kambi la extensión distingue las celdas de parcial
 recorrido estructural. Un `0` visible viaja como cero; una celda vacía o ausente viaja
 como desconocida y se muestra `--`. Los promedios de cuarto, mitad y partido se derivan
 en Python con `GameRules`, incluida la duración NBA y las prórrogas.
+
+El scoreboard no depende de que haya cuotas. El mismo puente acepta updates parciales del
+partido cuando las casas suspenden o reemplazan líneas; en sentido inverso, un update de
+mercado no borra el último estado del partido. Ambos quedan ligados al `event.id`, y un
+cambio de evento limpia toda la memoria antes de publicar el partido nuevo.
 
 ---
 
