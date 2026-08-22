@@ -25,6 +25,24 @@ def payload(**cambios):
     return base
 
 
+def multi_payload(entries, **changes):
+    base = payload(visibleMarket=None, lines=[], markets=entries)
+    base.update(changes)
+    return base
+
+
+def market_entry(market_type, line, *, period=None, half=None,
+                 observed_at="2026-08-19T02:00:00.000Z"):
+    return {
+        "marketType": market_type, "period": period, "half": half,
+        "confidence": 0.95, "rawTitle": f"Total {market_type}",
+        "sidesConfirmed": True, "observedAt": observed_at,
+        "section": "canonica", "source": "CANONICAL_SECTION",
+        "lines": ([] if line is None else
+                  [{"line": line, "overOdds": 1.76, "underOdds": 1.88}]),
+    }
+
+
 # ----------------------------------------------------------------- conversion
 def test_el_payload_se_convierte_a_los_objetos_del_dominio():
     snapshot = converter.payload_to_snapshot(payload())
@@ -357,3 +375,88 @@ def test_el_reloj_directo_sigue_llegando_como_restante():
     estado = fuente.game_state(now=8000.5)
     assert estado["clock_seconds"] == 6 * 60 + 8
     assert estado["clock_semantics"] == "PERIOD_REMAINING"
+
+
+def test_reobservacion_sin_cambios_mantiene_game_state_durante_una_pausa():
+    fuente = BrowserSource(BrowserSourceSettings(disconnected_after_seconds=12))
+    quieto = payload(gameState={"scoreA": 91, "scoreB": 66,
+                                "period": 4, "clock": "05:32"})
+    for instante in (0.0, 1.0, 5.0, 15.0, 30.0):
+        fuente.accept(quieto, now=instante)
+    assert fuente.game_state(now=31.0) == {
+        "score_a": 91, "score_b": 66, "period": 4, "clock_seconds": 332,
+    }
+
+
+def test_heartbeat_sin_observacion_dom_no_refresca_game_state():
+    fuente = BrowserSource(BrowserSourceSettings(disconnected_after_seconds=12))
+    fuente.accept(payload(gameState={"scoreA": 91, "scoreB": 66,
+                                     "period": 4, "clock": "05:32"}), now=0.0)
+    for instante in (5.0, 10.0, 15.0, 20.0):
+        fuente.note_contact(now=instante)
+    assert fuente.extension_state(now=20.0) is ExtensionState.CONNECTED
+    assert fuente.game_state(now=20.0) == {}
+
+
+def test_scoreboard_desaparecido_expira_aunque_el_mercado_siga_observable():
+    fuente = BrowserSource(BrowserSourceSettings(disconnected_after_seconds=12))
+    fuente.accept(payload(gameState={"scoreA": 91, "scoreB": 66,
+                                     "period": 4, "clock": "05:32"}), now=0.0)
+    solo_mercado = payload(gameState=None)
+    fuente.accept(solo_mercado, now=5.0)
+    fuente.accept(solo_mercado, now=20.0)
+    assert fuente.game_state(now=20.0) == {}
+    assert fuente.snapshot(now=20.0) is not None
+
+
+def test_tres_mercados_tienen_frescura_independiente():
+    fuente = BrowserSource(BrowserSourceSettings(disconnected_after_seconds=12))
+    fuente.accept(multi_payload([
+        market_entry("GAME_TOTAL", 183.5),
+        market_entry("HALF_TOTAL", 84.5, half=2),
+        market_entry("QUARTER_TOTAL", 38.5, period=4),
+    ]), now=1000.0)
+    assert {u.key for u in fuente.market_updates(now=1000.1)} == {
+        MarketKey.game(), MarketKey.half_market(2), MarketKey.quarter(4),
+    }
+
+    fuente.accept(multi_payload([
+        market_entry("QUARTER_TOTAL", 39.5, period=4),
+    ]), now=1010.0)
+    updates = fuente.market_updates(now=1013.0)
+    assert [u.key for u in updates] == [MarketKey.quarter(4)]
+    assert updates[0].snapshot.lines[0].line == 39.5
+
+
+def test_no_lines_preserva_historico_y_recupera_sin_recargar():
+    fuente = BrowserSource()
+    fuente.accept(multi_payload([
+        market_entry("QUARTER_TOTAL", 38.5, period=4),
+    ]), now=2000.0)
+    fuente.accept(multi_payload([
+        market_entry("QUARTER_TOTAL", None, period=4),
+    ]), now=2005.0)
+    suspended = fuente.market_updates(now=2005.1)[0]
+    assert suspended.status is MarketUpdateStatus.NO_LINES
+    assert suspended.snapshot.lines[0].line == 38.5
+
+    fuente.accept(multi_payload([
+        market_entry("QUARTER_TOTAL", 39.5, period=4),
+    ]), now=2010.0)
+    recovered = fuente.market_updates(now=2010.1)[0]
+    assert recovered.status is MarketUpdateStatus.AVAILABLE
+    assert recovered.snapshot.lines[0].line == 39.5
+
+
+def test_cambio_de_evento_limpia_todos_los_mercados_multi():
+    fuente = BrowserSource()
+    fuente.accept(multi_payload([
+        market_entry("GAME_TOTAL", 183.5),
+        market_entry("QUARTER_TOTAL", 38.5, period=4),
+    ]), now=3000.0)
+    fuente.accept(multi_payload([
+        market_entry("HALF_TOTAL", 80.5, half=2),
+    ], event={"id": "1111111", "name": "Otro partido"}), now=3001.0)
+    assert {u.key for u in fuente.market_updates(now=3001.1)} == {
+        MarketKey.half_market(2),
+    }

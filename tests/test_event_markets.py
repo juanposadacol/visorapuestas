@@ -19,6 +19,7 @@ H1 = MarketKey.half_market(1)
 H2 = MarketKey.half_market(2)
 Q2 = MarketKey.quarter(2)
 Q3 = MarketKey.quarter(3)
+Q4 = MarketKey.quarter(4)
 
 
 # --------------------------------------------------------------- estructura
@@ -145,6 +146,28 @@ def test_solo_un_mercado_visible_a_la_vez():
     assert markets.visible.key == Q2
     assert markets.get(GAME).visible is False
     assert sum(1 for s in markets.all_states() if s.visible) == 1
+
+
+def test_vista_todo_puede_tener_game_h2_y_q4_live_simultaneamente():
+    markets = EventMarkets()
+    for key, line in ((GAME, 183.5), (H2, 84.5), (Q4, 38.5)):
+        markets.observe(key, _snapshot(key, (line, 1.8, 1.9)), confirmed=True,
+                        now=1000.0, set_as_only_visible=False)
+    markets.set_visible_many({GAME, H2, Q4}, primary=Q4)
+    assert markets.visible_key == Q4
+    assert all(markets.get(key).freshness(_criteria(), now=1001.0)
+               is FreshnessState.LIVE for key in (GAME, H2, Q4))
+
+
+def test_un_mercado_puede_quedar_stale_mientras_otro_sigue_live():
+    markets = EventMarkets()
+    markets.observe(GAME, _snapshot(GAME, (183.5, 1.8, 1.9)), confirmed=True,
+                    now=1000.0, set_as_only_visible=False)
+    markets.observe(Q4, _snapshot(Q4, (38.5, 1.8, 1.9)), confirmed=True,
+                    now=1020.0, set_as_only_visible=False)
+    markets.set_visible_many({Q4}, primary=Q4)
+    assert markets.get(GAME).freshness(_criteria(), now=1020.0) is FreshnessState.STALE
+    assert markets.get(Q4).freshness(_criteria(), now=1020.0) is FreshnessState.LIVE
 
 
 def test_las_lineas_de_un_mercado_oculto_se_conservan():

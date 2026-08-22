@@ -556,3 +556,43 @@ def test_lineas_suspendidas_no_detienen_scoreboard_ni_rejuvenecen_la_ultima_cuot
     assert [line.line for line in mercado.lines] == [197.5]
     assert mercado.freshness(app.freshness_criteria, tercero.ts) is FreshnessState.LIVE
     assert tercero.state.score_a_value == 91, "el market update no borra el gameState"
+
+
+def test_payload_multi_llega_hasta_el_radar_con_game_h2_y_q4_independientes(app):
+    def entry(tipo, lineas, *, period=None, half=None, section=""):
+        return {
+            "marketType": tipo, "period": period, "half": half,
+            "confidence": 0.95, "rawTitle": f"Total {tipo}",
+            "sidesConfirmed": True,
+            "observedAt": "2026-08-19T02:00:00.000Z",
+            "section": section, "source": "CANONICAL_SECTION",
+            "lines": [{"line": line, "overOdds": over, "underOdds": under}
+                      for line, over, under in lineas],
+        }
+
+    app.start_bridge()
+    enviar(app, payload(
+        visibleMarket=None,
+        lines=[],
+        markets=[
+            entry("GAME_TOTAL", [(182.5, 1.68, 1.98), (183.5, 1.86, 1.78),
+                                  (184.5, 2.08, 1.61)], section="Partido"),
+            entry("HALF_TOTAL", [(84.5, 1.91, 1.74)], half=2,
+                  section="Second Half"),
+            entry("QUARTER_TOTAL", [(38.5, 1.76, 1.88)], period=4,
+                  section="4º cuarto"),
+        ],
+        gameState={"scoreA": 91, "scoreB": 66, "period": 4, "clock": "05:32"},
+    ))
+    lector = app.start_session(None)
+    lector.stop()
+    snapshot = lector.tick()
+
+    assert [line.line for line in snapshot.markets.get(MarketKey.game()).lines] == [
+        182.5, 183.5, 184.5]
+    assert [line.line for line in snapshot.markets.get(MarketKey.half_market(2)).lines] == [84.5]
+    assert [line.line for line in snapshot.markets.get(MarketKey.quarter(4)).lines] == [38.5]
+    assert all(snapshot.markets.get(key).freshness(app.freshness_criteria, snapshot.ts)
+               is FreshnessState.LIVE for key in (
+                   MarketKey.game(), MarketKey.half_market(2), MarketKey.quarter(4)))
+    assert snapshot.state.score_a_value == 91 and snapshot.state.clock_value == 332

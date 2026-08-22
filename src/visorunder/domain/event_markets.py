@@ -143,7 +143,8 @@ class EventMarkets:
 
     def observe(self, key: MarketKey, snapshot: Optional[MarketSnapshot], *,
                 confirmed: bool, under_review: bool = False,
-                pending_lines: tuple = (), now: Optional[float] = None) -> MarketState:
+                pending_lines: tuple = (), now: Optional[float] = None,
+                set_as_only_visible: bool = True) -> MarketState:
         """Registra que se ha observado `key` en pantalla.
 
         `snapshot` solo se guarda cuando la lectura esta CONFIRMADA: asi una
@@ -158,7 +159,8 @@ class EventMarkets:
             state.snapshot = snapshot
             state.last_confirmed_at = now
             state.suspended = snapshot.suspended
-        self.set_visible(key)
+        if set_as_only_visible:
+            self.set_visible(key)
         return state
 
     def set_visible(self, key: Optional[MarketKey]) -> None:
@@ -172,13 +174,27 @@ class EventMarkets:
                 state.under_review = False
                 state.pending_lines = ()
 
-    def mark_suspended(self, key: MarketKey) -> MarketState:
+    def set_visible_many(self, keys: Iterable[MarketKey],
+                         primary: Optional[MarketKey] = None) -> None:
+        """Marca varias ofertas visibles a la vez en la vista TODO."""
+        visibles = set(keys)
+        self.visible_key = primary if primary in visibles else next(iter(visibles), None)
+        for market_key, state in self.markets.items():
+            state.visible = market_key in visibles
+            if not state.visible:
+                state.under_review = False
+                state.pending_lines = ()
+
+    def mark_suspended(self, key: MarketKey, now: Optional[float] = None,
+                       set_as_only_visible: bool = True) -> MarketState:
         """Mercado visible sin lineas actuales; preserva la ultima buena."""
         state = self.ensure(key)
         state.suspended = True
         state.under_review = False
         state.pending_lines = ()
-        self.set_visible(key)
+        state.last_seen_at = now if now is not None else time.time()
+        if set_as_only_visible:
+            self.set_visible(key)
         return state
 
     def clear(self) -> None:

@@ -629,20 +629,26 @@ class LiveReader:
             if valor is not None and campo not in self.field_sources:
                 self.field_sources[campo] = SourceKind.OCR
 
-        market_status, market_key = fuente.market_update(now)
-        snapshot = fuente.snapshot(now)
-        if snapshot is not None and snapshot.lines:
-            tracker_key = snapshot.key
-            self.markets.observe(tracker_key, snapshot, confirmed=True,
-                                 now=fuente.market_available_at() or now)
+        updates = fuente.market_updates(now)
+        for update in updates:
+            if (update.status is MarketUpdateStatus.AVAILABLE and
+                    update.snapshot is not None and update.snapshot.lines):
+                self.markets.observe(update.key, update.snapshot, confirmed=True,
+                                     now=update.received_at, set_as_only_visible=False)
+            elif update.status is MarketUpdateStatus.NO_LINES:
+                self.markets.mark_suspended(update.key, now=update.received_at,
+                                            set_as_only_visible=False)
+
+        current_keys = fuente.current_market_keys(now)
+        self.markets.set_visible_many(current_keys, fuente.primary_market_key(now))
+        if current_keys:
             self.field_sources["market"] = SourceKind.BROWSER_DOM
-            self.field_sources["lines"] = SourceKind.BROWSER_DOM
-        elif market_status is MarketUpdateStatus.NO_LINES and market_key is not None:
-            self.markets.mark_suspended(market_key)
-            self.field_sources["market"] = SourceKind.BROWSER_DOM
-            if self.field_sources.get("lines") is SourceKind.BROWSER_DOM:
+            if any(update.status is MarketUpdateStatus.AVAILABLE
+                   for update in updates if update.key in current_keys):
+                self.field_sources["lines"] = SourceKind.BROWSER_DOM
+            elif self.field_sources.get("lines") is SourceKind.BROWSER_DOM:
                 self.field_sources.pop("lines", None)
-        elif market_status is MarketUpdateStatus.ABSENT:
+        else:
             self.markets.set_visible(None)
             for campo in ("market", "lines"):
                 if self.field_sources.get(campo) is SourceKind.BROWSER_DOM:
@@ -790,17 +796,20 @@ class LiveReader:
     def _persist(self, snapshot: ReaderSnapshot, now: float) -> None:
         if self.history is None or self.session_id is None:
             return
-        # Deja constancia de que se miro este mercado, cambiara o no su oferta.
-        visible = self.markets.visible
-        if visible is not None and visible.last_seen_at is not None:
+        # En la vista TODO puede haber varias ofertas visibles a la vez.
+        for visible in (state for state in self.markets.all_states() if state.visible):
+            if visible.last_seen_at is None:
+                continue
             self.history.record_market_observation(
                 self.session_id, visible.key, visible.last_seen_at,
                 visible.last_confirmed_at)
         if now - self._last_score_persist >= 1.0 and self.state.score_a_value is not None:
             self.history.save_score_snapshot(self.session_id, self.state)
             self._last_score_persist = now
-        market = snapshot.market
-        if market is not None and not market.is_empty:
+        for market_state in self.markets.all_states():
+            market = market_state.snapshot
+            if market is None or market.is_empty:
+                continue
             from .market_tracker import signature as market_signature
             sig = market_signature(market) + tuple(
                 (ln.over_odds, ln.under_odds) for ln in market.sorted_lines())

@@ -44,6 +44,11 @@ def payload_to_market_key(payload: Dict[str, Any]) -> MarketKey:
     raise ValueError(f"marketType no soportado: {tipo!r}")
 
 
+def market_entry_to_key(entry: Dict[str, Any]) -> MarketKey:
+    """Clave de una entrada de `markets`, reutilizando el contrato legacy."""
+    return payload_to_market_key({"visibleMarket": entry})
+
+
 def event_name(payload: Dict[str, Any]) -> str:
     evento = payload.get("event") or {}
     return str(evento.get("name") or "")
@@ -80,6 +85,30 @@ def payload_to_snapshot(payload: Dict[str, Any],
 
     return MarketSnapshot(key=key, lines=lineas, timestamp=observado, suspended=False,
                           raw_text=str((payload.get("visibleMarket") or {}).get("rawTitle") or ""))
+
+
+def market_entry_to_snapshot(entry: Dict[str, Any], event: str = "",
+                             sportsbook: str = DEFAULT_SPORTSBOOK) -> MarketSnapshot:
+    """Convierte una observacion multi-mercado sin crear otro modelo de dominio."""
+    return payload_to_snapshot({
+        "visibleMarket": entry,
+        "lines": entry.get("lines") or [],
+        "observedAt": entry.get("observedAt"),
+        "event": {"name": event},
+    }, sportsbook=sportsbook)
+
+
+def market_entries(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Entradas actuales; adapta protocol v1 antiguo a una lista de una."""
+    multiples = payload.get("markets")
+    if isinstance(multiples, list) and multiples:
+        return [entry for entry in multiples if isinstance(entry, dict)]
+    market = payload.get("visibleMarket")
+    if not isinstance(market, dict):
+        return []
+    return [{**market, "lines": payload.get("lines") or [],
+             "observedAt": payload.get("observedAt"),
+             "section": None, "source": "TITLE_ONLY"}]
 
 
 def has_market_update(payload: Dict[str, Any]) -> bool:
@@ -162,5 +191,15 @@ def describe_payload(payload: Dict[str, Any]) -> str:
         etiqueta = key.label
     except ValueError:
         etiqueta = "mercado desconocido"
+    multiples = market_entries(payload)
+    if multiples:
+        resumen = []
+        for entry in multiples:
+            try:
+                nombre = market_entry_to_key(entry).label
+            except (ValueError, KeyError, TypeError):
+                nombre = "desconocido"
+            resumen.append(f"{nombre}: {len(entry.get('lines') or [])}")
+        return " · ".join(resumen)
     lineas = payload.get("lines") or []
     return f"{etiqueta}: {len(lineas)} linea(s)"

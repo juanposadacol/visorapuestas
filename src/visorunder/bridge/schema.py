@@ -29,10 +29,12 @@ MAX_ODDS = 100.0
 MARKET_TYPES = {"GAME_TOTAL", "HALF_TOTAL", "QUARTER_TOTAL"}
 
 TOP_LEVEL_FIELDS = {"protocol", "source", "observedAt", "event", "visibleMarket",
-                    "lines", "gameState"}
+                    "lines", "markets", "gameState"}
 EVENT_FIELDS = {"id", "name"}
 MARKET_FIELDS = {"marketType", "period", "half", "confidence", "rawTitle", "sidesConfirmed"}
 LINE_FIELDS = {"line", "overOdds", "underOdds"}
+MARKET_OBSERVATION_FIELDS = MARKET_FIELDS | {"observedAt", "section", "source", "lines"}
+MARKET_SOURCES = {"CANONICAL_SECTION", "TITLE_ONLY", "SELECTED_BETS_COPY"}
 #: `clock` es el RESTANTE del cuarto, que es lo que usa el motor temporal.
 #: `clockRaw` + `clockSemantics` existen porque no todas las casas muestran eso:
 #: BetPlay/Kambi muestra el tiempo JUGADO del partido ("Q4 - 33:52"), y
@@ -145,6 +147,40 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
     if isinstance(lineas, list) and lineas and not isinstance(market, dict):
         errors.append("lineas sin visibleMarket")
 
+    mercados = data.get("markets")
+    if mercados is not None:
+        if not isinstance(mercados, list):
+            errors.append("markets no es una lista")
+        else:
+            vistos = set()
+            for indice, observado in enumerate(mercados):
+                if not isinstance(observado, dict):
+                    errors.append(f"markets[{indice}] no es un objeto")
+                    continue
+                errors += _unknown_fields(observado, MARKET_OBSERVATION_FIELDS,
+                                          f"markets[{indice}]")
+                if observado.get("source") not in MARKET_SOURCES:
+                    errors.append(f"markets[{indice}].source invalido")
+                seccion = observado.get("section")
+                if seccion is not None and (not isinstance(seccion, str) or len(seccion) > 80):
+                    errors.append(f"markets[{indice}].section invalido")
+                clave = (observado.get("marketType"), observado.get("period"),
+                         observado.get("half"))
+                if clave in vistos:
+                    errors.append(f"market duplicado en markets: {clave}")
+                vistos.add(clave)
+                sintetico = {
+                    "protocol": PROTOCOL_VERSION,
+                    "source": "betplay",
+                    "observedAt": observado.get("observedAt"),
+                    "event": data.get("event"),
+                    "visibleMarket": {campo: observado.get(campo) for campo in MARKET_FIELDS},
+                    "lines": observado.get("lines"),
+                    "gameState": None,
+                }
+                _, errores_observado = validate_browser_payload(sintetico)
+                errors += [f"markets[{indice}]: {error}" for error in errores_observado]
+
     estado = data.get("gameState")
     if estado is not None:
         if not isinstance(estado, dict):
@@ -205,7 +241,9 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                         errors.append(
                             f"gameState.{campo}.periods.{label} invalido: {value!r}")
 
-    if not isinstance(market, dict) and not isinstance(estado, dict):
+    if (not isinstance(market, dict) and
+            not (isinstance(mercados, list) and mercados) and
+            not isinstance(estado, dict)):
         errors.append("actualizacion sin mercado ni gameState")
 
     return (not errors), errors

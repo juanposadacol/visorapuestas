@@ -128,6 +128,20 @@ class BrowserPacket:
         return max(0.0, (fin - self.observed_at) * 1000.0)
 
 
+@dataclass
+class BrowserMarketObservation:
+    """Ultima reobservacion independiente de una clave de mercado."""
+
+    key: MarketKey
+    status: MarketUpdateStatus
+    snapshot: Optional[MarketSnapshot]
+    received_at: float
+    available_at: Optional[float]
+    observed_at: float
+    section: Optional[str] = None
+    source: str = "TITLE_ONLY"
+
+
 class BrowserSource:
     """Estado de la fuente DOM. Seguro entre hilos: escribe el hilo del puente."""
 
@@ -141,6 +155,8 @@ class BrowserSource:
         self._market_key: Optional[MarketKey] = None
         self._market_received_at: Optional[float] = None
         self._market_available_at: Optional[float] = None
+        self._markets: Dict[MarketKey, BrowserMarketObservation] = {}
+        self._current_market_keys: set[MarketKey] = set()
         self._game_received_at: Optional[float] = None
         self._event_id: Optional[str] = None
         self._event_name: str = ""
@@ -178,20 +194,37 @@ class BrowserSource:
                     self._game_state = converter.payload_to_game_state(payload)
                     self._game_received_at = now
 
-                self._market_received_at = now
+                entries = converter.market_entries(payload)
+                self._current_market_keys = set()
+                for entry in entries:
+                    key = converter.market_entry_to_key(entry)
+                    self._current_market_keys.add(key)
+                    previous = self._markets.get(key)
+                    has_lines = bool(entry.get("lines"))
+                    snapshot = (converter.market_entry_to_snapshot(
+                        entry, converter.event_name(payload)) if has_lines
+                        else (previous.snapshot if previous else None))
+                    observed_at = converter.parse_observed_at(entry.get("observedAt"))
+                    self._markets[key] = BrowserMarketObservation(
+                        key=key,
+                        status=(MarketUpdateStatus.AVAILABLE if has_lines
+                                else MarketUpdateStatus.NO_LINES),
+                        snapshot=snapshot,
+                        received_at=now,
+                        available_at=(now if has_lines else
+                                      (previous.available_at if previous else None)),
+                        observed_at=observed_at,
+                        section=entry.get("section"),
+                        source=str(entry.get("source") or "TITLE_ONLY"),
+                    )
+
+                primary = None
                 if converter.has_market_update(payload):
-                    self._market_key = converter.payload_to_market_key(payload)
-                    if payload.get("lines"):
-                        self._snapshot = converter.payload_to_snapshot(payload)
-                        self._market_status = MarketUpdateStatus.AVAILABLE
-                        self._market_available_at = now
-                    else:
-                        # La ultima linea buena se conserva para mostrarla con
-                        # su timestamp, pero deja de ser la oferta actual.
-                        self._market_status = MarketUpdateStatus.NO_LINES
-                else:
-                    self._market_key = None
-                    self._market_status = MarketUpdateStatus.ABSENT
+                    primary = converter.payload_to_market_key(payload)
+                elif entries:
+                    primary = converter.market_entry_to_key(entries[0])
+                self._market_key = primary
+                self._sync_legacy_market(primary, now)
                 self.last_error = ""
             except (ValueError, KeyError, TypeError) as exc:
                 self.last_error = f"payload no convertible: {exc}"
@@ -204,6 +237,20 @@ class BrowserSource:
             self.packets += 1
             return paquete
 
+    def _sync_legacy_market(self, key: Optional[MarketKey], now: float) -> None:
+        """Mantiene la API de un mercado para extensiones/UI anteriores."""
+        record = self._markets.get(key) if key is not None else None
+        if record is None:
+            self._snapshot = None
+            self._market_status = MarketUpdateStatus.ABSENT
+            self._market_received_at = now
+            self._market_available_at = None
+            return
+        self._snapshot = record.snapshot
+        self._market_status = record.status
+        self._market_received_at = record.received_at
+        self._market_available_at = record.available_at
+
     def _clear_event_data(self) -> None:
         """Borra todos los ejes asociados al evento anterior."""
         self._snapshot = None
@@ -212,6 +259,8 @@ class BrowserSource:
         self._market_key = None
         self._market_received_at = None
         self._market_available_at = None
+        self._markets.clear()
+        self._current_market_keys.clear()
         self._game_received_at = None
         self._event_name = ""
 
@@ -312,6 +361,44 @@ class BrowserSource:
         """Recepcion de la ultima oferta con lineas; no cambia con ticks."""
         with self._lock:
             return self._market_available_at
+
+    def market_updates(self, now: Optional[float] = None) -> List[BrowserMarketObservation]:
+        """Mercados reobservados por clave; uno no rejuvenece a los demas."""
+        with self._lock:
+            return [record for record in self._markets.values()
+                    if self._age_from(record.received_at, now) <=
+                    self.settings.disconnected_after_seconds]
+
+    def current_market_keys(self, now: Optional[float] = None) -> set[MarketKey]:
+        """Claves presentes en la ultima observacion DOM todavia vigente."""
+        with self._lock:
+            if self._age_from(self._market_received_at, now) > \
+                    self.settings.disconnected_after_seconds:
+                return set()
+            return set(self._current_market_keys)
+
+    def primary_market_key(self, now: Optional[float] = None) -> Optional[MarketKey]:
+        with self._lock:
+            if self._market_key not in self.current_market_keys(now):
+                return None
+            return self._market_key
+
+    def market_diagnostics(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Resumen conciso por mercado para diagnóstico de frescura/fuente."""
+        with self._lock:
+            salida = []
+            for record in self._markets.values():
+                salida.append({
+                    "market": record.key.label,
+                    "status": record.status.value,
+                    "age_seconds": self._age_from(record.received_at, now),
+                    "line": (record.snapshot.lines[0].line
+                             if record.snapshot and record.snapshot.lines else None),
+                    "section": record.section,
+                    "source": record.source,
+                    "observed_at": record.observed_at,
+                })
+            return salida
 
     def last_snapshot_any_age(self) -> Optional[MarketSnapshot]:
         """Ultimo mercado observado, sin importar la antiguedad.

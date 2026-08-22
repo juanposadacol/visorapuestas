@@ -127,6 +127,42 @@ def test_actualizaciones_parciales_de_mercado_y_partido_son_validas():
     assert not valido and any("sin mercado ni gameState" in error for error in errores)
 
 
+def test_protocol_v1_admite_varios_mercados_tipados_sin_romper_el_formato_anterior():
+    def entry(tipo, line, *, period=None, half=None):
+        return {
+            "marketType": tipo, "period": period, "half": half,
+            "confidence": 0.95, "rawTitle": f"Total {tipo}",
+            "sidesConfirmed": True,
+            "observedAt": "2026-08-19T02:00:00.000Z",
+            "section": "canonica", "source": "CANONICAL_SECTION",
+            "lines": [{"line": line, "overOdds": 1.76, "underOdds": 1.88}],
+        }
+
+    multiple = payload_valido(visibleMarket=None, lines=[], markets=[
+        entry("GAME_TOTAL", 183.5),
+        entry("HALF_TOTAL", 84.5, half=2),
+        entry("QUARTER_TOTAL", 38.5, period=4),
+    ])
+    valido, errores = validate_browser_payload(multiple)
+    assert valido, errores
+    assert validate_browser_payload(payload_valido())[0], "el v1 anterior sigue valido"
+
+
+def test_markets_rechaza_fuente_desconocida_y_claves_duplicadas():
+    entry = {
+        "marketType": "QUARTER_TOTAL", "period": 4, "half": None,
+        "confidence": 0.95, "rawTitle": "Q4", "sidesConfirmed": True,
+        "observedAt": "2026-08-19T02:00:00.000Z", "section": "4º cuarto",
+        "source": "INVENTADA",
+        "lines": [{"line": 38.5, "overOdds": 1.76, "underOdds": 1.88}],
+    }
+    p = payload_valido(visibleMarket=None, lines=[], markets=[entry, dict(entry)])
+    valido, errores = validate_browser_payload(p)
+    assert not valido
+    assert any("source" in error for error in errores)
+    assert any("duplicado" in error for error in errores)
+
+
 def test_scoreboard_estructural_con_parciales_cumple_el_contrato():
     game_state = {
         "scoreA": 65, "scoreB": 47, "period": 3,
