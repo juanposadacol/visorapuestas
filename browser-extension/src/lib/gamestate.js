@@ -941,6 +941,10 @@
       // Un gameState PARCIAL es valido: que no se sepa el marcador no puede
       // bloquear el mercado, y que no se sepa el reloj no puede inventarlo.
       gameState: Object.keys(estado).length ? estado : null,
+      // La memoria puede conservar un valor confirmado durante un repintado,
+      // pero eso no demuestra que el DOM siga mostrandolo. Solo una lectura
+      // encontrada en ESTE recorrido puede renovar la frescura en Python.
+      observed: !!(estructural || observacionReloj || cuarto.value || lecturaMarcador.value),
       // Los NODOS van aparte: el diagnostico viaja por `sendResponse` y un
       // nodo del DOM no se puede serializar. Aqui solo se guardan para poder
       // copiar la estructura del marcador desde el popup.

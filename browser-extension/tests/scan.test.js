@@ -70,3 +70,12 @@ test('sin lectura previa se acepta la primera', () => {
   const lectura = { lines: [], isVisible: false };
   assert.equal(preferReading(null, lectura), lectura);
 });
+
+test('la seccion canonica gana aunque la copia seleccionada tenga mas lineas', () => {
+  const seleccionada = { key: 'Q4_TOTAL', sectionKey: 'SELECTED_BETS',
+    lines: [41.5, 42.5], isVisible: true };
+  const canonica = { key: 'Q4_TOTAL', sectionKey: 'Q4_TOTAL',
+    lines: [38.5], isVisible: true };
+  assert.equal(preferReading(seleccionada, canonica), canonica);
+  assert.equal(preferReading(canonica, seleccionada), canonica);
+});

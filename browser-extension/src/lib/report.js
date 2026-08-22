@@ -62,6 +62,9 @@
     const partes = [
       'Existe en DOM: SI',
       `Visible: ${market.isVisible ? 'SI' : 'NO'}`,
+      `Estado: ${market.lines.length ? 'LIVE' : 'NO_LINES'}`,
+      `Fuente: ${market.sourceType || 'TITLE_ONLY'}`,
+      `Seccion: ${market.sectionLabel || '--'}`,
       `Lineas encontradas: ${market.lines.length}`,
       `Ultima mutacion: ${formatAge(market.lastMutationAt, referencia)}`,
       `Ultima lectura: ${formatAge(market.lastSeenAt, referencia)}`,
@@ -83,6 +86,11 @@
     out.push(`URL: ${redact(snapshot.url)}`);
     out.push(`Ultimo escaneo: ${formatClock(snapshot.lastScanAt)} (${snapshot.lastScanMs} ms, ` +
              `${snapshot.scanCount} escaneos)`);
+    out.push(`Rendimiento: ${snapshot.scansPerMinute || 0} scans/min · ` +
+             `${snapshot.avgScanMs || 0} ms promedio · ${snapshot.maxScanMs || 0} ms maximo`);
+    out.push(`GAME STATE: ultima reobservacion ${formatClock(snapshot.gameLastObservedAt)} · ` +
+             `edad ${snapshot.gameObservationAgeMs == null
+               ? '--' : `${(snapshot.gameObservationAgeMs / 1000).toFixed(1)} s`}`);
     out.push(`Mercado visualmente activo: ${snapshot.visibleMarket
       ? markets.labelFor(snapshot.visibleMarket) : 'no identificado'}`);
 
@@ -110,6 +118,16 @@
       out.push(marketStatusLine(market, referencia));
       if (market.duplicates) {
         out.push(`Candidatos brutos: ${market.rawLineCount} | tras deduplicar: ${market.lines.length}`);
+      }
+    }
+
+    if (snapshot.duplicateDiagnostics && snapshot.duplicateDiagnostics.length) {
+      out.push('');
+      out.push('DUPLICADOS DESCARTADOS');
+      for (const item of snapshot.duplicateDiagnostics.slice(-20)) {
+        out.push(`  ${item.market}: ${item.reason} · gana ${redact(item.winnerSection)} ` +
+          `(${item.winnerLine ?? '--'}) · se descarta ${redact(item.discardedSection)} ` +
+          `(${item.discardedLine ?? '--'})`);
       }
     }
 
@@ -201,6 +219,11 @@
                `${redact(entrada.to) || '(ninguno)'} (se olvida lo anterior)`;
       case 'observerStarted':
         return 'observador de mutaciones activo';
+      case 'periodicRevalidationStarted':
+        return `revalidacion DOM periodica cada ${entrada.intervalMs} ms`;
+      case 'duplicateDiscarded':
+        return `${entrada.market}: ${entrada.reason}, se descarta ` +
+               `${redact(entrada.discardedSection)} (${entrada.discardedLine ?? '--'})`;
       default:
         return entrada.type;
     }
@@ -219,13 +242,22 @@
         scanCount: snapshot.scanCount,
         lastScanMs: snapshot.lastScanMs,
         headerCount: snapshot.headerCount,
+        scansPerMinute: snapshot.scansPerMinute,
+        avgScanMs: snapshot.avgScanMs,
+        maxScanMs: snapshot.maxScanMs,
+        triggers: snapshot.scanTriggers,
       },
+      gameLastObservedAt: snapshot.gameLastObservedAt,
+      duplicateDiagnostics: snapshot.duplicateDiagnostics || [],
       environment: snapshot.environment,
       markets: (snapshot.markets || []).map((market) => ({
         key: market.key,
         candidate: market.candidate,
         confidence: market.confidence,
         headerText: market.headerText,
+        sourceType: market.sourceType,
+        sectionKey: market.sectionKey,
+        sectionLabel: market.sectionLabel,
         existsInDom: market.existsInDom,
         isVisible: market.isVisible,
         inViewport: market.inViewport,

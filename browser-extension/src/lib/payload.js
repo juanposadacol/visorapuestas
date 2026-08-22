@@ -26,6 +26,7 @@
   //: mercado equivocado.
   const MIN_MARKET_CONFIDENCE = 0.9;
   const MAX_LINES = 40;
+  const MARKET_SOURCES = ['CANONICAL_SECTION', 'TITLE_ONLY', 'SELECTED_BETS_COPY'];
 
   const WIRE_MARKET = {
     GAME_TOTAL: { marketType: 'GAME_TOTAL', period: null, half: null },
@@ -116,9 +117,33 @@
 
     const marketUsable = !!wire && confianza >= MIN_MARKET_CONFIDENCE &&
       lineas.length <= MAX_LINES;
+    const marketObservations = [];
+    for (const observado of datos.markets || []) {
+      const marketWire = toWireMarket(observado.marketKey);
+      const marketConfidence = Number(observado.confidence || 0);
+      const marketLines = (observado.lines || []).filter(
+        (l) => l && typeof l.line === 'number' && (l.overOdds != null || l.underOdds != null));
+      if (!marketWire || marketConfidence < MIN_MARKET_CONFIDENCE ||
+          marketLines.length > MAX_LINES) continue;
+      marketObservations.push({
+        ...marketWire,
+        confidence: Number(marketConfidence.toFixed(3)),
+        rawTitle: String(observado.rawTitle || '').slice(0, 160),
+        sidesConfirmed: !!((observado.sideMarkers || {}).both),
+        observedAt: new Date(observado.observedAt || datos.observedAt || Date.now()).toISOString(),
+        section: observado.section == null ? null : String(observado.section).slice(0, 80),
+        source: MARKET_SOURCES.includes(observado.source) ? observado.source : 'TITLE_ONLY',
+        lines: marketLines.slice(0, MAX_LINES).map((l) => ({
+          line: Number(l.line),
+          overOdds: l.overOdds == null ? null : Number(l.overOdds),
+          underOdds: l.underOdds == null ? null : Number(l.underOdds),
+        })),
+      });
+    }
+
     const gameState = datos.gameState && typeof datos.gameState === 'object'
       ? datos.gameState : null;
-    if (!marketUsable && !gameState) {
+    if (!marketUsable && !marketObservations.length && !gameState) {
       if (!motivos.length) motivos.push('sin estado del partido ni mercado identificado');
       return { payload: null, rejected: motivos };
     }
@@ -146,6 +171,9 @@
           overOdds: l.overOdds == null ? null : Number(l.overOdds),
           underOdds: l.underOdds == null ? null : Number(l.underOdds),
         })),
+        // Extension retrocompatible de protocol v1: los consumidores antiguos
+        // siguen usando visibleMarket/lines; los nuevos renuevan cada clave.
+        markets: marketObservations,
         gameState,
       },
       rejected: motivos,
@@ -212,6 +240,45 @@
       errores.push('lineas sin visibleMarket');
     }
 
+    if (p.markets !== undefined) {
+      if (!Array.isArray(p.markets)) {
+        errores.push('markets no es una lista');
+      } else {
+        const vistos = new Set();
+        for (let i = 0; i < p.markets.length; i += 1) {
+          const observado = p.markets[i];
+          if (!observado || typeof observado !== 'object') {
+            errores.push(`markets[${i}] invalido`);
+            continue;
+          }
+          const permitido = new Set(['marketType', 'period', 'half', 'confidence', 'rawTitle',
+            'sidesConfirmed', 'observedAt', 'section', 'source', 'lines']);
+          const sobran = Object.keys(observado).filter((k) => !permitido.has(k));
+          if (sobran.length) errores.push(`campos desconocidos en markets[${i}]: ${sobran.join(',')}`);
+          if (!MARKET_SOURCES.includes(observado.source)) {
+            errores.push(`markets[${i}].source invalido`);
+          }
+          if (observado.section !== null && observado.section !== undefined &&
+              typeof observado.section !== 'string') errores.push(`markets[${i}].section invalido`);
+          const key = `${observado.marketType}:${observado.period ?? '-'}:${observado.half ?? '-'}`;
+          if (vistos.has(key)) errores.push(`market duplicado en markets: ${key}`);
+          vistos.add(key);
+          const sintentico = {
+            protocol: PROTOCOL_VERSION, source: 'betplay', observedAt: observado.observedAt,
+            event: p.event, visibleMarket: {
+              marketType: observado.marketType, period: observado.period, half: observado.half,
+              confidence: observado.confidence, rawTitle: observado.rawTitle,
+              sidesConfirmed: observado.sidesConfirmed,
+            },
+            lines: observado.lines, gameState: null,
+          };
+          for (const error of validatePayload(sintentico).errors) {
+            errores.push(`markets[${i}]: ${error}`);
+          }
+        }
+      }
+    }
+
     const gameState = p.gameState;
     if (gameState != null && typeof gameState !== 'object') {
       errores.push('gameState invalido');
@@ -246,7 +313,9 @@
         }
       }
     }
-    if (!market && !gameState) errores.push('actualizacion sin mercado ni gameState');
+    if (!market && !(Array.isArray(p.markets) && p.markets.length) && !gameState) {
+      errores.push('actualizacion sin mercado ni gameState');
+    }
 
     return { valid: errores.length === 0, errors: errores };
   }
@@ -261,9 +330,13 @@
     const state = payload.gameState ? JSON.stringify(payload.gameState) : '-';
     const marketKey = market
       ? `${market.marketType}:${market.period ?? '-'}:${market.half ?? '-'}` : '-';
-    return `${payload.event.id || '-'}#${marketKey}#${lineas}#${state}`;
+    const todos = (payload.markets || []).map((m) =>
+      `${m.marketType}:${m.period ?? '-'}:${m.half ?? '-'}@${(m.lines || [])
+        .map((l) => `${l.line}|${l.overOdds ?? '-'}|${l.underOdds ?? '-'}`).join(';')}`)
+      .join('||');
+    return `${payload.event.id || '-'}#${marketKey}#${lineas}#${todos}#${state}`;
   }
 
-  return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, WIRE_MARKET,
+  return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, MARKET_SOURCES, WIRE_MARKET,
            toWireMarket, eventIdFromUrl, buildPayload, validatePayload, payloadSignature };
 });

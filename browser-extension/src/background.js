@@ -191,8 +191,10 @@ function vistaDelPuente() {
     market: estado.market,
     marketType: estado.lastPayload && estado.lastPayload.visibleMarket
       ? estado.lastPayload.visibleMarket.marketType : null,
-    currentLines: estado.lastPayload && Array.isArray(estado.lastPayload.lines)
-      ? estado.lastPayload.lines.length : 0,
+    currentLines: estado.lastPayload && Array.isArray(estado.lastPayload.markets)
+      ? estado.lastPayload.markets.reduce((total, m) => total + (m.lines || []).length, 0)
+      : (estado.lastPayload && Array.isArray(estado.lastPayload.lines)
+        ? estado.lastPayload.lines.length : 0),
     hasGameState: !!(estado.lastPayload && estado.lastPayload.gameState),
     marketRejected: estado.lastRejected,
     sent: estado.sent,

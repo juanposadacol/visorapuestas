@@ -186,6 +186,9 @@
     if (datos.underReview) return MARKET.UNDER_REVIEW;
     if (!datos.payload) return MARKET.NONE;
     if (datos.validation && datos.validation.valid === false) return MARKET.REJECTED;
+    const multiples = Array.isArray(datos.payload.markets) ? datos.payload.markets : [];
+    if (multiples.some((m) => (m.lines || []).length)) return MARKET.VALID;
+    if (multiples.length) return MARKET.NO_LINES;
     if (datos.payload.visibleMarket && (datos.payload.lines || []).length) return MARKET.VALID;
     if (datos.payload.visibleMarket) return MARKET.NO_LINES;
     if (datos.payload.gameState) return MARKET.STATE_ONLY;

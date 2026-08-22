@@ -20,6 +20,9 @@
 
   //: Un rescaneo completo es caro: las mutaciones se agrupan en ventanas.
   const RESCAN_DEBOUNCE_MS = 400;
+  //: Una pausa real puede dejar el DOM inmovil durante minutos. Este ciclo
+  //: vuelve a OBSERVARLO; no es un heartbeat de red ni avanza el reloj.
+  const PERIODIC_REVALIDATION_MS = 1000;
   //: Tope del historial en memoria de la sesion.
   const HISTORY_LIMIT = 600;
   //: Profundidad maxima al subir buscando el contenedor de un mercado.
@@ -35,6 +38,7 @@
     gameState: null,        // marcador, cuarto y reloj si el DOM los da
     gameDiagnostics: null,
     gameMemory: null,
+    gameLastObservedAt: null,
     //: Partido al que pertenece todo lo de arriba. Si cambia, se olvida todo.
     eventId: undefined,
     history: [],
@@ -47,6 +51,8 @@
     //: Medida del coste del escaneo. Sin esto, "va lento" es una impresion.
     scanMsTotal: 0,
     scanMsMax: 0,
+    scanTriggers: { startup: 0, mutation: 0, periodic: 0 },
+    duplicateDiagnostics: [],
   };
 
   /** Anota un error agrupandolo. Devuelve la entrada, ya con su cuenta. */
@@ -338,11 +344,15 @@
     state.gameState = null;
     state.gameMemory = null;
     state.gameDiagnostics = null;
+    state.gameLastObservedAt = null;
+    state.duplicateDiagnostics = [];
     state.payload = null;
   }
 
-  function scan() {
+  function scan(trigger) {
     const inicio = performance.now();
+    const causa = trigger || 'mutation';
+    state.scanTriggers[causa] = (state.scanTriggers[causa] || 0) + 1;
     comprobarCambioDeEvento();
     state.skippedRoots = [];
     const { roots, shadow, frames } = collectRoots();
@@ -403,6 +413,9 @@
           reasons: registro.reasons,
           sectionKey: registro.sectionKey,
           sectionLabel: registro.sectionLabel,
+          sourceType: registro.sectionKey === markets.KEYS.SELECTED_BETS
+            ? 'SELECTED_BETS_COPY'
+            : (registro.sectionKey === clave ? 'CANONICAL_SECTION' : 'TITLE_ONLY'),
           rootKind: kind,
           rootLabel: label,
           existsInDom: visible.existsInDom,
@@ -427,9 +440,33 @@
         };
 
         const previo = encontrados.get(clave);
-        const elegido = scanLib.preferReading(previo, record);
+        const decision = scanLib.compareReadings(previo, record);
+        const elegido = decision.winner;
         elegido.occurrences = (previo ? previo.occurrences : 0) + 1;
         encontrados.set(clave, elegido);
+        if (decision.loser) {
+          const diagnostico = {
+            ts: now(), market: clave, reason: decision.reason,
+            winnerSection: elegido.sectionLabel || elegido.sectionKey || 'TITLE_ONLY',
+            winnerLine: (elegido.lines[0] || {}).line ?? null,
+            discardedSection: decision.loser.sectionLabel ||
+              decision.loser.sectionKey || 'TITLE_ONLY',
+            discardedLine: ((decision.loser.lines || [])[0] || {}).line ?? null,
+          };
+          const anterior = state.duplicateDiagnostics[state.duplicateDiagnostics.length - 1];
+          const mismaDecision = anterior &&
+            ['market', 'reason', 'winnerSection', 'winnerLine',
+             'discardedSection', 'discardedLine'].every(
+              (campo) => anterior[campo] === diagnostico[campo]);
+          if (mismaDecision) {
+            anterior.ts = diagnostico.ts;
+            anterior.count = (anterior.count || 1) + 1;
+          } else {
+            state.duplicateDiagnostics.push({ ...diagnostico, count: 1 });
+            state.duplicateDiagnostics = state.duplicateDiagnostics.slice(-80);
+            pushHistory('duplicateDiscarded', diagnostico);
+          }
+        }
       }
     }
 
@@ -449,7 +486,8 @@
         .filter(Boolean);
       const descubierto = gamestateLib.extractGameStateFromRoots(
         raices, DOM_ADAPTER, state.gameMemory);
-      state.gameState = descubierto.gameState;
+      state.gameState = descubierto.observed ? descubierto.gameState : null;
+      if (descubierto.observed) state.gameLastObservedAt = now();
       state.gameDiagnostics = descubierto.diagnostics;
       state.gameMemory = descubierto.memory;
       state.scoreboardNode = (descubierto.nodes && descubierto.nodes.score) ||
@@ -549,6 +587,18 @@
   function buildVisiblePayload() {
     const clave = state.visibleMarket;
     const registro = clave ? state.markets.get(clave) : null;
+    const observados = Array.from(state.markets.values())
+      .filter((m) => m.existsInDom && m.key !== markets.KEYS.UNKNOWN)
+      .map((m) => ({
+        marketKey: m.key,
+        confidence: m.confidence,
+        rawTitle: m.headerText,
+        lines: m.strictLines || m.lines || [],
+        sideMarkers: m.sideMarkers,
+        observedAt: m.lastSeenAt || now(),
+        section: m.sectionLabel || null,
+        source: m.sourceType,
+      }));
     return payloadLib.buildPayload({
       marketKey: registro ? registro.key : null,
       confidence: registro ? registro.confidence : 0,
@@ -560,6 +610,7 @@
       sideMarkers: registro ? registro.sideMarkers : null,
       observedAt: registro && registro.lastSeenAt ? registro.lastSeenAt : now(),
       gameState: state.gameState || null,
+      markets: observados,
     });
   }
 
@@ -597,7 +648,7 @@
     pendiente = setTimeout(() => {
       pendiente = null;
       try {
-        scan();
+        scan('mutation');
       } catch (error) {
         anotarError({ stage: 'scan', message: mensajeDe(error) });
       }
@@ -612,7 +663,7 @@
 
   function arrancar() {
     try {
-      scan();
+      scan('startup');
     } catch (error) {
       anotarError({ stage: 'scan', message: mensajeDe(error) });
     }
@@ -624,7 +675,21 @@
       attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'aria-selected', 'data-state'],
     });
     pushHistory('observerStarted', {});
+    arrancarRevalidacionPeriodica();
     arrancarLatido();
+  }
+
+  let revalidacion = null;
+  function arrancarRevalidacionPeriodica() {
+    if (revalidacion) return;
+    revalidacion = setInterval(() => {
+      try {
+        scan('periodic');
+      } catch (error) {
+        anotarError({ stage: 'periodic-scan', message: mensajeDe(error) });
+      }
+    }, PERIODIC_REVALIDATION_MS);
+    pushHistory('periodicRevalidationStarted', { intervalMs: PERIODIC_REVALIDATION_MS });
   }
 
   /** Envia un mensaje al service worker sin lanzar nunca si no responde. */
@@ -687,6 +752,8 @@
         ? Number((state.scanCount / Math.max(1, (state.lastScanAt - state.startedAt) / 60000))
             .toFixed(1))
         : 0,
+      periodicRevalidationMs: PERIODIC_REVALIDATION_MS,
+      scanTriggers: { ...state.scanTriggers },
       headerCount: state.headerCount || 0,
       pendingMutations: mutacionesDesdeElUltimoEscaneo,
       eventId: state.eventId === undefined ? null : state.eventId,
@@ -697,6 +764,7 @@
       markets: Array.from(state.markets.values())
         .sort((a, b) => markets.sortKey(a.key) - markets.sortKey(b.key))
         .map(({ container, ...resto }) => resto),
+      duplicateDiagnostics: state.duplicateDiagnostics.slice(-40),
       history: state.history.slice(-200),
       // Errores AGRUPADOS: una entrada por causa y raiz, con su cuenta. Antes
       // se enviaba una linea por ocurrencia y el popup mostraba la misma
@@ -708,6 +776,9 @@
       rootCount: state.rootCount || 0,
       rootsScanned: state.rootsScanned || 0,
       gameState: state.gameState,
+      gameLastObservedAt: state.gameLastObservedAt,
+      gameObservationAgeMs: state.gameLastObservedAt == null
+        ? null : Math.max(0, now() - state.gameLastObservedAt),
       gameDiagnostics: state.gameDiagnostics,
       payload: state.payload ? state.payload.payload : null,
       payloadRejected: state.payload ? state.payload.rejected : ['todavia sin escaneo'],

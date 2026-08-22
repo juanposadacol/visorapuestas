@@ -45,13 +45,37 @@
    * Entre dos lecturas del mismo mercado (movil y escritorio, por ejemplo)
    * gana la que trae mas lineas; con empate, la visible.
    */
-  function preferReading(previous, candidate) {
-    if (!previous) return candidate;
+  function sourcePriority(reading) {
+    if (!reading) return -1;
+    if (reading.sectionKey === 'SELECTED_BETS') return 0;
+    if (reading.sectionKey && reading.sectionKey === reading.key) return 2;
+    return 1;
+  }
+
+  function compareReadings(previous, candidate) {
+    if (!previous) return { winner: candidate, loser: null, reason: 'FIRST_READING' };
+    const prioridad = sourcePriority(candidate) - sourcePriority(previous);
+    if (prioridad > 0) {
+      return { winner: candidate, loser: previous,
+               reason: candidate.sectionKey === candidate.key
+                 ? 'CANONICAL_SECTION_WON' : 'DUPLICATE_NON_CANONICAL' };
+    }
+    if (prioridad < 0) {
+      return { winner: previous, loser: candidate,
+               reason: candidate.sectionKey === 'SELECTED_BETS'
+                 ? 'SELECTED_BETS_COPY' : 'DUPLICATE_NON_CANONICAL' };
+    }
     const masLineas = (candidate.lines || []).length - (previous.lines || []).length;
-    if (masLineas > 0) return candidate;
-    if (masLineas < 0) return previous;
-    if (candidate.isVisible && !previous.isVisible) return candidate;
-    return previous;
+    if (masLineas > 0) return { winner: candidate, loser: previous, reason: 'MORE_LINES' };
+    if (masLineas < 0) return { winner: previous, loser: candidate, reason: 'MORE_LINES' };
+    if (candidate.isVisible && !previous.isVisible) {
+      return { winner: candidate, loser: previous, reason: 'VISIBLE_COPY_WON' };
+    }
+    return { winner: previous, loser: candidate, reason: 'STALE_COPY' };
+  }
+
+  function preferReading(previous, candidate) {
+    return compareReadings(previous, candidate).winner;
   }
 
   /**
@@ -246,12 +270,17 @@
         typeof sectionOf === 'function' &&
         !!sectionOf(adapter.text(header.element));
       if (esSeccion) secciones.push(header);
-      else cabeceras.push(header);
+      else if (header.identified.isTotal) cabeceras.push(header);
     }
+
+    // Un texto auxiliar como "Cuenta De Puntos Actual, 4º Cuarto:8" nombra
+    // el periodo, pero no es ni seccion ni titulo de un total. No puede actuar
+    // como frontera y dejar aislada la cabecera real de sus opciones.
+    const fronteras = [...secciones, ...cabeceras];
 
     const registros = [];
     for (const header of cabeceras) {
-      const { container, result } = findMarketContainer(header, todas, adapter, extract);
+      const { container, result } = findMarketContainer(header, fronteras, adapter, extract);
       const seccion = findSectionKey(header, adapter, sectionOf);
       // Se vuelve a identificar YA con el contexto de la seccion.
       const identificado = seccion
@@ -274,7 +303,8 @@
     return registros;
   }
 
-  return { pickInnermost, wouldInvadeAnotherMarket, preferReading, chooseVisibleMarket,
+  return { pickInnermost, wouldInvadeAnotherMarket, sourcePriority, compareReadings,
+           preferReading, chooseVisibleMarket,
            isStrongMarketBoundary,
            findMarketHeaders, findMarketContainer, findSectionKey, firstLeafText,
            scanMarkets, descendants };

@@ -23,6 +23,7 @@
     Q3: 'Q3_TOTAL',
     Q4: 'Q4_TOTAL',
     UNKNOWN: 'UNKNOWN',
+    SELECTED_BETS: 'SELECTED_BETS',
   };
 
   const LABELS = {
@@ -84,19 +85,23 @@
   function sectionKey(rawText) {
     const normalized = text.normalizeOrdinals(rawText);
     if (!normalized || normalized.length > 40) return null;
+    if (/\bapuestas? seleccionadas?\b/.test(normalized) ||
+        /\bselected bets?\b/.test(normalized)) return KEYS.SELECTED_BETS;
     if (hasAny(normalized, TOTAL_WORDS)) return null;
     if (hasAny(normalized, TEAM_TOTAL_WORDS)) return null;
     if (hasAny(normalized, OTHER_MARKET_WORDS)) return null;
 
     for (const pattern of QUARTER_PATTERNS) {
       const match = normalized.match(pattern);
-      if (match) return KEYS[`Q${match[1]}`];
+      if (match && match[0] === normalized) return KEYS[`Q${match[1]}`];
     }
     for (const pattern of HALF_PATTERNS) {
       const match = normalized.match(pattern);
-      if (match) return match[1] === '1' ? KEYS.H1 : KEYS.H2;
+      if (match && match[0] === normalized) return match[1] === '1' ? KEYS.H1 : KEYS.H2;
     }
-    if (hasAny(normalized, GAME_WORDS)) return KEYS.GAME;
+    if (['partido', 'encuentro', 'juego completo', 'match'].includes(normalized)) {
+      return KEYS.GAME;
+    }
     return null;
   }
 
@@ -179,6 +184,8 @@
     }
 
     const contexto = (options || {}).sectionKey || null;
+    const contextoCanonico = Object.values(KEYS).includes(contexto) &&
+      ![KEYS.UNKNOWN, KEYS.SELECTED_BETS].includes(contexto);
 
     if (!candidate && isTotal) {
       // "Total de puntos" a secas suele ser el del partido, pero sin periodo
@@ -197,7 +204,7 @@
     }
 
     // El contexto entra SOLO donde el titulo se queda corto.
-    if (contexto && isTotal && !ambiguous) {
+    if (contextoCanonico && isTotal && !ambiguous) {
       if (!explicitPeriod && !explicitGame) {
         candidate = contexto;
         confidence = Math.max(confidence, 0.92);
@@ -218,6 +225,7 @@
   }
 
   function labelFor(key) {
+    if (key === KEYS.SELECTED_BETS) return 'Apuestas seleccionadas';
     return LABELS[key] || key;
   }
 

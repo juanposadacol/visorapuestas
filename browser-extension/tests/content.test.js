@@ -63,6 +63,7 @@ function montarContenido(doc, url) {
   const mensajes = [];
   const oyentes = [];
   const pendientes = [];
+  const intervalos = [];
   let observador = null;
 
   const sandbox = {
@@ -70,7 +71,7 @@ function montarContenido(doc, url) {
     RegExp, Boolean, isNaN, parseInt, parseFloat,
     setTimeout: (fn) => { pendientes.push(fn); return pendientes.length; },
     clearTimeout: () => {},
-    setInterval: () => 1,          // el latido periodico no hace falta aqui
+    setInterval: (fn, ms) => { intervalos.push({ fn, ms }); return intervalos.length; },
     clearInterval: () => {},
     document: doc,
     location: { href: url || 'https://betplay.com.co/apuestas#event/live/123456789' },
@@ -127,6 +128,10 @@ function montarContenido(doc, url) {
     pedir,
     mensajes,
     rescanear,
+    ejecutarIntervalo: (ms, veces = 1) => {
+      const timers = intervalos.filter((item) => item.ms === ms);
+      for (let i = 0; i < veces; i += 1) for (const timer of timers) timer.fn();
+    },
     irA: (nueva) => { sandbox.location.href = nueva; },
     payloads: () => mensajes.filter((m) => m.type === 'VDIAG_PAYLOAD'),
     latidos: () => mensajes.filter((m) => m.type === 'VDIAG_HEARTBEAT'),
@@ -319,6 +324,147 @@ test('el latido se manda desde la pestana, sin permiso "alarms"', () => {
   const c = montarContenido(doc);
   assert.ok(c.latidos().length >= 1,
             'el primer latido sale sin esperar al primer ciclo del temporizador');
+});
+
+test('sin mutaciones la revalidacion periodica vuelve a observar un reloj congelado', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboard(doc, 91, 66));
+  doc.body.appendChild(mercadoQ4(doc, '38.5', '1.76', '1.88'));
+  const c = montarContenido(doc);
+  const antes = c.estado().scanCount;
+
+  c.ejecutarIntervalo(1000, 30);
+
+  const estado = c.estado();
+  const ultimo = c.payloads().pop().payload;
+  assert.equal(estado.scanCount, antes + 30);
+  assert.equal(estado.scanTriggers.periodic, 30);
+  assert.deepEqual(
+    { scoreA: ultimo.gameState.scoreA, scoreB: ultimo.gameState.scoreB,
+      period: ultimo.gameState.period, clock: ultimo.gameState.clock },
+    { scoreA: 91, scoreB: 66, period: 4, clock: '06:42' });
+  assert.ok(estado.scansPerMinute > 0);
+});
+
+test('el ticker puede reanudarse despues de la pausa sin depender de una mutacion', () => {
+  const doc = createDocument();
+  const marcador = scoreboard(doc, 91, 66);
+  doc.body.appendChild(marcador);
+  const c = montarContenido(doc);
+  c.ejecutarIntervalo(1000, 5);          // pausa: sigue en 06:42
+
+  const reloj = marcador.children[2].children[1];
+  reloj.childNodes[0].nodeValue = '06:41';
+  c.ejecutarIntervalo(1000, 1);          // sin avisar al MutationObserver
+
+  assert.equal(c.payloads().pop().payload.gameState.clock, '06:41');
+});
+
+test('el heartbeat no cuenta como observacion DOM', () => {
+  const doc = createDocument();
+  doc.body.appendChild(scoreboard(doc, 91, 66));
+  const c = montarContenido(doc);
+  const antes = c.estado().scanCount;
+
+  c.ejecutarIntervalo(5000, 3);
+
+  assert.equal(c.estado().scanCount, antes);
+  assert.ok(c.latidos().length >= 4);
+});
+
+test('scoreboard desmontado no se finge reobservado y puede expirar en Python', () => {
+  const doc = createDocument();
+  const marcador = scoreboard(doc, 91, 66);
+  doc.body.appendChild(marcador);
+  doc.body.appendChild(mercadoQ4(doc, '38.5', '1.76', '1.88'));
+  const c = montarContenido(doc);
+  marcador.remove();
+
+  c.ejecutarIntervalo(1000, 1);
+
+  const ultimo = c.payloads().pop().payload;
+  assert.equal(ultimo.gameState, null);
+  assert.ok(c.estado().gameLastObservedAt, 'se conserva solo la hora diagnostica anterior');
+});
+
+test('Q4 se actualiza 41.5 -> 38.5 y tambien cambian cuotas con la misma linea', () => {
+  const doc = createDocument();
+  const q4 = mercadoQ4(doc, '41.5', '1.80', '1.80');
+  doc.body.appendChild(q4);
+  const c = montarContenido(doc);
+
+  q4.children[1].children[0].children[0].childNodes[0].nodeValue = 'Más de 38.5';
+  q4.children[1].children[0].children[1].childNodes[0].nodeValue = '1.76';
+  q4.children[1].children[1].children[0].childNodes[0].nodeValue = 'Menos de 38.5';
+  q4.children[1].children[1].children[1].childNodes[0].nodeValue = '1.88';
+  c.rescanear();
+  let q4Wire = c.payloads().pop().payload.markets.find((m) => m.period === 4);
+  assert.deepEqual(q4Wire.lines, [{ line: 38.5, overOdds: 1.76, underOdds: 1.88 }]);
+
+  q4.children[1].children[0].children[1].childNodes[0].nodeValue = '1.70';
+  c.rescanear();
+  q4Wire = c.payloads().pop().payload.markets.find((m) => m.period === 4);
+  assert.equal(q4Wire.lines[0].overOdds, 1.70);
+});
+
+function seccion(doc, titulo, mercados) {
+  return el(doc, 'div', { class: 'event-group' }, [
+    el(doc, 'h2', { class: 'event-group__title' }, [titulo]), ...mercados,
+  ]);
+}
+
+function mercado(doc, titulo, lineas, auxiliar) {
+  const hijos = [];
+  if (auxiliar) hijos.push(el(doc, 'div', { class: 'current-points' }, [auxiliar]));
+  for (const [linea, over, under] of lineas) {
+    hijos.push(opcion(doc, `Más de ${linea}`, over));
+    hijos.push(opcion(doc, `Menos de ${linea}`, under));
+  }
+  return el(doc, 'section', { class: 'market' }, [
+    el(doc, 'h3', { class: 'market__title' }, [titulo]),
+    el(doc, 'div', { class: 'market__options' }, hijos),
+  ]);
+}
+
+test('Apuestas Seleccionadas no le gana a la seccion canonica de Q4', () => {
+  const doc = createDocument();
+  doc.body.appendChild(seccion(doc, 'Apuestas Seleccionadas', [
+    mercado(doc, 'Total de puntos - Cuarto 4', [['41.5', '1.80', '1.80']]),
+  ]));
+  doc.body.appendChild(seccion(doc, '4º cuarto', [
+    mercado(doc, 'Total de puntos - Cuarto 4', [['38.5', '1.76', '1.88']],
+      'Cuenta De Puntos Actual, 4º Cuarto:8'),
+  ]));
+
+  const c = montarContenido(doc);
+  const q4 = c.payloads().pop().payload.markets.find((m) => m.period === 4);
+  assert.deepEqual(q4.lines, [{ line: 38.5, overOdds: 1.76, underOdds: 1.88 }],
+                   JSON.stringify(c.estado().markets));
+  assert.equal(q4.source, 'CANONICAL_SECTION');
+  assert.ok(c.estado().duplicateDiagnostics.some(
+    (d) => d.market === 'Q4_TOTAL' && d.reason === 'CANONICAL_SECTION_WON'));
+});
+
+test('GAME_TOTAL + H2 + Q4 viajan simultaneamente y el auxiliar no es linea', () => {
+  const doc = createDocument();
+  doc.body.appendChild(seccion(doc, 'PARTIDO', [
+    mercado(doc, 'Total de puntos - Prórroga incluida', [
+      ['182.5', '1.68', '1.98'], ['183.5', '1.86', '1.78'], ['184.5', '2.08', '1.61']]),
+  ]));
+  doc.body.appendChild(seccion(doc, 'SECOND HALF', [
+    mercado(doc, 'Total de puntos - Segunda Parte - Prórroga incluida',
+      [['84.5', '1.91', '1.74']]),
+  ]));
+  doc.body.appendChild(seccion(doc, '4° cuarto', [
+    mercado(doc, 'Total de puntos - Cuarto 4', [['38.5', '1.76', '1.88']],
+      'Cuenta De Puntos Actual, 4º Cuarto:8'),
+  ]));
+
+  const payload = montarContenido(doc).payloads().pop().payload;
+  assert.equal(payload.markets.length, 3);
+  assert.deepEqual(payload.markets.map((m) => m.lines.map((l) => l.line)),
+                   [[182.5, 183.5, 184.5], [84.5], [38.5]]);
+  assert.ok(payload.markets.every((m) => !m.lines.some((l) => [4, 8, 4.8].includes(l.line))));
 });
 
 test('F. se puede copiar la estructura saneada del mercado', () => {

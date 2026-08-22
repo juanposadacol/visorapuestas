@@ -206,3 +206,24 @@ test('T. la firma incluye el partido, asi que cambiar de evento fuerza reenvio',
   assert.notEqual(payloadLib.payloadSignature(construir('111111111')),
                   payloadLib.payloadSignature(construir('222222222')));
 });
+
+test('protocol v1 transporta varios mercados con timestamps independientes', () => {
+  const resultado = buildPayload({
+    eventId: '123456789', observedAt: Date.now(), gameState: null,
+    markets: [
+      { marketKey: 'GAME_TOTAL', confidence: 0.95, rawTitle: 'Total partido',
+        observedAt: Date.now() - 100, source: 'CANONICAL_SECTION', section: 'Partido',
+        sideMarkers: { both: true },
+        lines: [{ line: 183.5, overOdds: 1.86, underOdds: 1.78 }] },
+      { marketKey: 'Q4_TOTAL', confidence: 0.95, rawTitle: 'Total Q4',
+        observedAt: Date.now(), source: 'CANONICAL_SECTION', section: '4º cuarto',
+        sideMarkers: { both: true },
+        lines: [{ line: 38.5, overOdds: 1.76, underOdds: 1.88 }] },
+    ],
+  });
+  assert.equal(resultado.payload.protocol, 1);
+  assert.equal(resultado.payload.markets.length, 2);
+  assert.equal(validatePayload(resultado.payload).valid, true);
+  assert.notEqual(resultado.payload.markets[0].observedAt,
+                  resultado.payload.markets[1].observedAt);
+});
