@@ -153,8 +153,12 @@ class MetricsPanel(QWidget):
         self.period_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.period_pace_label = QLabel(fmt.UNKNOWN)
-        self.period_pace_label.setObjectName("metricValue")
+        self.period_pace_label.setObjectName("paceHighlight")
         self.period_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.period_projection_label = QLabel(fmt.UNKNOWN)
+        self.period_projection_label.setObjectName("metricValue")
+        self.period_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.half_points_title = _title("PUNTOS DE LA MITAD")
         self.half_points_label = QLabel(fmt.UNKNOWN)
@@ -163,8 +167,12 @@ class MetricsPanel(QWidget):
 
         self.half_pace_title = _title("PROMEDIO ACTUAL DE LA MITAD")
         self.half_pace_label = QLabel(fmt.UNKNOWN)
-        self.half_pace_label.setObjectName("metricValue")
+        self.half_pace_label.setObjectName("paceHighlight")
         self.half_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.half_projection_label = QLabel(fmt.UNKNOWN)
+        self.half_projection_label.setObjectName("metricValue")
+        self.half_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.first_half_points_title = _title("PUNTOS 1H")
         self.first_half_points_label = QLabel(fmt.UNKNOWN)
@@ -179,8 +187,11 @@ class MetricsPanel(QWidget):
         self.game_points_label.setObjectName("metricValue")
         self.game_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.game_pace_label = QLabel(fmt.UNKNOWN)
-        self.game_pace_label.setObjectName("metricValue")
+        self.game_pace_label.setObjectName("paceHighlight")
         self.game_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.game_projection_label = QLabel(fmt.UNKNOWN)
+        self.game_projection_label.setObjectName("metricValue")
+        self.game_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.reference_label = QLabel(fmt.UNKNOWN)
         self.reference_label.setObjectName("metricValue")
@@ -201,29 +212,38 @@ class MetricsPanel(QWidget):
         self.baseline_button.clicked.connect(self.baselineRequested.emit)
         self.baseline_button.setVisible(False)
 
-        grid.addWidget(self.period_points_title, 0, 0)
-        grid.addWidget(self.period_points_label, 0, 1)
         self.period_pace_title = _title("PROMEDIO ACTUAL DEL CUARTO")
-        grid.addWidget(self.period_pace_title, 1, 0)
-        grid.addWidget(self.period_pace_label, 1, 1)
-        grid.addWidget(self.half_points_title, 2, 0)
-        grid.addWidget(self.half_points_label, 2, 1)
+        grid.addWidget(self.period_pace_title, 0, 0)
+        grid.addWidget(self.period_pace_label, 0, 1)
+        grid.addWidget(self.period_points_title, 1, 0)
+        grid.addWidget(self.period_points_label, 1, 1)
+        grid.addWidget(_title("PROYECCIÓN Q RESTANTE"), 2, 0)
+        grid.addWidget(self.period_projection_label, 2, 1)
         grid.addWidget(self.half_pace_title, 3, 0)
         grid.addWidget(self.half_pace_label, 3, 1)
-        grid.addWidget(self.first_half_points_title, 4, 0)
-        grid.addWidget(self.first_half_points_label, 4, 1)
-        grid.addWidget(self.first_half_pace_title, 5, 0)
-        grid.addWidget(self.first_half_pace_label, 5, 1)
-        grid.addWidget(_title("PUNTOS DEL PARTIDO"), 6, 0)
-        grid.addWidget(self.game_points_label, 6, 1)
-        grid.addWidget(_title("PROMEDIO ACTUAL PARTIDO"), 7, 0)
-        grid.addWidget(self.game_pace_label, 7, 1)
-        grid.addWidget(_title("MI REFERENCIA"), 8, 0)
-        grid.addWidget(self.reference_label, 8, 1)
-        grid.addWidget(_title("MI CUOTA UNDER OBJETIVO"), 9, 0)
-        grid.addWidget(self.target_odds_label, 9, 1)
-        grid.addWidget(self.points_source_label, 10, 0, 1, 2)
-        grid.addWidget(self.baseline_button, 11, 0, 1, 2)
+        grid.addWidget(self.half_points_title, 4, 0)
+        grid.addWidget(self.half_points_label, 4, 1)
+        grid.addWidget(_title("PROYECCIÓN MITAD RESTANTE"), 5, 0)
+        grid.addWidget(self.half_projection_label, 5, 1)
+        grid.addWidget(_title("PROMEDIO ACTUAL PARTIDO"), 6, 0)
+        grid.addWidget(self.game_pace_label, 6, 1)
+        grid.addWidget(_title("PUNTOS DEL PARTIDO"), 7, 0)
+        grid.addWidget(self.game_points_label, 7, 1)
+        grid.addWidget(_title("PROYECCIÓN PARTIDO RESTANTE"), 8, 0)
+        grid.addWidget(self.game_projection_label, 8, 1)
+        grid.addWidget(_title("MI REFERENCIA"), 9, 0)
+        grid.addWidget(self.reference_label, 9, 1)
+        grid.addWidget(_title("MI CUOTA UNDER OBJETIVO"), 10, 0)
+        grid.addWidget(self.target_odds_label, 10, 1)
+
+        # La referencia historica de 1H se conserva, pero queda fuera del
+        # bloque principal ordenado y solo aparece durante la segunda mitad.
+        grid.addWidget(self.first_half_pace_title, 11, 0)
+        grid.addWidget(self.first_half_pace_label, 11, 1)
+        grid.addWidget(self.first_half_points_title, 12, 0)
+        grid.addWidget(self.first_half_points_label, 12, 1)
+        grid.addWidget(self.points_source_label, 13, 0, 1, 2)
+        grid.addWidget(self.baseline_button, 14, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnMinimumWidth(1, 110)
         return card
@@ -373,12 +393,14 @@ class MetricsPanel(QWidget):
             f"MARGEN VS {period_label}" if period_label != "--" else "MARGEN VS CUARTO")
         self.period_points_label.setText(_period_points_text(general))
         self.period_pace_label.setText(fmt.pace(general.period_pace))
+        self.period_projection_label.setText(fmt.projection(general.period_projection))
         half_label = f"{general.half_number}H" if general.half_number else "MITAD"
         self.half_points_title.setText(f"PUNTOS {half_label}")
         self.half_pace_title.setText(f"PROMEDIO ACTUAL {half_label}")
         self.half_points_label.setText(_score_total_text(
             general.half_points_a, general.half_points_b, general.half_points))
         self.half_pace_label.setText(fmt.pace(general.half_pace))
+        self.half_projection_label.setText(fmt.projection(general.half_projection))
         show_first_half = general.half_number == 2 and general.first_half_points is not None
         for widget in (self.first_half_points_title, self.first_half_points_label,
                        self.first_half_pace_title, self.first_half_pace_label):
@@ -390,6 +412,7 @@ class MetricsPanel(QWidget):
         self.game_points_label.setText(_score_total_text(
             state.score_a_value, state.score_b_value, general.total_points))
         self.game_pace_label.setText(fmt.pace(general.game_pace))
+        self.game_projection_label.setText(fmt.projection(general.game_projection))
         self.points_source_label.setText(_points_source_text(general.period_points_source))
         self.baseline_button.setVisible(bool(needs_baseline))
         if criteria is not None:

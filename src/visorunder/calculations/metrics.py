@@ -1,8 +1,9 @@
 """Motor matematico. Funciones puras, independientes y testeables (requisito 11).
 
-Ninguna funcion de este modulo predice nada. Todas describen el ESTADO
-MATEMATICO REAL a partir de datos observados. Si un dato de entrada es
-desconocido, la salida es None (nunca un valor inventado).
+Salvo las proyecciones lineales de presentacion explicitamente identificadas,
+las funciones describen el ESTADO MATEMATICO REAL a partir de datos observados.
+Si un dato de entrada es desconocido, la salida es None (nunca un valor
+inventado).
 
 Todo el tiempo entra en SEGUNDOS. Solo se convierte a minutos decimales
 dentro de los ratios.
@@ -74,6 +75,17 @@ def points_per_minute(points: Optional[int], seconds_played: Optional[int]) -> O
     if minutes <= 0:
         return None
     return points / minutes
+
+
+def projected_points_remaining(pace: Optional[float],
+                               remaining_seconds: Optional[int]) -> Optional[float]:
+    """Puntos que se harian en el intervalo restante al ritmo observado.
+
+    Es una proyeccion lineal de presentacion, no un total final ni una señal.
+    """
+    if pace is None or remaining_seconds is None:
+        return None
+    return pace * seconds_to_decimal_minutes(max(0, remaining_seconds))
 
 
 # --------------------------------------------------------------------------
@@ -216,8 +228,11 @@ class GeneralMetrics:
     seconds_to_halftime: Optional[int] = None
     period_pace: Optional[float] = None
     game_pace: Optional[float] = None
+    period_projection: Optional[float] = None
+    game_projection: Optional[float] = None
     #: Ritmo real de la mitad en curso (Q1+Q2 o Q3+Q4).
     half_pace: Optional[float] = None
+    half_projection: Optional[float] = None
     half_points: Optional[int] = None
     half_points_a: Optional[int] = None
     half_points_b: Optional[int] = None
@@ -293,6 +308,14 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
         half_points_b = hs.points_b
         half_elapsed = elapsed_half_seconds(state.rules, state.period_value, state.clock_value)
 
+    half_remaining = None
+    if half is not None and half_elapsed is not None:
+        per_half = state.rules.regulation_quarters // 2
+        first = 1 + (half - 1) * per_half
+        half_duration = sum(
+            state.rules.period_seconds(p) for p in range(first, first + per_half))
+        half_remaining = max(0, half_duration - half_elapsed)
+
     first_half = state.half_score(1)
     first_half_finished = (state.period_value is not None and
                            state.period_value > state.rules.halftime_after_period)
@@ -300,8 +323,15 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
     first_half_seconds = (sum(state.rules.period_seconds(p) for p in range(
         1, state.rules.halftime_after_period + 1)) if first_half_finished else None)
 
+    period_pace = points_per_minute(ps.total, elapsed_q)
+    half_pace = points_per_minute(half_points, half_elapsed)
+    game_pace = points_per_minute(state.total_points, elapsed_game)
+    remaining_period = state.remaining_period_seconds
+    remaining_game = state.remaining_game_seconds
+
     return GeneralMetrics(
-        half_pace=points_per_minute(half_points, half_elapsed),
+        half_pace=half_pace,
+        half_projection=projected_points_remaining(half_pace, half_remaining),
         half_points=half_points,
         half_points_a=half_points_a,
         half_points_b=half_points_b,
@@ -317,12 +347,14 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
         period_points_b=ps.points_b,
         period_points_source=ps.source,
         elapsed_period_seconds=elapsed_q,
-        remaining_period_seconds=state.remaining_period_seconds,
+        remaining_period_seconds=remaining_period,
         elapsed_game_seconds=elapsed_game,
-        remaining_game_seconds=state.remaining_game_seconds,
+        remaining_game_seconds=remaining_game,
         seconds_to_halftime=seconds_to_halftime(state.rules, state.period_value, state.clock_value),
-        period_pace=points_per_minute(ps.total, elapsed_q),
-        game_pace=points_per_minute(state.total_points, elapsed_game),
+        period_pace=period_pace,
+        game_pace=game_pace,
+        period_projection=projected_points_remaining(period_pace, remaining_period),
+        game_projection=projected_points_remaining(game_pace, remaining_game),
     )
 
 

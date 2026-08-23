@@ -65,6 +65,11 @@ def test_ritmo_de_mitad_dinamico_q1_a_q4_y_reglas(
     assert general.half_elapsed_seconds == completed_before + played
     assert general.half_pace == pytest.approx(
         expected_points / ((completed_before + played) / 60), abs=1e-12)
+    half_duration = sum(rules.period_seconds(p) for p in range(
+        half_first, half_first + rules.regulation_quarters // 2))
+    assert general.half_projection == pytest.approx(
+        general.half_pace * ((half_duration - general.half_elapsed_seconds) / 60),
+        abs=1e-12)
 
 
 def test_cero_explicito_y_desconocido_no_son_lo_mismo():
@@ -179,5 +184,54 @@ def test_cuadro_compacto_admite_nombres_largos_y_celdas_desconocidas():
     assert table.item(0, 4).text() == "--"
     assert table.item(2, 3).text() == "22"
     assert table.item(2, 5).text() == "112"
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_panel_reordena_metricas_resalta_promedios_y_muestra_proyecciones():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from visorunder.ui.metrics_panel import MetricsPanel
+
+    app = QApplication.instance() or QApplication([])
+    state = _state(
+        FIBA, 3, 5 * 60 + 18, 65, 47,
+        {"Q1": 21, "Q2": 25, "Q3": 19, "Q4": 0},
+        {"Q1": 26, "Q2": 18, "Q3": 3, "Q4": 0},
+    )
+    panel = MetricsPanel()
+    panel.update_view(state, compute_general_metrics(state))
+
+    grid = panel.period_pace_label.parentWidget().layout()
+    expected_titles = [
+        "PROMEDIO ACTUAL Q3",
+        "PUNTOS Q3",
+        "PROYECCIÓN Q RESTANTE",
+        "PROMEDIO ACTUAL 2H",
+        "PUNTOS 2H",
+        "PROYECCIÓN MITAD RESTANTE",
+        "PROMEDIO ACTUAL PARTIDO",
+        "PUNTOS DEL PARTIDO",
+        "PROYECCIÓN PARTIDO RESTANTE",
+        "MI REFERENCIA",
+        "MI CUOTA UNDER OBJETIVO",
+    ]
+    assert [grid.itemAtPosition(row, 0).widget().text()
+            for row in range(len(expected_titles))] == expected_titles
+    assert panel.period_pace_label.objectName() == "paceHighlight"
+    assert panel.half_pace_label.objectName() == "paceHighlight"
+    assert panel.game_pace_label.objectName() == "paceHighlight"
+    assert panel.required_pace_label.objectName() == "paceValue"
+    assert panel.period_projection_label.text() == "24.8 pts"
+    assert panel.half_projection_label.text() == "71.6 pts"
+    assert panel.game_projection_label.text() == "69.4 pts"
+
+    unknown_state = GameState(rules=FIBA)
+    panel.update_view(unknown_state, compute_general_metrics(unknown_state))
+    assert panel.period_projection_label.text() == "--"
+    assert panel.half_projection_label.text() == "--"
+    assert panel.game_projection_label.text() == "--"
+
     panel.deleteLater()
     app.processEvents()

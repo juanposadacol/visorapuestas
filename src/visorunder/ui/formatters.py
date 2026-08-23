@@ -43,6 +43,15 @@ def pace(value: Optional[float]) -> str:
     return f"{value:.2f} pts/min"
 
 
+def projection(value: Optional[float]) -> str:
+    """Puntos proyectados solo para el intervalo restante."""
+    if value is None:
+        return UNKNOWN
+    if math.isinf(value):
+        return "IMPOSIBLE"
+    return f"{value:.1f} pts"
+
+
 def odds(value: Optional[float]) -> str:
     return UNKNOWN if value is None else f"{value:.2f}"
 

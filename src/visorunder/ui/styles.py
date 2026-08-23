@@ -45,7 +45,24 @@ QLabel#teamName {{ font-size: 15px; font-weight: 600; }}
 QLabel#teamScore {{ font-size: 22px; font-weight: 700; }}
 QLabel#bigValue {{ font-size: 34px; font-weight: 800; }}
 QLabel#hugeValue {{ font-size: 44px; font-weight: 800; color: {COLOR_WARN}; }}
-QLabel#paceValue {{ font-size: 26px; font-weight: 700; color: {COLOR_ACCENT}; }}
+QLabel#paceValue {{
+    background-color: rgba(63, 167, 255, 26);
+    border: 1px solid rgba(63, 167, 255, 115);
+    border-radius: 7px;
+    color: {COLOR_ACCENT};
+    font-size: 26px;
+    font-weight: 700;
+    padding: 5px 10px;
+}}
+QLabel#paceHighlight {{
+    background-color: rgba(63, 167, 255, 22);
+    border: 1px solid rgba(63, 167, 255, 90);
+    border-radius: 6px;
+    color: #70c1ff;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 3px 8px;
+}}
 QLabel#metricValue {{ font-size: 15px; font-weight: 600; }}
 QLabel#metricLabel {{ color: {COLOR_MUTED}; font-size: 11px; }}
 QLabel#betLine {{ font-size: 18px; font-weight: 700; color: {COLOR_OK}; }}
