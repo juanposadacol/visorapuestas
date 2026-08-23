@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..domain.bet import LockedBet
-from ..domain.game_state import GameState, PointsSource
+from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, Side
 from ..domain.time_utils import seconds_to_clock, seconds_to_decimal_minutes
 from . import market_scope
@@ -213,6 +213,46 @@ def seconds_to_game_end(rules, period: Optional[int], remaining_seconds: Optiona
 # Agregados que consume la interfaz
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
+class ClosedPeriodAverage:
+    """Promedio descriptivo de un periodo cuyo marcador ya es definitivo."""
+
+    period: int
+    label: str
+    points: int
+    pace: float
+
+
+def closed_period_averages(state: GameState) -> Tuple[ClosedPeriodAverage, ...]:
+    """Devuelve solo periodos cerrados y conocidos, en orden cronologico."""
+    current = state.period_value
+    if current is None:
+        last_closed = (state.rules.halftime_after_period
+                       if state.phase is GamePhase.HALFTIME else 0)
+    elif state.phase in (GamePhase.PERIOD_END, GamePhase.HALFTIME,
+                         GamePhase.GAME_OVER):
+        last_closed = current
+    else:
+        last_closed = current - 1
+
+    result = []
+    for period in range(1, last_closed + 1):
+        score = state.period_score(period)
+        if score.total is None:
+            continue
+        duration = state.rules.period_seconds(period)
+        pace = points_per_minute(score.total, duration)
+        if pace is None:
+            continue
+        result.append(ClosedPeriodAverage(
+            period=period,
+            label=state.rules.label(period),
+            points=score.total,
+            pace=pace,
+        ))
+    return tuple(result)
+
+
+@dataclass(frozen=True)
 class GeneralMetrics:
     """Metricas del panel principal que no dependen de la apuesta fijada."""
 
@@ -243,6 +283,7 @@ class GeneralMetrics:
     first_half_points: Optional[int] = None
     first_half_points_a: Optional[int] = None
     first_half_points_b: Optional[int] = None
+    closed_period_averages: Tuple[ClosedPeriodAverage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -330,6 +371,7 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
     remaining_game = state.remaining_game_seconds
 
     return GeneralMetrics(
+        closed_period_averages=closed_period_averages(state),
         half_pace=half_pace,
         half_projection=projected_points_remaining(half_pace, half_remaining),
         half_points=half_points,

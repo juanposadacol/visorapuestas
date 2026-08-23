@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..calculations.entry import LineEvaluation
-from ..calculations.metrics import GeneralMetrics
+from ..calculations.metrics import ClosedPeriodAverage, GeneralMetrics
 from ..calculations.signals import SignalLevel
 from ..domain.event_markets import FreshnessState
 from ..config.criteria import EntryCriteria
@@ -112,6 +112,21 @@ class MetricsPanel(QWidget):
         self.results_table.setHorizontalHeaderLabels(["", "Q1", "Q2", "Q3", "Q4", "TOTAL"])
         self.results_table.setFixedHeight(96)
         layout.addWidget(self.results_table)
+
+        self.closed_period_averages_strip = QFrame()
+        self.closed_period_averages_strip.setObjectName("closedPeriodAveragesStrip")
+        averages_layout = QVBoxLayout(self.closed_period_averages_strip)
+        averages_layout.setContentsMargins(0, 5, 0, 0)
+        averages_layout.setSpacing(3)
+        averages_layout.addWidget(_title("PROMEDIOS DE CUARTOS CERRADOS"))
+        self.closed_period_average_row = QGridLayout()
+        self.closed_period_average_row.setContentsMargins(0, 0, 0, 0)
+        self.closed_period_average_row.setSpacing(6)
+        self.closed_period_average_row.setColumnStretch(3, 1)
+        averages_layout.addLayout(self.closed_period_average_row)
+        self.closed_period_average_chips = []
+        self.closed_period_averages_strip.setVisible(False)
+        layout.addWidget(self.closed_period_averages_strip)
         return card
 
     def _build_clock(self) -> QFrame:
@@ -377,6 +392,7 @@ class MetricsPanel(QWidget):
         self.team_b_score.setText(fmt.integer(state.score_b_value))
         self.total_label.setText(fmt.integer(general.total_points))
         self._update_results_table(state)
+        self._update_closed_period_averages(general.closed_period_averages)
 
         self.period_label.setText(state.label())
         self.clock_label.setText(fmt.clock(general.remaining_period_seconds))
@@ -545,6 +561,23 @@ class MetricsPanel(QWidget):
                 font.setBold(column == len(values) - 1 or row == 2)
                 item.setFont(font)
                 self.results_table.setItem(row, column, item)
+
+    def _update_closed_period_averages(
+            self, averages: tuple[ClosedPeriodAverage, ...]) -> None:
+        while self.closed_period_average_row.count():
+            item = self.closed_period_average_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.closed_period_average_chips = []
+        for index, average in enumerate(averages):
+            chip = QLabel(f"{average.label}  {fmt.pace(average.pace)}")
+            chip.setObjectName("closedPeriodAverageChip")
+            chip.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.closed_period_average_row.addWidget(chip, index // 3, index % 3)
+            self.closed_period_average_chips.append(chip)
+        self.closed_period_averages_strip.setVisible(bool(averages))
 
 
 def _freshness_text(estado: Optional[FreshnessState], edad: str) -> str:

@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from visorunder.calculations.metrics import compute_general_metrics
-from visorunder.domain.game_state import GameState, PointsSource
+from visorunder.calculations.metrics import closed_period_averages, compute_general_metrics
+from visorunder.domain.game_state import GamePhase, GameState, PointsSource
 from visorunder.domain.rules import FIBA, NBA
 from visorunder.domain.values import Observed
 
@@ -41,6 +41,49 @@ def test_regresion_real_betplay_q3_24_42():
     assert general.half_pace == pytest.approx(22 / (282 / 60), abs=1e-12)
     assert general.first_half_pace == pytest.approx(90 / 20, abs=1e-12)
     assert general.game_pace == pytest.approx(112 / (1482 / 60), abs=1e-12)
+
+
+@pytest.mark.parametrize("period,expected_labels", [
+    (1, []),
+    (2, ["Q1"]),
+    (3, ["Q1", "Q2"]),
+    (4, ["Q1", "Q2", "Q3"]),
+])
+def test_promedios_muestran_solo_cuartos_cerrados(period, expected_labels):
+    state = _state(
+        FIBA, period, FIBA.period_seconds(period), 41, 38,
+        {"Q1": 15, "Q2": 14, "Q3": 12, "Q4": 0},
+        {"Q1": 14, "Q2": 14, "Q3": 10, "Q4": 0},
+    )
+    averages = closed_period_averages(state)
+    assert [item.label for item in averages] == expected_labels
+    expected_paces = {"Q1": 2.9, "Q2": 2.8, "Q3": 2.2}
+    assert [item.pace for item in averages] == pytest.approx(
+        [expected_paces[label] for label in expected_labels])
+
+
+def test_descanso_cierra_q2_y_respeta_nba_y_overtime():
+    halftime = _state(
+        FIBA, 2, 0, 29, 28,
+        {"Q1": 15, "Q2": 14}, {"Q1": 14, "Q2": 14},
+    )
+    halftime.phase = GamePhase.HALFTIME
+    assert [(item.label, item.pace) for item in closed_period_averages(halftime)] == [
+        ("Q1", 2.9), ("Q2", 2.8),
+    ]
+
+    nba = _state(NBA, 2, 720, 18, 18, {"Q1": 18, "Q2": 0}, {"Q1": 18, "Q2": 0})
+    assert closed_period_averages(nba)[0].pace == pytest.approx(3.0)
+
+    overtime = _state(
+        FIBA, 6, 300, 88, 87,
+        {"Q1": 20, "Q2": 20, "Q3": 20, "Q4": 20, "OT1": 8, "OT2": 0},
+        {"Q1": 20, "Q2": 20, "Q3": 20, "Q4": 19, "OT1": 8, "OT2": 0},
+    )
+    averages = closed_period_averages(overtime)
+    assert averages[-1].label == "OT1"
+    assert averages[-1].points == 16
+    assert averages[-1].pace == pytest.approx(3.2)
 
 
 @pytest.mark.parametrize("rules,period,played,periods_a,periods_b,expected_points", [
@@ -184,6 +227,13 @@ def test_cuadro_compacto_admite_nombres_largos_y_celdas_desconocidas():
     assert table.item(0, 4).text() == "--"
     assert table.item(2, 3).text() == "22"
     assert table.item(2, 5).text() == "112"
+    assert panel.closed_period_averages_strip.isVisibleTo(panel)
+    assert [chip.text() for chip in panel.closed_period_average_chips] == [
+        "Q1  4.70 pts/min", "Q2  4.30 pts/min",
+    ]
+    scoreboard_layout = panel.closed_period_averages_strip.parentWidget().layout()
+    assert scoreboard_layout.indexOf(panel.closed_period_averages_strip) == (
+        scoreboard_layout.indexOf(panel.results_table) + 1)
     panel.deleteLater()
     app.processEvents()
 

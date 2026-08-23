@@ -65,6 +65,20 @@ QLabel#paceHighlight {{
 }}
 QLabel#metricValue {{ font-size: 15px; font-weight: 600; }}
 QLabel#metricLabel {{ color: {COLOR_MUTED}; font-size: 11px; }}
+QFrame#closedPeriodAveragesStrip {{
+    background-color: transparent;
+    border: none;
+    border-top: 1px solid {COLOR_BORDER};
+}}
+QLabel#closedPeriodAverageChip {{
+    background-color: rgba(63, 167, 255, 18);
+    border: 1px solid rgba(63, 167, 255, 72);
+    border-radius: 5px;
+    color: #70c1ff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 7px;
+}}
 QLabel#betLine {{ font-size: 18px; font-weight: 700; color: {COLOR_OK}; }}
 QLabel#danger {{ color: {COLOR_DANGER}; font-weight: 700; }}
 QLabel#status {{ color: {COLOR_MUTED}; font-size: 11px; }}
