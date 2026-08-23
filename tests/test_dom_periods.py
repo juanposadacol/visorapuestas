@@ -206,14 +206,14 @@ def test_panel_reordena_metricas_resalta_promedios_y_muestra_proyecciones():
     grid = panel.period_pace_label.parentWidget().layout()
     expected_titles = [
         "PROMEDIO ACTUAL Q3",
-        "PUNTOS Q3",
-        "PROYECCIÓN Q RESTANTE",
         "PROMEDIO ACTUAL 2H",
-        "PUNTOS 2H",
-        "PROYECCIÓN MITAD RESTANTE",
         "PROMEDIO ACTUAL PARTIDO",
-        "PUNTOS DEL PARTIDO",
+        "PROYECCIÓN Q RESTANTE",
+        "PROYECCIÓN MITAD RESTANTE",
         "PROYECCIÓN PARTIDO RESTANTE",
+        "PUNTOS Q3",
+        "PUNTOS 2H",
+        "PUNTOS DEL PARTIDO",
         "MI REFERENCIA",
         "MI CUOTA UNDER OBJETIVO",
     ]
