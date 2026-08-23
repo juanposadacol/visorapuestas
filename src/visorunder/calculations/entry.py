@@ -39,6 +39,7 @@ class LineEvaluation:
 
     # --- ambito resuelto por el mercado
     scope_points: Optional[int] = None
+    scope_elapsed_seconds: Optional[int] = None
     scope_remaining_seconds: Optional[int] = None
     points_source: PointsSource = PointsSource.UNKNOWN
     started: bool = True
@@ -47,6 +48,7 @@ class LineEvaluation:
     # --- calculo central
     exceed_threshold: Optional[int] = None
     points_to_exceed: Optional[int] = None
+    current_pace: Optional[float] = None
     required_pace: Optional[float] = None
     exceeded: Optional[bool] = None
 
@@ -139,12 +141,14 @@ def evaluate_line(state: GameState, line: MarketLine, criteria: EntryCriteria,
         line=line,
         key=key,
         scope_points=m.scope_points,
+        scope_elapsed_seconds=m.scope_elapsed_seconds,
         scope_remaining_seconds=m.scope_remaining_seconds,
         points_source=m.scope_points_source,
         started=m.started,
         settled=m.settled,
         exceed_threshold=m.exceed_threshold,
         points_to_exceed=m.points_to_exceed,
+        current_pace=m.current_pace,
         required_pace=pace,
         exceeded=m.exceeded,
         margin_vs_reference=margin_reference,

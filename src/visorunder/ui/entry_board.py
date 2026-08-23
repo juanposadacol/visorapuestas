@@ -5,8 +5,9 @@ numeros y su senal, para poder leer la situacion de un vistazo de uno o dos
 segundos.
 
 Columnas acordadas:
-    LINEA | CUOTA U | PUNTOS PARA SUPERAR | RITMO NECESARIO |
-    VS REFERENCIA | VS CUARTO | VS PARTIDO | SENAL
+    LINEA | CUOTA U | PROMEDIO ACTUAL | PUNTOS FALTANTES |
+    PROMEDIO FALTANTE | VS REFERENCIA | VS CUARTO | VS MITAD |
+    VS PARTIDO | SENAL
 
 La senal se transmite SIEMPRE con etiqueta de texto ademas del color, para no
 depender de la vista cromatica ni de la iluminacion de la pantalla.
@@ -41,10 +42,12 @@ from ..domain.event_markets import FreshnessState
 from ..domain.market import MarketKey, MarketSnapshot, Side
 from . import formatters as fmt
 
-COLUMNS = ["LINEA", "CUOTA U", "PUNTOS", "RITMO NEC.", "VS REF.", "VS Q",
-           "VS MITAD", "VS PARTIDO", "SENAL"]
-(COL_LINE, COL_ODDS, COL_POINTS, COL_PACE, COL_REF, COL_QUARTER, COL_HALF,
- COL_GAME, COL_SIGNAL) = range(9)
+COLUMNS = ["LINEA", "CUOTA U", "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.",
+           "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO", "SENAL"]
+(COL_LINE, COL_ODDS, COL_CURRENT_PACE, COL_POINTS, COL_MISSING_PACE, COL_REF,
+ COL_QUARTER, COL_HALF, COL_GAME, COL_SIGNAL) = range(10)
+# Alias historico: RITMO NEC. y PROMEDIO FALTANTE son la misma metrica.
+COL_PACE = COL_MISSING_PACE
 
 #: Color de la cabecera segun la frescura del mercado.
 FRESHNESS_COLORS = {
@@ -171,6 +174,7 @@ class MarketBlock(QWidget):
             values = [
                 fmt.line(e.line_value),
                 fmt.odds(e.under_odds),
+                _pace_text(e.current_pace),
                 fmt.integer(e.points_to_exceed),
                 _pace_text(e.required_pace),
                 _margin_text(e.margin_vs_reference),

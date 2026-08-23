@@ -239,10 +239,12 @@ class BetMetrics:
     odds: Optional[float] = None
     side: Side = Side.UNDER
     scope_points: Optional[int] = None
+    scope_elapsed_seconds: Optional[int] = None
     scope_remaining_seconds: Optional[int] = None
     scope_points_source: PointsSource = PointsSource.UNKNOWN
     exceed_threshold: Optional[int] = None
     points_to_exceed: Optional[int] = None
+    current_pace: Optional[float] = None
     required_pace: Optional[float] = None
     exceeded: Optional[bool] = None
     settled: bool = False
@@ -340,10 +342,12 @@ def compute_bet_metrics(state: GameState, key: MarketKey, line: float,
         odds=odds,
         side=side,
         scope_points=resolution.points,
+        scope_elapsed_seconds=resolution.elapsed_seconds,
         scope_remaining_seconds=resolution.remaining_seconds,
         scope_points_source=resolution.points_source,
         exceed_threshold=threshold,
         points_to_exceed=needed,
+        current_pace=points_per_minute(resolution.points, resolution.elapsed_seconds),
         required_pace=required_pace_to_exceed(needed, resolution.remaining_seconds),
         exceeded=line_exceeded(line, resolution.points),
         settled=resolution.settled,

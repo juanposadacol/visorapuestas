@@ -193,10 +193,10 @@ def test_el_tablero_evalua_todas_las_lineas(window):
     for row in range(board.table.rowCount()):
         celdas = [board.table.item(row, c).text() for c in range(board.table.columnCount())]
         filas[celdas[0]] = celdas
-    assert filas["37.5"][2:5] == ["18", "4.50", "+0.50"]
-    assert filas["38.5"][2:5] == ["19", "4.75", "+0.75"]
-    assert filas["39.5"][2:5] == ["20", "5.00", "+1.00"]
-    assert filas["40.5"][2:5] == ["21", "5.25", "+1.25"]
+    assert filas["37.5"][2:6] == ["3.33", "18", "4.50", "+0.50"]
+    assert filas["38.5"][2:6] == ["3.33", "19", "4.75", "+0.75"]
+    assert filas["39.5"][2:6] == ["3.33", "20", "5.00", "+1.00"]
+    assert filas["40.5"][2:6] == ["3.33", "21", "5.25", "+1.25"]
     assert filas["37.5"][-1] == "EXIGENTE"
     assert filas["40.5"][-1] == "MUY EXIGENTE"
 
@@ -246,8 +246,9 @@ def test_sin_marcador_inicial_las_lineas_del_cuarto_no_son_evaluables(window):
     ultima = board.table.columnCount() - 1
     for row in range(board.table.rowCount()):
         assert board.table.item(row, ultima).text() == "FALTA MARCADOR INICIAL Q3"
-        assert board.table.item(row, 2).text() == "--"   # no se inventan puntos
-        assert board.table.item(row, 3).text() == "--"   # ni ritmo
+        assert board.table.item(row, 2).text() == "--"   # no se inventa promedio actual
+        assert board.table.item(row, 3).text() == "--"   # ni puntos faltantes
+        assert board.table.item(row, 4).text() == "--"   # ni promedio faltante
 
 
 def test_linea_en_revision_mientras_la_casa_cambia(window):
@@ -438,7 +439,21 @@ def test_sin_extension_el_panel_dice_desconectada(window_bridge):
     win, controller = window_bridge
     win._refresh()
     assert win.connection_panel.state_label.text() == LinkState.DISCONNECTED.label
+    assert win.betplay_status_label.text() == "BETPLAY DESCONECTADO"
     assert controller.reader is None       # no arranca solo sin datos
+
+
+def test_la_conexion_tecnica_esta_en_diagnostico_y_no_en_panel(window_bridge):
+    win, _ = window_bridge
+    operational_tab = win.tabs.widget(0)
+    diagnostics_tab = win.tabs.widget(1)
+
+    assert not operational_tab.isAncestorOf(win.connection_panel)
+    assert diagnostics_tab.isAncestorOf(win.connection_panel)
+    assert operational_tab.isAncestorOf(win.metrics_panel)
+    assert win.metrics_scroll.parentWidget().layout().itemAt(0).widget() is win.metrics_scroll
+    first_card = win.metrics_panel.layout().itemAt(0).widget()
+    assert first_card.isAncestorOf(win.metrics_panel.results_table)
 
 
 def test_la_sesion_arranca_sola_al_conectar_la_extension(window_bridge):
@@ -450,6 +465,7 @@ def test_la_sesion_arranca_sola_al_conectar_la_extension(window_bridge):
     assert controller.reader is not None, "no arranco la sesion sola"
     controller.reader.stop()
     assert "CONECTADO" in win.status_label.text()
+    assert win.betplay_status_label.text() == "BETPLAY ✓"
 
 
 def test_el_panel_dice_de_donde_sale_cada_dato(window_bridge):

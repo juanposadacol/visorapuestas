@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app import AppController, SessionState
-from ..bridge.source import ExtensionState
+from ..bridge.source import ExtensionState, LinkState
 from ..capture.screen_capture import CaptureError
 from ..domain.market import Side
 from .diagnostics_panel import DiagnosticsPanel
@@ -91,7 +91,6 @@ class MainWindow(QMainWindow):
         columna = QVBoxLayout(izquierda)
         columna.setContentsMargins(0, 0, 0, 0)
         columna.setSpacing(8)
-        columna.addWidget(self.connection_panel)
         self.metrics_scroll = QScrollArea()
         self.metrics_scroll.setWidgetResizable(True)
         self.metrics_scroll.setFrameShape(QFrame.NoFrame)
@@ -109,7 +108,13 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(splitter, "Panel")
         self.diagnostics = DiagnosticsPanel(self.controller.log)
-        self.tabs.addTab(self.diagnostics, "Diagnostico")
+        diagnostics_tab = QWidget()
+        diagnostics_layout = QVBoxLayout(diagnostics_tab)
+        diagnostics_layout.setContentsMargins(0, 0, 0, 0)
+        diagnostics_layout.setSpacing(8)
+        diagnostics_layout.addWidget(self.connection_panel)
+        diagnostics_layout.addWidget(self.diagnostics, 1)
+        self.tabs.addTab(diagnostics_tab, "Diagnostico")
         layout.addWidget(self.tabs, 1)
 
         self.setCentralWidget(central)
@@ -117,6 +122,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
         self.status_label = QLabel("Listo")
         self.status.addWidget(self.status_label, 1)
+        self.betplay_status_label = QLabel("BETPLAY DESCONECTADO")
+        self.betplay_status_label.setObjectName("status")
+        self.status.addPermanentWidget(self.betplay_status_label)
 
     def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -349,6 +357,7 @@ class MainWindow(QMainWindow):
         reader = self.controller.reader
         snapshot = reader.last_snapshot if reader else None
         view = self.controller.build_view_model(snapshot)
+        self._update_betplay_status(view.link_state)
         if view.snapshot is None or view.general is None:
             self.baseline_button.setVisible(False)
             # Todavia sin sesion: el panel de conexion es justo lo que hay que
@@ -385,6 +394,18 @@ class MainWindow(QMainWindow):
         )
         self._update_status(view)
         self._check_event_change()
+
+    def _update_betplay_status(self, link_state: LinkState) -> None:
+        """Indicador operativo minimo; el detalle permanece en Diagnostico."""
+        if link_state is LinkState.LIVE:
+            text, color = "BETPLAY ✓", "#3ddc84"
+        elif link_state is LinkState.STALE:
+            text, color = "BETPLAY DESACTUALIZADO", "#ffbf3f"
+        else:
+            text, color = "BETPLAY DESCONECTADO", "#8b97a8"
+        self.betplay_status_label.setText(text)
+        self.betplay_status_label.setStyleSheet(
+            f"color: {color}; font-weight: 700; padding: 0 8px;")
 
     def _update_waiting_status(self, view) -> None:
         """Que se ve mientras no hay sesion. Nunca un error como primera opcion."""
