@@ -229,7 +229,8 @@ test('un reloj en otra semantica NO se anuncia como reloj ausente', () => {
   const d = report.describeGamePart(
     { period: 4, clockRaw: '33:52', clockSemantics: 'GAME_ELAPSED' },
     { clock: { semantics: 'GAME_ELAPSED' } }, 'reloj');
-  assert.match(d.texto, /33:52 jugado del partido/);
+  assert.match(d.texto, /RAW 33:52/);
+  assert.match(d.texto, /GAME_ELAPSED/);
   assert.match(d.texto, /lo convierte la app/);
   assert.equal(d.clase, 'si');
 });
@@ -239,6 +240,16 @@ test('un reloj que de verdad no esta sigue diciendose "no disponible"', () => {
                                     { clock: { reason: 'sin candidatos' } }, 'reloj');
   assert.match(d.texto, /no disponible/);
   assert.match(d.texto, /sin candidatos/);
+});
+
+test('el diagnostico muestra raw, semantica y confirmacion del reloj', () => {
+  const d = report.describeGamePart(
+    { period: 1, clockRaw: '06:51', clockSemantics: 'GAME_ELAPSED' },
+    { clock: { raw: '06:51', semantics: 'GAME_ELAPSED', status: 'CLOCK_STOPPED' } },
+    'reloj');
+  assert.match(d.texto, /RAW 06:51/);
+  assert.match(d.texto, /GAME_ELAPSED/);
+  assert.match(d.texto, /CLOCK_STOPPED/);
 });
 
 test('los parciales validos se diagnostican separados del mercado', () => {

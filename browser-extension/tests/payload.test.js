@@ -62,6 +62,16 @@ test('gameState acepta solo fases temporales conocidas', () => {
   assert.equal(validatePayload(halftime).valid, false);
 });
 
+test('gameState transporta UNKNOWN como reloj observado en revision', () => {
+  const underReview = payloadValido({ gameState: {
+    scoreA: 8, scoreB: 10, period: 1,
+    clockRaw: '06:51', clockSemantics: 'UNKNOWN',
+  } });
+  assert.equal(validatePayload(underReview).valid, true);
+  underReview.gameState.clockSemantics = 'ASCENDENTE_POR_FE';
+  assert.equal(validatePayload(underReview).valid, false);
+});
+
 test('rechaza solo cuando no queda ningun eje util que enviar', () => {
   const casos = [
     [{ confidence: 0.5 }, 'confianza'],

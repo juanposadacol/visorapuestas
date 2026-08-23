@@ -54,11 +54,8 @@ test('F. un marcador dentro de un scoreboard semantico se acepta a la primera', 
   const raiz = conCuerpo((doc, body) => body.appendChild(scoreboard(doc)));
   const r = gs.extractGameState(raiz, A, null);
   assert.deepEqual(r.gameState, {
-    clock: '06:42',
-    // El valor crudo y su semantica viajan siempre: es lo que permite a Python
-    // convertir cuando la casa no muestra el restante del cuarto.
     clockRaw: '06:42',
-    clockSemantics: 'PERIOD_REMAINING',
+    clockSemantics: 'UNKNOWN',
     period: 3, scoreA: 56, scoreB: 69,
   });
   assert.equal(r.structured, false, 'esta maquetacion no marca celdas de total');
@@ -337,7 +334,7 @@ test('un estado parcial se envia solo con lo que se sabe', () => {
     ]));
   });
   assert.deepEqual(gs.extractGameState(raiz, A, null).gameState,
-                   { clock: '06:24', clockRaw: '06:24', clockSemantics: 'PERIOD_REMAINING' });
+                   { clockRaw: '06:24', clockSemantics: 'UNKNOWN' });
 });
 
 test('marcador sin reloj tambien es un estado valido', () => {
@@ -488,7 +485,8 @@ test('R. 33:52 no puede ser el restante de un cuarto: primero UNKNOWN', () => {
   const doc = documentoConScoreboard();
   const r = gs.extractGameState(doc.body, A, null);
   assert.equal(r.gameState.clock, undefined, 'no se publica un reloj sin semantica');
-  assert.equal(r.gameState.clockRaw, undefined);
+  assert.equal(r.gameState.clockRaw, '33:52');
+  assert.equal(r.gameState.clockSemantics, 'UNKNOWN');
   assert.equal(r.diagnostics.clock.semantics, 'UNKNOWN');
   assert.match(r.diagnostics.clock.reason, /semantica del reloj sin determinar/);
 });
@@ -506,11 +504,12 @@ test('R. cuando se ve SUBIR, queda claro que es tiempo acumulado del partido', (
                'convertir sin conocer las reglas seria inventar');
 });
 
-test('R. un reloj que cabe en un cuarto se sigue leyendo como restante', () => {
+test('R. un reloj que cabe en un cuarto queda ambiguo en la primera lectura', () => {
   const doc = documentoConScoreboard({ periodo: 'Q4', reloj: '06:08' });
   const r = gs.extractGameState(doc.body, A, null);
-  assert.equal(r.gameState.clock, '06:08');
-  assert.equal(r.gameState.clockSemantics, 'PERIOD_REMAINING');
+  assert.equal(r.gameState.clock, undefined);
+  assert.equal(r.gameState.clockRaw, '06:08');
+  assert.equal(r.gameState.clockSemantics, 'UNKNOWN');
 });
 
 test('R. un contador largo que BAJA no se publica: no es tiempo jugado', () => {
@@ -519,12 +518,13 @@ test('R. un contador largo que BAJA no se publica: no es tiempo jugado', () => {
   const segundo = gs.extractGameState(documentoConScoreboard({ reloj: '33:51' }).body,
                                       A, memoria);
   assert.equal(segundo.diagnostics.clock.semantics, 'UNKNOWN');
-  assert.equal(segundo.gameState.clockRaw, undefined);
+  assert.equal(segundo.gameState.clockRaw, '33:51');
+  assert.equal(segundo.gameState.clockSemantics, 'UNKNOWN');
 });
 
 test('R. la semantica se decide por evidencia, no por el primer valor visto', () => {
   const S = gs.CLOCK_SEMANTICS;
-  assert.equal(gs.decideClockSemantics(6 * 60 + 8, null), S.PERIOD_REMAINING);
+  assert.equal(gs.decideClockSemantics(6 * 60 + 8, null), S.UNKNOWN);
   assert.equal(gs.decideClockSemantics(33 * 60 + 52, null), S.UNKNOWN);
 
   const previa = { rawSeconds: 33 * 60 + 52, semantics: S.UNKNOWN };
@@ -544,6 +544,75 @@ test('R. GAME_ELAPSED confirmado permanece confirmado durante una pausa larga', 
     assert.equal(semantics, S.GAME_ELAPSED);
     previa = { rawSeconds: 20 * 60, semantics };
   }
+});
+
+test('R. Kambi Q1 06:49 -> 06:50 -> 06:51 confirma GAME_ELAPSED', () => {
+  let memoria = null;
+  for (const reloj of ['06:49', '06:50', '06:51']) {
+    const lectura = gs.extractGameState(documentoConScoreboard({
+      periodo: 'Q1', reloj,
+      equipoA: 'CA Yale (F)', parcialesA: [8, null, null, null], totalA: 8,
+      equipoB: 'Lagomar (F)', parcialesB: [10, null, null, null], totalB: 10,
+    }).body, A, memoria);
+    memoria = lectura.memory;
+  }
+  assert.equal(memoria.clock.rawSeconds, 411);
+  assert.equal(memoria.clock.semantics, 'GAME_ELAPSED');
+
+  for (const reloj of ['06:51', '06:51', '06:52']) {
+    const lectura = gs.extractGameState(documentoConScoreboard({
+      periodo: 'Q1', reloj,
+      equipoA: 'CA Yale (F)', parcialesA: [8, null, null, null], totalA: 8,
+      equipoB: 'Lagomar (F)', parcialesB: [10, null, null, null], totalB: 10,
+    }).body, A, memoria);
+    memoria = lectura.memory;
+    assert.equal(lectura.gameState.clockSemantics, 'GAME_ELAPSED');
+    if (reloj === '06:51' && memoria.clock.stationaryCount >= 2) {
+      assert.equal(lectura.diagnostics.clock.status, 'CLOCK_STOPPED');
+    }
+  }
+});
+
+test('R. Q1 06:53 -> 06:52 -> 06:51 confirma PERIOD_REMAINING', () => {
+  let memoria = null;
+  for (const reloj of ['06:53', '06:52', '06:51']) {
+    const lectura = gs.extractGameState(
+      documentoConScoreboard({ periodo: 'Q1', reloj }).body, A, memoria);
+    memoria = lectura.memory;
+  }
+  assert.equal(memoria.clock.semantics, 'PERIOD_REMAINING');
+  assert.equal(memoria.clock.value, '06:51');
+});
+
+test('R. PERIOD_REMAINING conserva semantica al reiniciar el cuarto', () => {
+  let memoria = null;
+  for (const [periodo, reloj] of [
+    ['Q1', '00:02'], ['Q1', '00:01'], ['Q1', '00:00'],
+    // La etiqueta puede cambiar antes que el contador se reinicie.
+    ['Q2', '00:00'], ['Q2', '10:00'], ['Q2', '09:59'],
+  ]) {
+    const lectura = gs.extractGameState(
+      documentoConScoreboard({ periodo, reloj }).body, A, memoria);
+    memoria = lectura.memory;
+  }
+  assert.equal(memoria.clock.semantics, 'PERIOD_REMAINING');
+  assert.equal(memoria.clock.value, '09:59');
+  assert.equal(memoria.clock.period, 2);
+});
+
+test('R. GAME_ELAPSED conserva semantica al cruzar de Q1 a Q2', () => {
+  let memoria = null;
+  for (const [periodo, reloj] of [
+    ['Q1', '09:58'], ['Q1', '09:59'], ['Q1', '10:00'],
+    ['Q2', '10:01'], ['Q2', '10:02'],
+  ]) {
+    const lectura = gs.extractGameState(
+      documentoConScoreboard({ periodo, reloj }).body, A, memoria);
+    memoria = lectura.memory;
+  }
+  assert.equal(memoria.clock.semantics, 'GAME_ELAPSED');
+  assert.equal(memoria.clock.rawSeconds, 602);
+  assert.equal(memoria.clock.period, 2);
 });
 
 test('el descanso estructural viaja como fase del gameState', () => {

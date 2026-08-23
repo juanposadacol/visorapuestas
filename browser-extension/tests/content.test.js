@@ -185,7 +185,7 @@ test('el marcador del scoreboard viaja dentro del payload', () => {
 
   const ultimo = c.payloads().pop();
   assert.deepEqual(ultimo.payload.gameState, {
-    clock: '06:42', clockRaw: '06:42', clockSemantics: 'PERIOD_REMAINING',
+    clockRaw: '06:42', clockSemantics: 'UNKNOWN',
     period: 4, scoreA: 56, scoreB: 69,
   });
 });
@@ -288,7 +288,7 @@ test('S. cambiar de mercado sin cambiar de partido conserva el contexto', () => 
   assert.deepEqual(estado.markets.map((m) => m.key).sort(),
                    ['GAME_TOTAL', 'Q4_TOTAL'], 'los dos mercados a la vez');
   assert.deepEqual(estado.gameState, {
-    clock: '06:42', clockRaw: '06:42', clockSemantics: 'PERIOD_REMAINING',
+    clockRaw: '06:42', clockSemantics: 'UNKNOWN',
     period: 4, scoreA: 56, scoreB: 69,
   }, 'y el marcador no se pierde');
 });
@@ -318,6 +318,24 @@ test('T. al cambiar de partido se olvida todo lo del anterior', () => {
   assert.ok(estado.history.some((h) => h.type === 'eventChanged'));
 });
 
+test('T. cambiar eventId reinicia tambien la semantica confirmada del reloj', () => {
+  const doc = createDocument();
+  const marcadorA = scoreboard(doc, 8, 10);
+  doc.body.appendChild(marcadorA);
+  const c = montarContenido(doc, 'https://betplay.com.co/apuestas#event/live/111111111');
+
+  marcadorA.children[2].children[1].childNodes[0].nodeValue = '06:43';
+  c.rescanear();
+  assert.equal(c.estado().gameState.clockSemantics, 'GAME_ELAPSED');
+
+  c.irA('https://betplay.com.co/apuestas#event/live/222222222');
+  doc.body.childNodes.length = 0;
+  doc.body.appendChild(scoreboard(doc, 12, 9));
+  c.rescanear();
+  assert.equal(c.estado().gameState.clockSemantics, 'UNKNOWN',
+               'la primera lectura del evento nuevo no hereda la anterior');
+});
+
 test('el latido se manda desde la pestana, sin permiso "alarms"', () => {
   const doc = createDocument();
   doc.body.appendChild(mercadoQ4(doc, '44.5', '1.75', '1.90'));
@@ -328,9 +346,13 @@ test('el latido se manda desde la pestana, sin permiso "alarms"', () => {
 
 test('sin mutaciones la revalidacion periodica vuelve a observar un reloj congelado', () => {
   const doc = createDocument();
-  doc.body.appendChild(scoreboard(doc, 91, 66));
+  const marcador = scoreboard(doc, 91, 66);
+  doc.body.appendChild(marcador);
   doc.body.appendChild(mercadoQ4(doc, '38.5', '1.76', '1.88'));
   const c = montarContenido(doc);
+  const reloj = marcador.children[2].children[1];
+  reloj.childNodes[0].nodeValue = '06:41';
+  c.rescanear();                         // confirma PERIOD_REMAINING
   const antes = c.estado().scanCount;
 
   c.ejecutarIntervalo(1000, 30);
@@ -342,7 +364,7 @@ test('sin mutaciones la revalidacion periodica vuelve a observar un reloj congel
   assert.deepEqual(
     { scoreA: ultimo.gameState.scoreA, scoreB: ultimo.gameState.scoreB,
       period: ultimo.gameState.period, clock: ultimo.gameState.clock },
-    { scoreA: 91, scoreB: 66, period: 4, clock: '06:42' });
+    { scoreA: 91, scoreB: 66, period: 4, clock: '06:41' });
   assert.ok(estado.scansPerMinute > 0);
 });
 
@@ -590,7 +612,8 @@ test('K. el reloj acumulado viaja crudo, nunca disfrazado de restante', () => {
   // Primera lectura: todavia no se sabe si sube o baja.
   let estado = c.payloads().pop().payload.gameState;
   assert.equal(estado.clock, undefined);
-  assert.equal(estado.clockRaw, undefined);
+  assert.equal(estado.clockRaw, '33:52');
+  assert.equal(estado.clockSemantics, 'UNKNOWN');
 
   // El reloj avanza un segundo y el escaneo lo vuelve a leer.
   const marcador = doc.body.children[0];

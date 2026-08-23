@@ -44,7 +44,7 @@ GAME_STATE_FIELDS = {"scoreA", "scoreB", "period", "clock", "clockRaw",
 TEAM_FIELDS = {"name", "total", "periods"}
 
 #: Que representa el reloj que manda la extension.
-CLOCK_SEMANTICS = {"PERIOD_REMAINING", "GAME_ELAPSED"}
+CLOCK_SEMANTICS = {"PERIOD_REMAINING", "GAME_ELAPSED", "UNKNOWN"}
 GAME_PHASES = {"CLOCK_STOPPED", "PERIOD_END", "HALFTIME", "GAME_OVER"}
 
 

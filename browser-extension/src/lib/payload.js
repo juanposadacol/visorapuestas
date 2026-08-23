@@ -28,6 +28,7 @@
   const MAX_LINES = 40;
   const MARKET_SOURCES = ['CANONICAL_SECTION', 'TITLE_ONLY', 'SELECTED_BETS_COPY'];
   const GAME_PHASES = ['CLOCK_STOPPED', 'PERIOD_END', 'HALFTIME', 'GAME_OVER'];
+  const CLOCK_SEMANTICS = ['PERIOD_REMAINING', 'GAME_ELAPSED', 'UNKNOWN'];
 
   const WIRE_MARKET = {
     GAME_TOTAL: { marketType: 'GAME_TOTAL', period: null, half: null },
@@ -284,6 +285,13 @@
     if (gameState != null && typeof gameState !== 'object') {
       errores.push('gameState invalido');
     } else if (gameState) {
+      if (gameState.clockSemantics !== undefined &&
+          !CLOCK_SEMANTICS.includes(gameState.clockSemantics)) {
+        errores.push(`gameState.clockSemantics invalida: ${gameState.clockSemantics}`);
+      }
+      if (gameState.clockRaw !== undefined && gameState.clockSemantics === undefined) {
+        errores.push('gameState.clockRaw sin clockSemantics');
+      }
       if (gameState.phase !== undefined && !GAME_PHASES.includes(gameState.phase)) {
         errores.push(`gameState.phase invalida: ${gameState.phase}`);
       }
@@ -342,6 +350,6 @@
   }
 
   return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, MARKET_SOURCES, GAME_PHASES,
-           WIRE_MARKET,
+           CLOCK_SEMANTICS, WIRE_MARKET,
            toWireMarket, eventIdFromUrl, buildPayload, validatePayload, payloadSignature };
 });

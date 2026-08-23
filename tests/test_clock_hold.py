@@ -21,11 +21,16 @@ from visorunder.ocr.engines.stub_engine import StubEngine
 from visorunder.pipeline.reader import LiveReader
 
 
-def _game_state(*, score_a=56, score_b=35, period=2, clock=None, phase=None,
+def _game_state(*, score_a=56, score_b=35, period=2, clock=None,
+                clock_raw=None, clock_semantics=None, phase=None,
                 periods_a=None, periods_b=None):
     state = {"scoreA": score_a, "scoreB": score_b, "period": period}
     if clock is not None:
         state["clock"] = clock
+    if clock_raw is not None:
+        state["clockRaw"] = clock_raw
+    if clock_semantics is not None:
+        state["clockSemantics"] = clock_semantics
     if phase is not None:
         state["phase"] = phase
     if periods_a is not None:
@@ -85,6 +90,35 @@ def test_timeout_mas_de_30_segundos_con_reloj_inmovil_no_fabrica_countdown():
     assert reader.state.clock_held is False  # reloj observado, no reconstruido
 
 
+def test_fixture_yale_lagomar_game_elapsed_q1_produce_tiempos_y_ritmos_correctos():
+    source, reader = _rig()
+    source.accept(_payload(state=_game_state(
+        score_a=8, score_b=10, period=1,
+        clock_raw="06:51", clock_semantics="GAME_ELAPSED",
+        periods_a={"Q1": 8, "Q2": None, "Q3": None, "Q4": None},
+        periods_b={"Q1": 10, "Q2": None, "Q3": None, "Q4": None},
+    ), line=121.5), now=0.0)
+    snapshot = reader.tick(now=0.1)
+    general = compute_general_metrics(snapshot.state)
+    bet = compute_bet_metrics(snapshot.state, MarketKey.game(), 121.5)
+
+    assert snapshot.state.clock_value == 189
+    assert general.elapsed_period_seconds == 411
+    assert general.remaining_period_seconds == 189
+    assert general.period_points == 18
+    assert general.period_pace == pytest.approx(18 / (411 / 60))
+    assert general.half_points == 18
+    assert general.half_pace == pytest.approx(18 / (411 / 60))
+    assert general.total_points == 18
+    assert general.game_pace == pytest.approx(18 / (411 / 60))
+    assert general.seconds_to_halftime == 789
+    assert general.remaining_game_seconds == 1989
+    assert bet.exceed_threshold == 122
+    assert bet.points_to_exceed == 104
+    assert bet.scope_remaining_seconds == 1989
+    assert bet.required_pace == pytest.approx(104 / (1989 / 60))
+
+
 def test_reloj_temporalmente_ausente_se_retiene_mas_de_30_segundos_sin_countdown():
     source, reader = _rig()
     source.accept(_payload(state=_game_state(clock="04:37")), now=0.0)
@@ -97,6 +131,19 @@ def test_reloj_temporalmente_ausente_se_retiene_mas_de_30_segundos_sin_countdown
         assert state.clock_held is True
         assert state.phase is GamePhase.CLOCK_STOPPED
     assert reader.state.clock_value == 277, "no existe countdown sintetico"
+
+
+def test_reloj_observado_con_semantica_unknown_invalida_retencion_previa():
+    source, reader = _rig()
+    source.accept(_payload(state=_game_state(clock="04:37")), now=0.0)
+    assert reader.tick(now=0.1).state.clock_value == 277
+
+    source.accept(_payload(state=_game_state(
+        clock_raw="04:38", clock_semantics="UNKNOWN")), now=1.0)
+    state = reader.tick(now=1.1).state
+    assert state.clock_value is None
+    assert state.clock_held is False
+    assert "clock_seconds" not in source.available_fields(now=1.1)
 
 
 def test_fixture_dallas_seattle_en_halftime_conserva_todas_las_metricas():
@@ -273,3 +320,17 @@ def test_phase_del_puente_se_valida_y_convierte():
     valid, errors = validate_browser_payload(wire)
     assert not valid
     assert any("phase" in error for error in errors)
+
+
+def test_semantica_unknown_del_puente_identifica_reloj_en_revision():
+    from visorunder.bridge.converter import payload_to_game_state
+    from visorunder.bridge.schema import validate_browser_payload
+
+    wire = _payload(state=_game_state(
+        score_a=8, score_b=10, period=1,
+        clock_raw="06:51", clock_semantics="UNKNOWN"))
+    valid, errors = validate_browser_payload(wire)
+    assert valid, errors
+    converted = payload_to_game_state(wire)
+    assert converted["clock_raw_seconds"] == 411
+    assert converted["clock_semantics"] == "UNKNOWN"

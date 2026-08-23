@@ -712,45 +712,59 @@
     UNKNOWN: 'UNKNOWN',
   };
 
-  //: Ningun cuarto dura mas de esto en ninguna competicion habitual, asi que
-  //: por encima el valor NO puede ser el restante de un cuarto.
+  //: Ningun cuarto dura mas de esto en ninguna competicion habitual. Superar
+  //: el limite descarta PERIOD_REMAINING; quedar por debajo NO confirma nada.
   const MAX_QUARTER_SECONDS = 12 * 60;
 
   /**
    * Que representa el reloj observado, decidido por EVIDENCIA y no por fe.
    *
-   * Un valor que cabe en un cuarto se lee como restante: es lo que hacen las
-   * casas de forma abrumadoramente mayoritaria y es el comportamiento que ya
-   * teniamos. Un valor que NO cabe solo puede ser un acumulado, pero eso hay
-   * que verlo: un acumulado SUBE. Hasta tener dos lecturas que lo demuestren,
-   * la respuesta es UNKNOWN y no se publica reloj.
+   * La magnitud solo puede DESCARTAR una semantica. La direccion la confirma:
+   * ascendente = GAME_ELAPSED, descendente = PERIOD_REMAINING. Una lectura
+   * aislada o estacionaria es ambigua salvo que el evento ya tuviera una
+   * semantica confirmada. `periodo` evita confundir el reinicio de un countdown
+   * al cambiar de cuarto con un reloj acumulado.
    */
-  function decideClockSemantics(segundos, previa) {
+  function decideClockSemantics(segundos, previa, periodo) {
     const cabeEnUnCuarto = segundos <= MAX_QUARTER_SECONDS;
     const anterior = previa && Number.isFinite(previa.rawSeconds) ? previa : null;
+    const periodoActual = Number.isInteger(periodo) ? periodo : null;
+    const periodoAnterior = anterior && Number.isInteger(anterior.period)
+      ? anterior.period : null;
+    const cambioDePeriodoDirecto = periodoActual !== null && periodoAnterior !== null &&
+      periodoActual !== periodoAnterior;
+    const cambioDePeriodo = cambioDePeriodoDirecto ||
+      !!(anterior && anterior.periodTransitionPending);
+    const confirmada = anterior &&
+      [CLOCK_SEMANTICS.GAME_ELAPSED, CLOCK_SEMANTICS.PERIOD_REMAINING]
+        .includes(anterior.semantics);
 
     if (!anterior) {
-      return cabeEnUnCuarto ? CLOCK_SEMANTICS.PERIOD_REMAINING : CLOCK_SEMANTICS.UNKNOWN;
+      return CLOCK_SEMANTICS.UNKNOWN;
     }
     if (segundos === anterior.rawSeconds) {
       // Reloj parado: no aporta informacion nueva, se mantiene lo que habia.
-      return anterior.semantics ||
-        (cabeEnUnCuarto ? CLOCK_SEMANTICS.PERIOD_REMAINING : CLOCK_SEMANTICS.UNKNOWN);
+      return confirmada ? anterior.semantics : CLOCK_SEMANTICS.UNKNOWN;
     }
 
     const sube = segundos > anterior.rawSeconds;
+    if (cambioDePeriodo) {
+      if (!confirmada) return CLOCK_SEMANTICS.UNKNOWN;
+      if (anterior.semantics === CLOCK_SEMANTICS.GAME_ELAPSED) {
+        // El acumulado no se reinicia entre cuartos.
+        return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.UNKNOWN;
+      }
+      // Un countdown si se reinicia al total del cuarto nuevo. La extension
+      // no conoce su duracion exacta, pero sabe que no puede exceder 12:00.
+      return cabeEnUnCuarto ? CLOCK_SEMANTICS.PERIOD_REMAINING : CLOCK_SEMANTICS.UNKNOWN;
+    }
+
     if (!cabeEnUnCuarto) {
       // Mas de un cuarto: solo puede ser un acumulado, y un acumulado sube.
       // Si baja, es un contador de otra cosa y no se toca.
       return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.UNKNOWN;
     }
-    if (anterior.semantics === CLOCK_SEMANTICS.GAME_ELAPSED) {
-      // Venia siendo acumulado y de golpe cabe en un cuarto: cambio de partido
-      // o de maquetacion. No se arrastra la lectura anterior.
-      return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.UNKNOWN;
-    }
-    // Baja con normalidad, o sube al empezar un cuarto nuevo.
-    return CLOCK_SEMANTICS.PERIOD_REMAINING;
+    return sube ? CLOCK_SEMANTICS.GAME_ELAPSED : CLOCK_SEMANTICS.PERIOD_REMAINING;
   }
 
   function formatClock(segundos) {
@@ -766,14 +780,32 @@
    * cualquier otro caso viaja el valor crudo con su semantica y decide Python,
    * que es quien conoce las reglas de la competicion.
    */
-  function resolveClock(observacion, previa) {
+  function resolveClock(observacion, previa, periodo) {
     if (!observacion) return null;
-    const semantica = decideClockSemantics(observacion.seconds, previa);
+    const semantica = decideClockSemantics(observacion.seconds, previa, periodo);
+    const stationary = !!(previa && observacion.seconds === previa.rawSeconds);
+    const semanticaPreviaConfirmada = previa &&
+      [CLOCK_SEMANTICS.GAME_ELAPSED, CLOCK_SEMANTICS.PERIOD_REMAINING]
+        .includes(previa.semantics);
+    const periodChanged = !!(previa && Number.isInteger(previa.period) &&
+      Number.isInteger(periodo) && previa.period !== periodo);
+    let periodTransitionPending = !!(previa && previa.periodTransitionPending);
+    if (periodChanged && semanticaPreviaConfirmada) periodTransitionPending = true;
+    if (periodTransitionPending && previa) {
+      const resetCountdown = previa.semantics === CLOCK_SEMANTICS.PERIOD_REMAINING &&
+        observacion.seconds > previa.rawSeconds;
+      const continuedElapsed = previa.semantics === CLOCK_SEMANTICS.GAME_ELAPSED &&
+        observacion.seconds !== previa.rawSeconds;
+      if (resetCountdown || continuedElapsed) periodTransitionPending = false;
+    }
     const salida = {
       raw: observacion.raw,
       rawSeconds: observacion.seconds,
       semantics: semantica,
       source: observacion.source || 'heuristic',
+      stationary,
+      stationaryCount: stationary ? Number(previa.stationaryCount || 0) + 1 : 0,
+      periodTransitionPending,
       value: null,
     };
     if (semantica === CLOCK_SEMANTICS.PERIOD_REMAINING) {
@@ -866,7 +898,20 @@
     // para las casas que no dan esa evidencia.
     const estructural = elegirEstructural(candidatos.structured);
 
-    // -------------------------------------------------------------- 2. reloj
+    // ------------------------------------------------------------- 2. cuarto
+    // Se resuelve antes del reloj: el contexto de periodo distingue un
+    // countdown que se reinicia de un GAME_ELAPSED que sigue acumulando.
+    const cuartoHeuristico = pickBest(candidatos.period,
+                                      anterior.period ? anterior.period.value : null,
+                                      periodValidator, UMBRAL_CONTEXTO);
+    const cuarto = estructural && estructural.period !== null &&
+                   estructural.period !== undefined
+      ? { value: estructural.period, confidence: 1, reason: '',
+          raw: `Q${estructural.period}`,
+          reasons: ['cuarto leido del bloque de estado del marcador'] }
+      : cuartoHeuristico;
+
+    // -------------------------------------------------------------- 3. reloj
     let observacionReloj = null;
     if (estructural && estructural.clock) {
       observacionReloj = { ...estructural.clock, source: 'structural' };
@@ -878,18 +923,7 @@
                            seconds: secondsOf(relojHeuristico.value),
                            source: 'heuristic' };
     }
-    const reloj = resolveClock(observacionReloj, anterior.clock);
-
-    // ------------------------------------------------------------- 3. cuarto
-    const cuartoHeuristico = pickBest(candidatos.period,
-                                      anterior.period ? anterior.period.value : null,
-                                      periodValidator, UMBRAL_CONTEXTO);
-    const cuarto = estructural && estructural.period !== null &&
-                   estructural.period !== undefined
-      ? { value: estructural.period, confidence: 1, reason: '',
-          raw: `Q${estructural.period}`,
-          reasons: ['cuarto leido del bloque de estado del marcador'] }
-      : cuartoHeuristico;
+    const reloj = resolveClock(observacionReloj, anterior.clock, cuarto.value);
 
     // ----------------------------------------------------------- 4. marcador
     let lecturaMarcador;
@@ -915,9 +949,9 @@
 
     const estado = {};
     if (reloj && reloj.value) estado.clock = reloj.value;
-    if (reloj && reloj.raw && reloj.semantics !== CLOCK_SEMANTICS.UNKNOWN) {
-      // El valor crudo viaja SIEMPRE que se sepa que representa: es lo que
-      // permite a Python convertirlo con las reglas de la competicion.
+    if (reloj && reloj.raw) {
+      // UNKNOWN tambien viaja: distingue un reloj realmente ausente de uno
+      // observado pero en revision, y evita retener una semantica contradicha.
       estado.clockRaw = reloj.raw;
       estado.clockSemantics = reloj.semantics;
     }
@@ -954,7 +988,13 @@
       diagnostics: {
         clock: reloj
           ? { value: reloj.value, raw: reloj.raw, semantics: reloj.semantics,
-              source: reloj.source, confidence: reloj.value ? 1 : 0,
+              source: reloj.source,
+              status: reloj.semantics === CLOCK_SEMANTICS.UNKNOWN
+                ? 'UNDER_REVIEW'
+                : ((estructural && estructural.phase === 'CLOCK_STOPPED') ||
+                   reloj.stationaryCount >= 2 ? 'CLOCK_STOPPED' : 'CONFIRMED'),
+              stationary: reloj.stationary,
+              confidence: reloj.semantics === CLOCK_SEMANTICS.UNKNOWN ? 0 : 1,
               reason: reloj.semantics === CLOCK_SEMANTICS.UNKNOWN
                 ? 'semantica del reloj sin determinar' : '' }
           : sinNodo(relojHeuristico),
@@ -975,7 +1015,9 @@
         // (acumulado) o baja (restante).
         clock: reloj
           ? { seconds: reloj.value ? secondsOf(reloj.value) : null, value: reloj.value,
-              raw: reloj.raw, rawSeconds: reloj.rawSeconds, semantics: reloj.semantics }
+              raw: reloj.raw, rawSeconds: reloj.rawSeconds, semantics: reloj.semantics,
+              period: cuarto.value || null, stationaryCount: reloj.stationaryCount,
+              periodTransitionPending: reloj.periodTransitionPending }
           : anterior.clock,
         period: cuarto.value ? { value: cuarto.value } : anterior.period,
         score: {

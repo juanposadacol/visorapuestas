@@ -357,14 +357,28 @@
       // solo que como tiempo jugado, y quien lo convierte es la aplicacion.
       // Decir "no disponible" aqui mandaria el diagnostico por el camino
       // contrario, que es justo el error que ya nos costo una prueba real.
-      if (campo === 'reloj' && estado.clockRaw &&
-          estado.clockSemantics === 'GAME_ELAPSED') {
-        return { texto: `${estado.clockRaw} jugado del partido  (lo convierte la app)`,
-                 clase: 'si' };
+      if (campo === 'reloj' && estado.clockRaw) {
+        const semantica = estado.clockSemantics || diag.semantics || 'UNKNOWN';
+        const estadoSemantica = diag.status ||
+          (semantica === 'UNKNOWN' ? 'UNDER_REVIEW' : 'CONFIRMED');
+        const pausa = estado.phase === 'CLOCK_STOPPED' ? ' · CLOCK_STOPPED' : '';
+        const conversion = semantica === 'GAME_ELAPSED'
+          ? ' · lo convierte la app' : '';
+        return { texto: `RAW ${estado.clockRaw} · ${semantica} · ` +
+                        `${estadoSemantica}${pausa}${conversion}`,
+                 clase: semantica === 'UNKNOWN' ? 'oculto' : 'si' };
       }
       return { texto: `no disponible  (${diag.reason || 'sin datos'})`, clase: 'oculto' };
     }
-    return { texto: `${campo === 'cuarto' ? `Q${valor}` : valor} ✓`, clase: 'si' };
+    if (campo === 'reloj') {
+      const semantica = estado.clockSemantics || diag.semantics || 'PERIOD_REMAINING';
+      const estadoSemantica = diag.status || 'CONFIRMED';
+      const pausa = estado.phase === 'CLOCK_STOPPED' ? ' · CLOCK_STOPPED' : '';
+      return { texto: `RAW ${estado.clockRaw || valor} · ${semantica} · ` +
+                      `${estadoSemantica}${pausa} · restante ${valor}`,
+               clase: 'si' };
+    }
+    return { texto: `Q${valor} ✓`, clase: 'si' };
   }
 
   /** Resumen de mercados: cuantos, y cuantos con lineas. */
