@@ -40,11 +40,12 @@ MARKET_SOURCES = {"CANONICAL_SECTION", "TITLE_ONLY", "SELECTED_BETS_COPY"}
 #: BetPlay/Kambi muestra el tiempo JUGADO del partido ("Q4 - 33:52"), y
 #: convertirlo exige conocer la duracion del cuarto, que la extension no sabe.
 GAME_STATE_FIELDS = {"scoreA", "scoreB", "period", "clock", "clockRaw",
-                     "clockSemantics", "teamA", "teamB", "confidence"}
+                     "clockSemantics", "phase", "teamA", "teamB", "confidence"}
 TEAM_FIELDS = {"name", "total", "periods"}
 
 #: Que representa el reloj que manda la extension.
 CLOCK_SEMANTICS = {"PERIOD_REMAINING", "GAME_ELAPSED"}
+GAME_PHASES = {"CLOCK_STOPPED", "PERIOD_END", "HALFTIME", "GAME_OVER"}
 
 
 class BridgeValidationError(ValueError):
@@ -209,6 +210,9 @@ def validate_browser_payload(data: Any) -> Tuple[bool, List[str]]:
                 errors.append(f"gameState.clockSemantics invalida: {semantica!r}")
             if estado.get("clockRaw") is not None and semantica is None:
                 errors.append("gameState.clockRaw sin clockSemantics: no se puede interpretar")
+            fase = estado.get("phase")
+            if fase is not None and fase not in GAME_PHASES:
+                errors.append(f"gameState.phase invalida: {fase!r}")
             for campo in ("teamA", "teamB"):
                 equipo = estado.get(campo)
                 # Compatibilidad con extensiones anteriores, que solo enviaban

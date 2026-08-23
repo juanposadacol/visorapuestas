@@ -57,7 +57,7 @@ function scoreboardKambi(doc, opciones) {
     ...(opciones || {}),
   };
   const cabecera = [];
-  if (o.periodo || o.reloj) {
+  if (o.periodo || o.reloj || o.fase) {
     cabecera.push(el(doc, 'header', { class: 'KambiBC-scoreboard-header' }, [
       el(doc, 'div', { class: 'KambiBC-scoreboard-match-info' }, [
         el(doc, 'div', { class: 'KambiBC-event-match-clock__wrapper' }, [
@@ -65,6 +65,7 @@ function scoreboardKambi(doc, opciones) {
             ...(o.periodo ? [el(doc, 'span', {}, [o.periodo])] : []),
             el(doc, 'span', { class: 'KambiBC-match-clock__divider' }, ['•']),
             ...(o.reloj ? [el(doc, 'span', {}, [o.reloj])] : []),
+            ...(o.fase ? [el(doc, 'span', { class: 'match-state' }, [o.fase])] : []),
           ]),
         ]),
       ]),

@@ -174,6 +174,17 @@ test('la prorroga anade columnas y no rompe la lectura', () => {
                    { Q1: 18, Q2: 24, Q3: 24, Q4: 10, OT1: 9 });
 });
 
+test('el descanso se lee solo dentro del bloque de estado del marcador', () => {
+  const r = sb.readScoreboard(conScoreboard({
+    periodo: 'Q2', reloj: null, fase: 'Descanso',
+    parcialesA: [34, 22, null, null], totalA: 56,
+    parcialesB: [17, 18, null, null], totalB: 35,
+  }), A);
+  assert.equal(r.phase, 'HALFTIME');
+  assert.equal(r.period, 2);
+  assert.equal(r.clock, null);
+});
+
 test('una columna adicional de Kambi no se inventa como overtime', () => {
   const raiz = conScoreboard({
     periodo: 'Q3',

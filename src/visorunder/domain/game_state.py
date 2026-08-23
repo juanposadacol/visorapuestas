@@ -276,6 +276,7 @@ class GameState:
     score_b: Observed[int] = field(default_factory=Observed.unknown)
     period: Observed[int] = field(default_factory=Observed.unknown)
     clock_seconds: Observed[int] = field(default_factory=Observed.unknown)
+    clock_held: bool = False
     phase: GamePhase = GamePhase.UNKNOWN
     tracker: PeriodPointsTracker = field(default_factory=PeriodPointsTracker)
     updated_at: float = field(default_factory=time.time)

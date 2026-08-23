@@ -922,6 +922,7 @@
       estado.clockSemantics = reloj.semantics;
     }
     if (cuarto.value) estado.period = cuarto.value;
+    if (estructural && estructural.phase) estado.phase = estructural.phase;
     if (marcador.confirmed && marcador.value) {
       estado.scoreA = marcador.value.scoreA;
       estado.scoreB = marcador.value.scoreB;

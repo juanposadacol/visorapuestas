@@ -54,6 +54,12 @@
   //: Periodos posibles contando prorrogas: no se cierra en 4 para que el
   //: overtime no rompa la lectura.
   const MAX_PERIOD = 9;
+  const GAME_PHASES = {
+    CLOCK_STOPPED: 'CLOCK_STOPPED',
+    PERIOD_END: 'PERIOD_END',
+    HALFTIME: 'HALFTIME',
+    GAME_OVER: 'GAME_OVER',
+  };
 
   //: Tope de nodos que se inspeccionan dentro de un contenedor de marcador.
   //: La busqueda de filas mira las hojas de cada nodo, asi que si un selector
@@ -262,6 +268,24 @@
     return periodo >= 1 && periodo <= MAX_PERIOD ? periodo : null;
   }
 
+  function phaseFromText(valor) {
+    const normalizado = text.normalize(valor || '').trim();
+    if (!normalizado || normalizado.length > 80) return null;
+    if (/^(?:descanso|medio tiempo|half ?time|intermedio|entretiempo)$/.test(normalizado)) {
+      return GAME_PHASES.HALFTIME;
+    }
+    if (/^(?:tiempo muerto|time ?out|pausa|juego pausado)$/.test(normalizado)) {
+      return GAME_PHASES.CLOCK_STOPPED;
+    }
+    if (/^(?:fin(?:al)? (?:del )?(?:cuarto|periodo)|end of quarter|quarter end)$/.test(normalizado)) {
+      return GAME_PHASES.PERIOD_END;
+    }
+    if (/^(?:partido terminado|fin del partido|game over|full time)$/.test(normalizado)) {
+      return GAME_PHASES.GAME_OVER;
+    }
+    return null;
+  }
+
   /**
    * Periodo y reloj del bloque de estado, NO de cualquier sitio del marcador.
    *
@@ -274,11 +298,12 @@
     walk(container, adapter, (node, chain) => {
       if (CLOCK_BLOCK.test(attrTextOf(node, adapter))) bloques.push({ node, chain });
     });
-    if (!bloques.length) return { period: null, clock: null, reasons: [] };
+    if (!bloques.length) return { period: null, clock: null, phase: null, reasons: [] };
 
     const vistos = new Set();
     const periodos = new Set();
     const relojes = new Set();
+    const fases = new Set();
     for (const bloque of bloques) {
       for (const hoja of leavesOf(bloque.node, adapter)) {
         if (vistos.has(hoja.node)) continue;
@@ -287,6 +312,8 @@
         if (periodo !== null) periodos.add(periodo);
         const match = hoja.text.match(CLOCK_RE);
         if (match) relojes.add(hoja.text.trim());
+        const fase = phaseFromText(hoja.text);
+        if (fase !== null) fases.add(fase);
       }
     }
 
@@ -310,7 +337,15 @@
       razones.push(`reloj ambiguo en el bloque de reloj: ${[...relojes].join(', ')}`);
     }
 
-    return { period: periodo, clock: reloj, reasons: razones };
+    let fase = null;
+    if (fases.size === 1) {
+      fase = [...fases][0];
+      razones.push('fase leida del bloque de reloj del marcador');
+    } else if (fases.size > 1) {
+      razones.push(`fase ambigua en el bloque de reloj: ${[...fases].join(', ')}`);
+    }
+
+    return { period: periodo, clock: reloj, phase: fase, reasons: razones };
   }
 
   // -------------------------------------------------------- lectura completa
@@ -386,14 +421,15 @@
                periods: periodsB },
       period: estado.period,
       clock: estado.clock,
+      phase: estado.phase,
       reasons: [...razones, ...estado.reasons],
       warnings: avisos,
     };
   }
 
-  return { CLOCK_RE, MAX_SCORE, MAX_PERIOD, MAX_SCOREBOARD_NODES,
+  return { CLOCK_RE, MAX_SCORE, MAX_PERIOD, MAX_SCOREBOARD_NODES, GAME_PHASES,
            SCOREBOARD_CONTAINER, TOTAL_CELL,
            PARTIAL_CELL, CLOCK_BLOCK, looksLikeTeamName, isTotalCell, isPartialCell,
            findTeamRows, scoreCellsOf, periodLabel, periodsFromPartials,
-           periodFromText, readClockBlock, readScoreboard, leavesOf };
+           periodFromText, phaseFromText, readClockBlock, readScoreboard, leavesOf };
 });

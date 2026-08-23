@@ -53,6 +53,15 @@ test('gameState viaja sin depender de mercado ni lineas', () => {
   assert.equal(validatePayload(payload).valid, true);
 });
 
+test('gameState acepta solo fases temporales conocidas', () => {
+  const halftime = payloadValido({ gameState: {
+    scoreA: 56, scoreB: 35, period: 2, phase: 'HALFTIME',
+  } });
+  assert.equal(validatePayload(halftime).valid, true);
+  halftime.gameState.phase = 'PAUSA_INVENTADA';
+  assert.equal(validatePayload(halftime).valid, false);
+});
+
 test('rechaza solo cuando no queda ningun eje util que enviar', () => {
   const casos = [
     [{ confidence: 0.5 }, 'confianza'],

@@ -535,3 +535,23 @@ test('R. la semantica se decide por evidencia, no por el primer valor visto', ()
   const acumulado = { rawSeconds: 2032, semantics: S.GAME_ELAPSED };
   assert.equal(gs.decideClockSemantics(2032, acumulado), S.GAME_ELAPSED);
 });
+
+test('R. GAME_ELAPSED confirmado permanece confirmado durante una pausa larga', () => {
+  const S = gs.CLOCK_SEMANTICS;
+  let previa = { rawSeconds: 19 * 60 + 58, semantics: S.GAME_ELAPSED };
+  for (let i = 0; i < 40; i += 1) {
+    const semantics = gs.decideClockSemantics(20 * 60, previa);
+    assert.equal(semantics, S.GAME_ELAPSED);
+    previa = { rawSeconds: 20 * 60, semantics };
+  }
+});
+
+test('el descanso estructural viaja como fase del gameState', () => {
+  const r = gs.extractGameState(documentoConScoreboard({
+    periodo: 'Q2', reloj: null, fase: 'Descanso',
+    equipoA: 'Dallas Wings (F)', parcialesA: [34, 22, null, null], totalA: 56,
+    equipoB: 'Seattle Storm (F)', parcialesB: [17, 18, null, null], totalB: 35,
+  }).body, A, null);
+  assert.equal(r.gameState.phase, 'HALFTIME');
+  assert.equal(r.gameState.period, 2);
+});

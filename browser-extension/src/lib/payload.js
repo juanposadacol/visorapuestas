@@ -27,6 +27,7 @@
   const MIN_MARKET_CONFIDENCE = 0.9;
   const MAX_LINES = 40;
   const MARKET_SOURCES = ['CANONICAL_SECTION', 'TITLE_ONLY', 'SELECTED_BETS_COPY'];
+  const GAME_PHASES = ['CLOCK_STOPPED', 'PERIOD_END', 'HALFTIME', 'GAME_OVER'];
 
   const WIRE_MARKET = {
     GAME_TOTAL: { marketType: 'GAME_TOTAL', period: null, half: null },
@@ -283,6 +284,9 @@
     if (gameState != null && typeof gameState !== 'object') {
       errores.push('gameState invalido');
     } else if (gameState) {
+      if (gameState.phase !== undefined && !GAME_PHASES.includes(gameState.phase)) {
+        errores.push(`gameState.phase invalida: ${gameState.phase}`);
+      }
       for (const key of ['teamA', 'teamB']) {
         const team = gameState[key];
         // Se acepta texto por compatibilidad con versiones anteriores de la
@@ -337,6 +341,7 @@
     return `${payload.event.id || '-'}#${marketKey}#${lineas}#${todos}#${state}`;
   }
 
-  return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, MARKET_SOURCES, WIRE_MARKET,
+  return { PROTOCOL_VERSION, MIN_MARKET_CONFIDENCE, MAX_LINES, MARKET_SOURCES, GAME_PHASES,
+           WIRE_MARKET,
            toWireMarket, eventIdFromUrl, buildPayload, validatePayload, payloadSignature };
 });

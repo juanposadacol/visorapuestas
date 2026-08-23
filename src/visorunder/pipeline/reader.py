@@ -171,6 +171,11 @@ class LiveReader:
         #: dominio antes de aplicar un update parcial del evento nuevo.
         self._browser_event_id: Optional[str] = (
             browser_source.event_id if browser_source is not None else None)
+        #: Ultimo reloj DOM confirmado. Solo se reutiliza si el mismo evento
+        #: sigue enviando un gameState fresco y coherente sin reloj.
+        self._held_browser_clock: Optional[int] = None
+        self._held_browser_period: Optional[int] = None
+        self._held_browser_event_id: Optional[str] = None
 
     # ------------------------------------------------------------- utilidades
     def tracker_for(self, key: MarketKey) -> MarketTracker:
@@ -387,6 +392,7 @@ class LiveReader:
                            self.team_a, self.team_b, self.market_label):
             stabilizer.reset()
         self._previous_period = None
+        self._clear_held_browser_clock()
         self.manual_visible_key = None
         self._raw_label_key = None
         self._in_transition = False
@@ -550,6 +556,7 @@ class LiveReader:
 
     def _sync_state(self, now: float) -> None:
         """Vuelca los valores confirmados al estado del partido."""
+        self.state.clock_held = False
         self.state.clock_seconds = self.clock.current(now)
         self.state.score_a = self.score_a.current(now)
         self.state.score_b = self.score_b.current(now)
@@ -656,6 +663,7 @@ class LiveReader:
 
         estado = fuente.game_state(now)
         if not estado:
+            self._clear_held_browser_clock()
             for campo in ("score_a", "score_b", "period", "clock_seconds",
                           "team_a", "team_b", "breakdown"):
                 if self.field_sources.get(campo) is SourceKind.BROWSER_DOM:
@@ -668,8 +676,10 @@ class LiveReader:
                                   self.state.score_b, now)
         self._apply_browser_field("period", estado.get("period"),
                                   self.state.period, now)
-        self._apply_browser_field("clock_seconds", self._browser_clock(estado),
+        browser_clock, clock_held = self._clock_for_browser_state(estado)
+        self._apply_browser_field("clock_seconds", browser_clock,
                                   self.state.clock_seconds, now)
+        self.state.clock_held = clock_held
         self._apply_browser_field("team_a", estado.get("team_a"),
                                   self.state.team_a, now)
         self._apply_browser_field("team_b", estado.get("team_b"),
@@ -680,6 +690,70 @@ class LiveReader:
                                                      estado["periods_b"])
             if self.state.tracker.has_dom_breakdown:
                 self.field_sources["breakdown"] = SourceKind.BROWSER_DOM
+
+        # La primera clasificacion ocurrio antes de aplicar el DOM. Se repite
+        # con sus valores y luego la evidencia estructural explicita manda.
+        self._update_phase()
+        fase = estado.get("phase")
+        if fase == "HALFTIME":
+            self.state.phase = GamePhase.HALFTIME
+        elif fase == "GAME_OVER":
+            self.state.phase = GamePhase.GAME_OVER
+        elif fase == "CLOCK_STOPPED" or clock_held:
+            self.state.phase = GamePhase.CLOCK_STOPPED
+
+    def _clock_for_browser_state(self, estado: Dict[str, Any]) -> tuple[Optional[int], bool]:
+        """Devuelve reloj DOM vivo/retenido sin fabricar paso del tiempo.
+
+        La retencion exige tres evidencias simultaneas: el BrowserSource sigue
+        fresco, su eventId no cambio y el gameState reobservado conserva el
+        mismo periodo. Un reloj nuevo reemplaza el retenido inmediatamente.
+        Una fase final estructural fija cero usando la duracion de GameRules.
+        """
+        fuente = self.browser_source
+        event_id = fuente.event_id if fuente is not None else None
+        periodo = estado.get("period")
+        if periodo is None:
+            periodo = self.state.period_value
+
+        fase = estado.get("phase")
+        final_confirmado = fase in ("PERIOD_END", "HALFTIME", "GAME_OVER")
+        if final_confirmado and periodo is not None:
+            if fase != "HALFTIME" or periodo == self.rules.halftime_after_period:
+                self._remember_browser_clock(0, periodo, event_id)
+                return 0, False
+
+        reloj = self._browser_clock(estado)
+        if reloj is not None and periodo is not None:
+            self._remember_browser_clock(reloj, periodo, event_id)
+            return reloj, False
+
+        # Si el DOM mando un reloj pero contradice las reglas, no se oculta la
+        # contradiccion reutilizando un valor anterior.
+        if "clock_seconds" in estado or "clock_raw_seconds" in estado:
+            self._clear_held_browser_clock()
+            return None, False
+
+        contexto_fresco = any(key in estado for key in (
+            "score_a", "score_b", "period", "periods_a", "periods_b"))
+        if (contexto_fresco and event_id and event_id == self._held_browser_event_id and
+                periodo is not None and periodo == self._held_browser_period and
+                self._held_browser_clock is not None):
+            return self._held_browser_clock, True
+
+        self._clear_held_browser_clock()
+        return None, False
+
+    def _remember_browser_clock(self, clock: int, period: int,
+                                event_id: Optional[str]) -> None:
+        self._held_browser_clock = int(clock)
+        self._held_browser_period = int(period)
+        self._held_browser_event_id = event_id
+
+    def _clear_held_browser_clock(self) -> None:
+        self._held_browser_clock = None
+        self._held_browser_period = None
+        self._held_browser_event_id = None
 
     def _browser_clock(self, estado: Dict[str, Any]) -> Optional[int]:
         """Restante del cuarto a partir de lo que manda la extension.

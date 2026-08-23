@@ -141,6 +141,9 @@ def payload_to_game_state(payload: Dict[str, Any]) -> Dict[str, Any]:
     from ..domain.time_utils import try_clock_to_seconds
 
     salida: Dict[str, Any] = {}
+    fase = estado.get("phase")
+    if isinstance(fase, str):
+        salida["phase"] = fase
     for origen, destino in (("scoreA", "score_a"), ("scoreB", "score_b"),
                             ("period", "period")):
         valor = estado.get(origen)
