@@ -79,3 +79,12 @@ test('la seccion canonica gana aunque la copia seleccionada tenga mas lineas', (
   assert.equal(preferReading(seleccionada, canonica), canonica);
   assert.equal(preferReading(canonica, seleccionada), canonica);
 });
+
+test('una seccion canonica vacia no borra una lectura TITLE_ONLY con lineas', () => {
+  const titulo = { key: 'Q3_TOTAL', sectionKey: null,
+    lines: [42.5, 43.5], isVisible: true };
+  const canonicaVacia = { key: 'Q3_TOTAL', sectionKey: 'Q3_TOTAL',
+    lines: [], isVisible: true };
+  assert.equal(preferReading(titulo, canonicaVacia), titulo);
+  assert.equal(preferReading(canonicaVacia, titulo), titulo);
+});
