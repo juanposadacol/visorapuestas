@@ -43,7 +43,8 @@
 
   /**
    * Entre dos lecturas del mismo mercado (movil y escritorio, por ejemplo)
-   * gana la que trae mas lineas; con empate, la visible.
+   * gana la fuente mas fiable. Pero una copia vacia NO puede borrar una lectura
+   * real del mismo mercado solo por tener mejor etiqueta estructural.
    */
   function sourcePriority(reading) {
     if (!reading) return -1;
@@ -54,6 +55,24 @@
 
   function compareReadings(previous, candidate) {
     if (!previous) return { winner: candidate, loser: null, reason: 'FIRST_READING' };
+
+    const previousLines = (previous.lines || []).length;
+    const candidateLines = (candidate.lines || []).length;
+    const previousSelected = previous.sectionKey === 'SELECTED_BETS';
+    const candidateSelected = candidate.sectionKey === 'SELECTED_BETS';
+
+    // Salvaguarda de datos observados: una lectura vacia puede ser una copia
+    // stale/virtualizada. No debe ganar por prioridad estructural frente a una
+    // lectura NO seleccionada que si trae ofertas reales. La excepcion son las
+    // "Apuestas seleccionadas": siguen siendo una copia auxiliar y nunca deben
+    // desplazar al mercado canonico por contener mas filas.
+    if (candidateLines > 0 && previousLines === 0 && !candidateSelected) {
+      return { winner: candidate, loser: previous, reason: 'POPULATED_COPY_WON' };
+    }
+    if (previousLines > 0 && candidateLines === 0 && !previousSelected) {
+      return { winner: previous, loser: candidate, reason: 'POPULATED_COPY_WON' };
+    }
+
     const prioridad = sourcePriority(candidate) - sourcePriority(previous);
     if (prioridad > 0) {
       return { winner: candidate, loser: previous,
@@ -65,7 +84,7 @@
                reason: candidate.sectionKey === 'SELECTED_BETS'
                  ? 'SELECTED_BETS_COPY' : 'DUPLICATE_NON_CANONICAL' };
     }
-    const masLineas = (candidate.lines || []).length - (previous.lines || []).length;
+    const masLineas = candidateLines - previousLines;
     if (masLineas > 0) return { winner: candidate, loser: previous, reason: 'MORE_LINES' };
     if (masLineas < 0) return { winner: previous, loser: candidate, reason: 'MORE_LINES' };
     if (candidate.isVisible && !previous.isVisible) {
