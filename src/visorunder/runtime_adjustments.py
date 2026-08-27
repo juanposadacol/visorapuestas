@@ -1,11 +1,14 @@
 """Ajustes de comportamiento acordados para el visor en vivo.
 
-Este modulo concentra dos cambios de interfaz/adquisicion sin alterar el motor
+Este modulo concentra cambios de interfaz/adquisicion sin alterar el motor
 matematico:
 
 * un mercado que deja de existir en el DOM de BetPlay desaparece del radar;
 * el bloque de reloj muestra primero el tiempo JUGADO del cuarto y debajo el
-  tiempo RESTANTE, dando mayor jerarquia visual al tiempo jugado.
+  tiempo RESTANTE, dando mayor jerarquia visual al tiempo jugado;
+* cuando BetPlay detiene el reloj y deja temporalmente de publicar un reloj
+  utilizable, se conserva la ultima lectura confirmada para que el tablero no
+  borre tiempos, ritmos ni calculos durante la pausa real del partido.
 
 Se instala una sola vez al arrancar la aplicacion. Las clases conservan sus
 atributos publicos para no romper la interfaz ni las pruebas existentes.
@@ -20,12 +23,14 @@ from PySide6.QtWidgets import QGridLayout, QLabel
 
 from .domain.event_markets import EventMarkets
 from .domain.market import MarketKey
+from .pipeline.reader import LiveReader
 from .ui import formatters as fmt
 from .ui.metrics_panel import MetricsPanel, _card, _title
 
 _INSTALLED = False
 _ORIGINAL_UPDATE_VIEW = MetricsPanel.update_view
 _ORIGINAL_SET_VISIBLE_MANY = EventMarkets.set_visible_many
+_ORIGINAL_CLOCK_FOR_BROWSER_STATE = LiveReader._clock_for_browser_state
 
 
 def _build_clock_played_first(self: MetricsPanel):
@@ -120,12 +125,59 @@ def _set_visible_many_pruning(self: EventMarkets, keys: Iterable[MarketKey],
     _ORIGINAL_SET_VISIBLE_MANY(self, visibles, primary)
 
 
+def _clock_for_browser_state_keep_stopped(self: LiveReader, estado):
+    """Conserva el ultimo reloj confirmado durante una detencion real.
+
+    BetPlay/Kambi puede mantener marcador, cuarto y mercados mientras el reloj
+    desaparece o llega con semantica no utilizable durante tiempos muertos,
+    faltas, revisiones y otras pausas. El lector base, correctamente, rechaza
+    ese reloj dudoso. Para la UI, sin embargo, perder el reloj hace que todos
+    los calculos dependientes del tiempo pasen a ``--``.
+
+    Si la propia casa marca CLOCK_STOPPED y seguimos en el mismo evento y el
+    mismo periodo, se reutiliza exclusivamente la ultima lectura confirmada. No
+    se descuenta ni un segundo: el tablero queda congelado hasta que llegue un
+    reloj valido nuevo. Un cambio de evento, de periodo o una desconexion sigue
+    invalidando la retencion como antes.
+    """
+    previous_clock = getattr(self, "_held_browser_clock", None)
+    previous_period = getattr(self, "_held_browser_period", None)
+    previous_event = getattr(self, "_held_browser_event_id", None)
+
+    clock, held = _ORIGINAL_CLOCK_FOR_BROWSER_STATE(self, estado)
+    if clock is not None:
+        return clock, held
+
+    if estado.get("phase") != "CLOCK_STOPPED":
+        return clock, held
+
+    source = self.browser_source
+    event_id = source.event_id if source is not None else None
+    period = estado.get("period")
+    if period is None:
+        period = self.state.period_value
+
+    same_context = (
+        previous_clock is not None
+        and previous_period is not None
+        and previous_event is not None
+        and event_id == previous_event
+        and period == previous_period
+    )
+    if not same_context:
+        return clock, held
+
+    self._remember_browser_clock(previous_clock, previous_period, previous_event)
+    return previous_clock, True
+
+
 def install_runtime_adjustments() -> None:
-    """Instala los dos ajustes una sola vez durante el arranque."""
+    """Instala los ajustes una sola vez durante el arranque."""
     global _INSTALLED
     if _INSTALLED:
         return
     MetricsPanel._build_clock = _build_clock_played_first
     MetricsPanel.update_view = _update_view_played_first
     EventMarkets.set_visible_many = _set_visible_many_pruning
+    LiveReader._clock_for_browser_state = _clock_for_browser_state_keep_stopped
     _INSTALLED = True
