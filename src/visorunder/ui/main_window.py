@@ -32,11 +32,12 @@ from PySide6.QtWidgets import (
 from ..app import AppController
 from ..capture.screen_capture import CaptureError
 from ..domain.market import Side
-from .diagnostics_panel import DiagnosticsPanel
-from .hotkeys import HotkeyManager
-from .entry_board import EntryBoard
-from .metrics_panel import MetricsPanel
 from .criteria_dialog import CriteriaDialog
+from .diagnostics_panel import DiagnosticsPanel
+from .entry_board import EntryBoard
+from .hotkeys import HotkeyManager
+from .manual_bets_panel import ManualBetsPanel
+from .metrics_panel import MetricsPanel
 from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
 from .styles import STYLESHEET
@@ -48,7 +49,7 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self.setWindowTitle("Visor UNDER - lectura y calculo en vivo")
         self.setStyleSheet(STYLESHEET)
-        self.resize(1040, 780)
+        self.resize(1120, 860)
         self._asked_baselines: Set[int] = set()
         self._panel_visible = True
 
@@ -70,7 +71,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         layout.addLayout(self._build_toolbar())
 
-        splitter = QSplitter(Qt.Horizontal)
+        analysis_splitter = QSplitter(Qt.Horizontal)
         self.metrics_panel = MetricsPanel()
         self.metrics_panel.baselineRequested.connect(lambda: self._ask_baseline(force=True))
         self.entry_board = EntryBoard()
@@ -78,16 +79,27 @@ class MainWindow(QMainWindow):
         self.entry_board.lockRequested.connect(self.lock_bet)
         self.entry_board.unlockRequested.connect(self.unlock_bet)
         self.entry_board.autoFocusRequested.connect(self.controller.clear_manual_selection)
-        splitter.addWidget(self.metrics_panel)
-        splitter.addWidget(self.entry_board)
-        # El tablero de lineas es el elemento dominante: es donde se detecta
-        # el momento de entrada, que es la funcion principal del programa.
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([460, 700])
+        analysis_splitter.addWidget(self.metrics_panel)
+        analysis_splitter.addWidget(self.entry_board)
+        analysis_splitter.setStretchFactor(0, 2)
+        analysis_splitter.setStretchFactor(1, 3)
+        analysis_splitter.setSizes([460, 700])
+
+        # El registro manual queda literalmente debajo del visor principal.
+        # El splitter vertical permite reducirlo si se necesita mas espacio
+        # para el partido, sin esconder la funcion en otro menu.
+        panel_splitter = QSplitter(Qt.Vertical)
+        panel_splitter.addWidget(analysis_splitter)
+        self.manual_bets_panel = ManualBetsPanel(self.controller)
+        panel_splitter.addWidget(self.manual_bets_panel)
+        panel_splitter.setStretchFactor(0, 5)
+        panel_splitter.setStretchFactor(1, 2)
+        panel_splitter.setCollapsible(0, False)
+        panel_splitter.setCollapsible(1, True)
+        panel_splitter.setSizes([570, 250])
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(splitter, "Panel")
+        self.tabs.addTab(panel_splitter, "Panel")
         self.diagnostics = DiagnosticsPanel(self.controller.log)
         self.tabs.addTab(self.diagnostics, "Diagnostico")
         layout.addWidget(self.tabs, 1)
@@ -102,11 +114,16 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.setToolTip(
+            "Cada casa puede tener su propio perfil. Crea, por ejemplo, 'Stake principal' y "
+            "'Sportium principal'.")
         self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
 
         self.configure_button = QPushButton("CONFIGURAR")
         self.configure_button.clicked.connect(self.configure_profile)
-        self.new_profile_button = QPushButton("Nuevo perfil")
+        self.new_profile_button = QPushButton("NUEVO PERFIL")
+        self.new_profile_button.setToolTip(
+            "Crea un perfil independiente para otra casa de apuestas, como Stake.")
         self.new_profile_button.clicked.connect(self.new_profile)
 
         self.start_button = QPushButton("INICIAR (F8)")
@@ -156,6 +173,13 @@ class MainWindow(QMainWindow):
         self.hotkeys.apply()
 
     # -------------------------------------------------------------- perfiles
+    def _set_profile_controls_enabled(self, enabled: bool) -> None:
+        # CONFIGURAR se mantiene disponible: al editar, el lector se pausa y
+        # luego se reanuda. Cambiar o crear OTRO perfil en mitad de una sesion
+        # si puede mezclar casa, regiones e historial, por eso se bloquea.
+        self.profile_combo.setEnabled(enabled)
+        self.new_profile_button.setEnabled(enabled)
+
     def _refresh_profiles(self) -> None:
         names = self.controller.profile_names()
         self.profile_combo.blockSignals(True)
@@ -169,26 +193,65 @@ class MainWindow(QMainWindow):
             self._on_profile_changed(self.profile_combo.currentText())
         else:
             self.status_label.setText(
-                "No hay perfiles. Pulsa 'Nuevo perfil' y define las regiones de tu casa.")
+                "No hay perfiles. Pulsa 'NUEVO PERFIL' y crea uno para tu casa (p. ej. Stake).")
 
     def _on_profile_changed(self, name: str) -> None:
         if not name:
             return
+
+        # No se permite cambiar de casa con una sesion viva: el Reader ya
+        # tiene RoiManager, motor e historial ligados al perfil anterior.
+        active = self.controller.reader is not None
+        current = self.controller.profile
+        if active and current is not None and current.name != name:
+            self.profile_combo.blockSignals(True)
+            self.profile_combo.setCurrentText(current.name)
+            self.profile_combo.blockSignals(False)
+            QMessageBox.information(
+                self,
+                "Cambiar de perfil",
+                "Finaliza el partido actual antes de cambiar a otra casa de apuestas.",
+            )
+            return
+
         profile = self.controller.load_profile(name)
         if profile is None:
             return
+        sportsbook = profile.sportsbook or profile.name
+        self.manual_bets_panel.set_default_sportsbook(sportsbook)
         missing = profile.missing_required()
         if missing:
             faltan = ", ".join(k.display_name for k in missing)
-            self.status_label.setText(f"Perfil '{name}': faltan regiones -> {faltan}")
+            self.status_label.setText(
+                f"Perfil '{name}' ({sportsbook}): faltan regiones -> {faltan}")
         else:
-            self.status_label.setText(f"Perfil '{name}' listo. Pulsa INICIAR.")
+            self.status_label.setText(
+                f"Perfil '{name}' ({sportsbook}) listo. Pulsa INICIAR.")
 
     def new_profile(self) -> None:
-        name, ok = QInputDialog.getText(self, "Nuevo perfil", "Nombre del perfil:")
-        if not ok or not name.strip():
+        if self.controller.reader is not None:
+            QMessageBox.information(
+                self,
+                "Nuevo perfil",
+                "Finaliza el partido actual antes de crear o cambiar a otra casa.",
+            )
             return
-        profile = self.controller.new_profile(name.strip())
+        name, ok = QInputDialog.getText(
+            self,
+            "Nuevo perfil",
+            "Nombre unico del perfil (ej.: Stake principal):",
+        )
+        name = name.strip() if ok else ""
+        if not name:
+            return
+        if self.controller.profile_exists(name):
+            QMessageBox.warning(
+                self,
+                "Nuevo perfil",
+                f"Ya existe un perfil llamado '{name}'. Usa un nombre distinto para no sobrescribirlo.",
+            )
+            return
+        profile = self.controller.new_profile(name)
         self._edit_profile(profile)
 
     def configure_profile(self) -> None:
@@ -206,13 +269,20 @@ class MainWindow(QMainWindow):
             capture = self.controller.capture
         except CaptureError as exc:
             QMessageBox.critical(self, "Captura", str(exc))
+            if was_running:
+                self.controller.resume()
             return
         engine = self.controller.ensure_engine(profile.engine)
         dialog = ProfileDialog(profile, capture, engine, self)
         if dialog.exec():
-            self.controller.save_profile(profile)
-            self._refresh_profiles()
-            self.profile_combo.setCurrentText(profile.name)
+            try:
+                self.controller.save_profile(profile)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Perfil", str(exc))
+            else:
+                self._refresh_profiles()
+                self.profile_combo.setCurrentText(profile.name)
+                self.manual_bets_panel.set_default_sportsbook(profile.sportsbook or profile.name)
         if was_running:
             self.controller.resume()
 
@@ -238,6 +308,7 @@ class MainWindow(QMainWindow):
                 return
             self.start_button.setText("PAUSAR (F8)")
             self.finish_button.setEnabled(True)
+            self._set_profile_controls_enabled(False)
             self._asked_baselines.clear()
             return
         paused = controller.toggle_reading()
@@ -255,6 +326,7 @@ class MainWindow(QMainWindow):
         self.controller.finish_game()
         self.start_button.setText("INICIAR (F8)")
         self.finish_button.setEnabled(False)
+        self._set_profile_controls_enabled(True)
         self.entry_board.set_locked(False)
         self.status_label.setText("Partido finalizado. Historial guardado.")
 
