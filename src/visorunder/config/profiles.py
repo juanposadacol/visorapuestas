@@ -21,8 +21,21 @@ from ..capture.roi import NormalizedRect, Rect, Roi, RoiKind
 from ..domain.market import MarketKey
 
 #: Casas preconfiguradas por nombre. La geometria SIEMPRE la dibuja el usuario;
-#: aqui solo se ofrecen los nombres para no obligar a teclearlos.
-KNOWN_SPORTSBOOKS: List[str] = ["Sportium", "BetPlay", "Wplay", "RushBet", "Codere", "Otra"]
+#: aqui solo se ofrecen los nombres para no obligar a teclearlos. El combo de
+#: la interfaz sigue siendo editable, por lo que cualquier otra casa funciona.
+KNOWN_SPORTSBOOKS: List[str] = [
+    "Stake",
+    "Sportium",
+    "BetPlay",
+    "Wplay",
+    "RushBet",
+    "Codere",
+    "Betano",
+    "bet365",
+    "Betsson",
+    "Rivalo",
+    "Otra",
+]
 
 
 @dataclass

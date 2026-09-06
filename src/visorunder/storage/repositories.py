@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
-from ..capture.roi import Roi, RoiKind
+from ..capture.roi import RoiKind
 from ..config.profiles import SportsbookProfile
 from ..domain.bet import LockedBet
-from ..domain.game_state import GameState, PointsSource
+from ..domain.game_state import GameState
+from ..domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
 from ..domain.market import MarketKey, MarketLine, MarketSnapshot, MarketType, Side
 from .database import Database
 
@@ -31,29 +32,64 @@ class ProfileRepository:
             "INSERT INTO sportsbooks (name, created_at) VALUES (?, ?)", (name, time.time())
         )
 
+    def exists(self, name: str, *, exclude_profile_id: Optional[int] = None) -> bool:
+        """Indica si el nombre ya pertenece a OTRO perfil.
+
+        Es importante distinguir un perfil cargado que se esta actualizando de
+        un perfil nuevo. Antes se buscaba solo por nombre y un perfil nuevo con
+        nombre repetido podia sobrescribir silenciosamente al anterior.
+        """
+        if exclude_profile_id is None:
+            row = self.db.query_one("SELECT id FROM profiles WHERE name = ?", (name,))
+        else:
+            row = self.db.query_one(
+                "SELECT id FROM profiles WHERE name = ? AND id <> ?",
+                (name, exclude_profile_id),
+            )
+        return row is not None
+
     def save(self, profile: SportsbookProfile) -> int:
         profile.updated_at = time.time()
-        payload = profile.to_json()
         sportsbook_id = self._sportsbook_id(profile.sportsbook or profile.name)
-        existing = self.db.query_one("SELECT id FROM profiles WHERE name = ?", (profile.name,))
-        if existing:
-            profile_id = int(existing["id"])
+
+        # La identidad real es profile_id cuando el perfil ya fue guardado.
+        # Esto permite renombrarlo sin crear un duplicado y evita que un
+        # perfil NUEVO con el mismo nombre destruya al anterior.
+        profile_id = profile.profile_id
+        stored_by_id = None
+        if profile_id is not None:
+            stored_by_id = self.db.query_one("SELECT id FROM profiles WHERE id = ?", (profile_id,))
+
+        if stored_by_id is not None:
+            if self.exists(profile.name, exclude_profile_id=profile_id):
+                raise ValueError(f"Ya existe otro perfil llamado '{profile.name}'.")
+            payload = profile.to_json()
             self.db.execute(
-                "UPDATE profiles SET sportsbook_id=?, payload=?, screen_width=?, "
+                "UPDATE profiles SET name=?, sportsbook_id=?, payload=?, screen_width=?, "
                 "screen_height=?, dpi_scale=?, updated_at=? WHERE id=?",
-                (sportsbook_id, payload, profile.screen.width, profile.screen.height,
-                 profile.screen.dpi_scale, profile.updated_at, profile_id),
+                (profile.name, sportsbook_id, payload, profile.screen.width,
+                 profile.screen.height, profile.screen.dpi_scale, profile.updated_at, profile_id),
             )
         else:
+            # Un id ajeno/obsoleto no debe convertir una insercion en un
+            # UPDATE accidental. Se trata como perfil nuevo.
+            profile.profile_id = None
+            if self.exists(profile.name):
+                raise ValueError(
+                    f"Ya existe un perfil llamado '{profile.name}'. "
+                    "Usa otro nombre para crear una casa/perfil adicional."
+                )
+            payload = profile.to_json()
             profile_id = self.db.insert(
                 "INSERT INTO profiles (name, sportsbook_id, payload, screen_width, "
                 "screen_height, dpi_scale, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (profile.name, sportsbook_id, payload, profile.screen.width,
                  profile.screen.height, profile.screen.dpi_scale, profile.updated_at),
             )
-        profile.profile_id = profile_id
-        self._save_regions(profile_id, profile)
-        return profile_id
+
+        profile.profile_id = int(profile_id)
+        self._save_regions(int(profile_id), profile)
+        return int(profile_id)
 
     def _save_regions(self, profile_id: int, profile: SportsbookProfile) -> None:
         self.db.execute("DELETE FROM screen_regions WHERE profile_id = ?", (profile_id,))
@@ -134,10 +170,7 @@ class SessionRepository:
              criteria.target_under_odds, session_id))
 
     def load_criteria(self, session_id: int):
-        """Recupera los criterios con los que se trabajo en una sesion.
-
-        Permite recalcular despues las senales exactamente como se vieron.
-        """
+        """Recupera los criterios con los que se trabajo en una sesion."""
         from ..config.criteria import EntryCriteria
 
         row = self.db.query_one("SELECT entry_criteria FROM sessions WHERE id = ?", (session_id,))
@@ -253,7 +286,6 @@ class HistoryRepository:
         return [dict(r) for r in rows]
 
     def first_score_of_period(self, session_id: int, period: int) -> Optional[Dict[str, Any]]:
-        """Marcador mas antiguo registrado en un periodo: sirve de baseline."""
         row = self.db.query_one(
             "SELECT ts, score_a, score_b, clock_seconds FROM score_snapshots "
             "WHERE session_id = ? AND period = ? AND score_a IS NOT NULL "
@@ -298,4 +330,91 @@ class BetRepository:
             clock_when_locked=row["clock_when_locked"],
             period_when_locked=row["period_when_locked"],
             session_id=row["session_id"], bet_id=int(row["id"]),
+        )
+
+
+class ManualBetRepository:
+    """Registro manual de apuestas, independiente del OCR y de la casa activa."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def save(self, bet: ManualBet) -> ManualBet:
+        bet_id = self.db.insert(
+            "INSERT INTO manual_bets (session_id, sportsbook, event, market_type, quarter, half, "
+            "side, line, odds, stake, placed_at, status, settled_at, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (bet.session_id, bet.sportsbook.strip(), bet.event.strip(), bet.key.market_type.value,
+             bet.key.period, bet.key.half, bet.side.value, bet.line, bet.odds, bet.stake,
+             bet.placed_at, bet.status.value, bet.settled_at, bet.notes.strip()),
+        )
+        return replace(bet, bet_id=bet_id)
+
+    def list_recent(self, limit: int = 100) -> List[ManualBet]:
+        rows = self.db.query(
+            "SELECT * FROM manual_bets ORDER BY placed_at DESC, id DESC LIMIT ?", (limit,))
+        return [self._to_bet(row) for row in rows]
+
+    def get(self, bet_id: int) -> Optional[ManualBet]:
+        row = self.db.query_one("SELECT * FROM manual_bets WHERE id = ?", (bet_id,))
+        return self._to_bet(row) if row else None
+
+    def settle(self, bet_id: int, status: ManualBetStatus) -> Optional[ManualBet]:
+        settled_at = None if status is ManualBetStatus.PENDING else time.time()
+        self.db.execute(
+            "UPDATE manual_bets SET status = ?, settled_at = ? WHERE id = ?",
+            (status.value, settled_at, bet_id),
+        )
+        return self.get(bet_id)
+
+    def delete(self, bet_id: int) -> None:
+        self.db.execute("DELETE FROM manual_bets WHERE id = ?", (bet_id,))
+
+    def summary(self) -> ManualBetSummary:
+        rows = self.db.query("SELECT status, odds, stake FROM manual_bets")
+        total = len(rows)
+        pending = won = lost = void = 0
+        total_staked = 0.0
+        resolved_stake = 0.0
+        net_profit = 0.0
+
+        for row in rows:
+            status = ManualBetStatus(row["status"])
+            odds = float(row["odds"])
+            stake = float(row["stake"])
+            total_staked += stake
+            if status is ManualBetStatus.PENDING:
+                pending += 1
+            elif status is ManualBetStatus.WON:
+                won += 1
+                resolved_stake += stake
+                net_profit += stake * (odds - 1.0)
+            elif status is ManualBetStatus.LOST:
+                lost += 1
+                resolved_stake += stake
+                net_profit -= stake
+            else:
+                void += 1
+
+        return ManualBetSummary(
+            total=total,
+            pending=pending,
+            won=won,
+            lost=lost,
+            void=void,
+            total_staked=total_staked,
+            resolved_stake=resolved_stake,
+            net_profit=net_profit,
+        )
+
+    @staticmethod
+    def _to_bet(row: Any) -> ManualBet:
+        market_type = MarketType(row["market_type"])
+        key = MarketKey(market_type, period=row["quarter"], half=row["half"])
+        return ManualBet(
+            sportsbook=row["sportsbook"], event=row["event"], key=key,
+            side=Side(row["side"]), line=float(row["line"]), odds=float(row["odds"]),
+            stake=float(row["stake"]), status=ManualBetStatus(row["status"]),
+            placed_at=float(row["placed_at"]), settled_at=row["settled_at"],
+            notes=row["notes"], session_id=row["session_id"], bet_id=int(row["id"]),
         )
