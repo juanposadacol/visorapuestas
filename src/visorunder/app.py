@@ -149,6 +149,7 @@ class AppController:
             on_contact=self.browser.note_contact,
             version=APP_VERSION, log=lambda nivel, mensaje: self.log.log(nivel, mensaje))
         self.engine: Optional[OcrEngine] = None
+        self._engine_setting: Optional[str] = None
         self.profile: Optional[SportsbookProfile] = None
         self.reader: Optional[LiveReader] = None
         self.session_id: Optional[int] = None
@@ -171,14 +172,23 @@ class AppController:
         return self._capture
 
     def ensure_engine(self, name: str = "auto") -> Optional[OcrEngine]:
-        if self.engine is not None:
+        """Devuelve el motor OCR solicitado por el perfil activo.
+
+        Un motor ya creado solo se reutiliza si corresponde a la misma
+        configuracion. Esto evita conservar por accidente el motor de otra
+        casa/perfil al cambiar de configuracion.
+        """
+        requested = (name or "auto").strip() or "auto"
+        if self.engine is not None and self._engine_setting == requested:
             return self.engine
         try:
-            self.engine = create_engine(name)
+            self.engine = create_engine(requested)
             self.engine.warmup()
+            self._engine_setting = requested
             self.log.info(f"Motor OCR: {self.engine.describe()}")
         except EngineNotAvailable as exc:
             self.engine = None
+            self._engine_setting = None
             self.log.error(str(exc))
         return self.engine
 
@@ -295,6 +305,7 @@ class AppController:
         self._capture = NullCapture()
         self.engine = demo_engine(self.demo_game)
         profile = demo_profile()
+        self._engine_setting = profile.engine
         existing = self.profiles.load(profile.name)
         if existing is not None:
             profile.profile_id = existing.profile_id
