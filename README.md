@@ -224,6 +224,52 @@ Consejos para que el OCR acierte:
 
 ---
 
+## 5.bis Casas con marcador dinámico (Stake)
+
+Algunas casas **añaden columnas al marcador durante el partido**, siempre por delante del
+total:
+
+```
+Q1:  1 | Puntos
+Q2:  1 | 2 | Medio tiempo | Puntos
+Q3:  1 | 2 | Medio tiempo | 3 | Puntos
+Q4:  1 | 2 | Medio tiempo | 3 | 4 | Puntos
+```
+
+Si dibujas una región sobre «Puntos» en el Q2, en el Q3 esa coordenada ya apunta a otra
+columna. Por eso **no uses regiones sueltas de marcador en estas casas**: define la región
+**Tablero completo / marcador dinámico**.
+
+Un perfil de Stake se configura entero con **dos regiones**:
+
+| Región | Qué abarcar |
+|---|---|
+| **Tablero completo** | todo el marcador superior: la línea de `3 cuarto • 10:00`, la fila de encabezados (`1  2  Medio tiempo  3  Puntos`) y las dos filas de equipo con sus números |
+| **Bloque de líneas y cuotas** | la zona del mercado, como siempre |
+
+De ahí salen solos los nombres de los equipos, el cuarto, el reloj, los parciales de cada
+cuarto y el marcador total. **No hay que redefinir nada al cambiar de cuarto**: la columna
+del total se localiza por su encabezado, no por su posición.
+
+Detalles que conviene saber:
+
+- **«Medio tiempo» es un acumulado, no un cuarto.** Con `1=28  2=17  Medio tiempo=45  3=0`
+  los parciales son 28, 17 y 0. La 1.ª mitad son Q1+Q2 y la 2.ª, Q3+Q4.
+- El visor **comprueba el tablero contra sí mismo** (`Q1+Q2 = Medio tiempo` y
+  `suma de cuartos = Puntos`). Una lectura que no cuadre se descarta y **no pisa** el
+  marcador bueno anterior.
+- Si el OCR no logra leer la palabra «Puntos», el total **no se inventa**: solo se deduce
+  cuando están todos los parciales.
+- Si además defines las regiones sueltas (Reloj, Cuarto, Marcador), **esas mandan** y el
+  tablero solo rellena lo que falte.
+- Con BetPlay la extensión sigue teniendo prioridad: el tablero OCR es para las casas que
+  no tienen extensión.
+
+Consejo al dibujar la región: incluye un poco de margen a la derecha para que quepan las
+columnas que todavía no han aparecido.
+
+---
+
 ## 6. Durante el partido
 
 1. Elige el perfil y pulsa **INICIAR** (o `F8`).
@@ -475,6 +521,7 @@ entera**, no solo el .exe, porque incluye los modelos del OCR.
 | El puente no arranca | el puerto 8765 está ocupado | cambia `bridge.port` en `settings.json` y el puerto en el popup de la extensión |
 | Va lento / mucha CPU | frecuencia alta o regiones enormes | baja a 2 lecturas/s y recorta las regiones |
 | `Esperando líneas del mercado actual` | la casa acaba de cambiar de cuarto y aún no publica la oferta | no hay nada que hacer: la sesión sigue leyendo marcador, reloj y cuarto, y las líneas entran solas al aparecer |
+| En Stake el marcador se descuadra al cambiar de cuarto | hay regiones sueltas de marcador y la casa insertó una columna | borra Marcador A/B y define el **Tablero completo** (sección 5.bis) |
 | `Esperando reloj` / `marcador` / `periodo` | ese dato no llega ni por DOM ni por región | conecta la extensión o define esa región concreta |
 | Nada funciona y no sé por qué | — | pestaña **Diagnóstico** → *Exportar log* |
 

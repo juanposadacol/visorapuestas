@@ -107,7 +107,7 @@ src/visorunder/
 ├── diagnostics/     bus de log
 ├── app.py           controlador (sin Qt: se puede probar sin interfaz)
 └── __main__.py      arranque
-tests/               511 pruebas, incluidas las de la interfaz completa
+tests/               585 pruebas, incluidas las de la interfaz completa
 ```
 
 La regla de dependencias es de fuera hacia dentro: `ui → app → pipeline → {ocr, parsers,
@@ -268,7 +268,45 @@ líneas, para el panel de diagnóstico: **informar y bloquear son cosas distinta
 Cada motivo de bloqueo (`StartBlocker`) tiene su frase propia —«Esperando reloj.»,
 «Esperando marcador.», «Esperando periodo/cuarto.»— en lugar de un mensaje genérico.
 
-### 4.4 Puntos del cuarto al arrancar a mitad
+### 4.4 Tableros con columnas variables (Stake)
+Stake no publica un tablero fijo: **inserta una columna nueva al empezar cada cuarto**, y
+siempre por delante del total.
+
+```
+Q1:  1 | Puntos
+Q2:  1 | 2 | Medio tiempo | Puntos
+Q3:  1 | 2 | Medio tiempo | 3 | Puntos
+Q4:  1 | 2 | Medio tiempo | 3 | 4 | Puntos
+```
+
+Un ROI fijo sobre «Puntos» apunta al total en el Q2 y a otra cosa en el Q3, así que habría
+que redibujarlo cada cuarto. La región `SCOREBOARD` abarca el tablero entero y
+`parsers/scoreboard_parser.py` localiza cada columna **por su encabezado, nunca por su
+posición**. El total es la columna que dice «Puntos» (tolerante a `Punt0s`, `Punto`, `Pts`,
+`Total`); sin esa palabra no se inventa: solo se deduce de los parciales cuando están todos
+y sin huecos.
+
+**«Medio tiempo» no es un periodo.** Es un acumulado Q1+Q2 y viaja en su propio campo. Con
+`1=28  2=17  MT=45  3=0` los parciales son 28, 17 y 0; sumar el 45 daría 90, el doble de la
+primera mitad. La 2.ª mitad sigue siendo Q3+Q4 y el descanso nunca entra.
+
+El parser trabaja sobre un **flujo de tokens**, no sobre líneas, porque RapidOCR devuelve
+una línea por caja detectada y deshace las filas visuales. El encabezado es la racha válida
+más larga que contenga un ancla con palabra, y se valida estructuralmente (periodos
+crecientes, un solo descanso, un solo total y al final). Sin esa validación, en el descanso
+la *fase* «Medio tiempo» se pegaba al encabezado y corría todas las columnas.
+
+El tablero se valida contra sí mismo —`Q1+Q2 == descanso` y `suma de cuartos == total`— y
+lo que no cuadra se marca `suspicious`, que es justo lo que el estabilizador ya se niega a
+confirmar: **un OCR malo no puede pisar un estado bueno**.
+
+En el `LiveReader` esta región **solo rellena lo que ninguna otra cubre**: si el perfil
+define el reloj aparte, ese reloj manda. Los parciales entran por `tracker.set_breakdown()`,
+el mismo camino que `BREAKDOWN_A/B`, así que Q1..Q4, 1H, 2H y PARTIDO se calculan igual que
+siempre y **el seguimiento de apuestas manuales no sabe nada de Stake**: consume `GameState`.
+Como el DOM se aplica después, BetPlay sigue teniendo prioridad.
+
+### 4.5 Puntos del cuarto al arrancar a mitad
 `PeriodPointsTracker` guarda **marcadores base** por periodo con su procedencia
 (`BREAKDOWN` > `HISTORY` > `MANUAL` > `UNKNOWN`). Solo se registra una base cuando es un
 **hecho**: se presenció el cambio de cuarto, o el reloj marca el cuarto recién empezado.
@@ -293,7 +331,7 @@ ritmo de la mitad en curso y el ritmo de la primera mitad ya terminada. El radar
 `LineEvaluation.margin_vs_half_pace = required_pace - half_pace`; no existe una segunda
 fórmula de margen en la UI.
 
-### 4.5 Ruido del OCR
+### 4.6 Ruido del OCR
 `ocr/stabilization.py` implementa `Stabilizer`: N lecturas iguales para confirmar, más un
 **validador** por campo que conoce la física del dato. Los valores improbables no se
 descartan para siempre: se les exige más insistencia (*confianza temporal*), de modo que
@@ -305,20 +343,20 @@ casi nunca se repite; exigirle repeticiones lo dejaría congelado. Por eso tiene
 rápida* (`clock_fast_path`): se acepta al instante si es coherente con el tiempo real
 transcurrido. Lo detectó la prueba de interfaz y por eso existe.
 
-### 4.6 ROIs frágiles
+### 4.7 ROIs frágiles
 Las coordenadas se guardan **normalizadas** (fracciones de un marco de referencia), no en
 píxeles absolutos. Así el mismo perfil sirve a 1920×1080 y 2560×1440 y sobrevive al
 escalado de Windows. Además, un ROI de **ancla** permite recolocar todo el conjunto por
 correlación de imagen (`cv2.matchTemplate`) cuando la página se desplaza. Si la
 correlación es baja, **no se corrige nada**: antes sin corrección que con una inventada.
 
-### 4.7 Hilos
+### 4.8 Hilos
 El lector vive en un hilo propio; la interfaz **no recibe señales del hilo**, sino que lee
 con un temporizador la última fotografía (`reader.last_snapshot`). Elimina toda una clase
 de errores de concurrencia con Qt. El `tick()` es síncrono y aislado, lo que permite
 probarlo sin interfaz.
 
-### 4.8 Nada modal automático
+### 4.9 Nada modal automático
 Un diálogo modal que aparece solo bloquearía el bucle de eventos y congelaría el panel
 encima del navegador. La petición del marcador inicial es un **botón visible dentro del
 panel**, no una ventana emergente. (Este error existió y lo detectó la prueba de interfaz.)
