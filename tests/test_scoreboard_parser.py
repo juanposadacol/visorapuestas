@@ -410,3 +410,37 @@ def test_breakdown_pairs_solo_devuelve_periodos_de_los_dos_equipos():
     assert lectura.breakdown_pairs() == [(1, 28, 18), (2, 17, 23), (3, 0, 0)]
     assert lectura.has_scores is True
     assert lectura.periods == (1, 2, 3)
+
+
+def test_un_nombre_que_acaba_en_numero_no_descoloca_las_columnas():
+    """Los datos son SIEMPRE los ultimos numeros de la tirada."""
+    lectura = _read("""4 cuarto • 02:00
+1  2  Medio tiempo  3  4  Puntos
+Real Madrid 2  28  17  45  22  3  70
+Shiga Lake Stars  18  23  41  19  5  65""").value
+
+    assert lectura.team_a == "Real Madrid 2"
+    assert lectura.breakdown_a == {1: 28, 2: 17, 3: 22, 4: 3}
+    assert lectura.score_a == 70
+    assert lectura.halftime_a == 45
+
+
+def test_una_fila_de_puros_numeros_sin_nombre_no_vale():
+    """Sin nombre de equipo no se puede afirmar de quien es la fila."""
+    resultado = parse_scoreboard("""3 cuarto • 10:00
+1  2  Medio tiempo  3  Puntos
+28  17  45  0  45
+18  23  41  0  41""")
+    assert resultado.value is None
+
+
+def test_el_numero_del_cuarto_pegado_al_encabezado_no_corre_las_columnas():
+    """"4" (la fase) seguido del encabezado del Q4 no anade una columna."""
+    lectura = _read("""4
+1  2  Medio tiempo  3  4  Puntos
+Taiwan  28  17  45  22  3  70
+Shiga  18  23  41  19  5  65""").value
+
+    assert _labels(lectura) == "Q1 Q2 HALFTIME Q3 Q4 TOTAL"
+    assert lectura.breakdown_a == {1: 28, 2: 17, 3: 22, 4: 3}
+    assert lectura.score_a == 70

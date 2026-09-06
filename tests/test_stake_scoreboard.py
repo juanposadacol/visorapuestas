@@ -505,3 +505,48 @@ def test_sin_dom_el_tablero_ocr_toma_el_relevo():
     assert (snap.state.score_a_value, snap.state.score_b_value) == (45, 41)
     assert snap.state.clock_value == 600
     assert snap.state.period_score(3).total == 0
+
+
+# --------------------------------------------------------------------------
+# Prorroga y mitades: ni se duplica el descanso ni se contamina la 2.a mitad
+# --------------------------------------------------------------------------
+PRORROGA = """OT 03:00
+1  2  Medio tiempo  3  4  OT  Puntos
+Taiwan Beer Leopards  28  17  45  22  8  6  81
+Shiga Lake Stars  18  23  41  19  15  9  84"""
+
+
+def test_la_prorroga_no_contamina_las_mitades(rig):
+    reader, engine = rig
+    snap = _feed(reader, engine, PRORROGA, times=SALTO)
+    state = snap.state
+
+    assert state.period_score(5).total == 15          # 6 + 9, la prorroga
+    assert state.half_score(1).total == 86            # (28+18) + (17+23)
+    assert state.half_score(2).total == 64            # (22+19) + (8+15)
+    assert state.total_points == 165                  # 81 + 84
+    # La suma de los periodos coincide con el total: nada se conto dos veces.
+    assert sum(state.period_score(p).total for p in range(1, 6)) == 165
+    # Y el acumulado del descanso (45+41=86) no se ha sumado por su cuenta.
+    assert state.total_points != 165 + 86
+
+
+def test_las_mitades_no_incluyen_el_acumulado_del_descanso(rig):
+    """1H son Q1+Q2. Si el descanso entrara, saldria el doble."""
+    reader, engine = rig
+    snap = _feed(reader, engine, Q4, times=SALTO)
+
+    assert snap.state.half_score(1).total == 86
+    assert snap.state.half_score(2).total == 49       # (22+19) + (3+5)
+    assert (snap.state.half_score(1).total
+            + snap.state.half_score(2).total) == snap.state.total_points
+
+
+def test_el_tablero_se_resume_en_una_linea_para_el_log():
+    """El repr completo del dataclass haria inservible el diagnostico."""
+    from visorunder.parsers.scoreboard_parser import parse_scoreboard
+
+    resumen = str(parse_scoreboard(Q3_INICIO).value)
+    assert "\n" not in resumen
+    assert len(resumen) < 120
+    assert "45-41" in resumen and "Q3:0+0" in resumen

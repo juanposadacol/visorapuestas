@@ -155,6 +155,27 @@ class ScoreboardRead:
             pares.append((period, self.breakdown_a[period], self.breakdown_b[period]))
         return pares
 
+    def __str__(self) -> str:
+        """Resumen de una linea para el panel de diagnostico.
+
+        El `repr` del dataclass ocuparia varias lineas por lectura y el log se
+        vuelve inservible; aqui se dice lo justo para entender que se leyo.
+        """
+        columnas = "/".join(c.label for c in self.columns) or "--"
+        marcador = ("--" if not self.has_scores
+                    else f"{self.score_a}-{self.score_b}")
+        parciales = " ".join(f"Q{p}:{a}+{b}" for p, a, b in self.breakdown_pairs())
+        partes = [f"[{columnas}]", marcador]
+        if self.period is not None:
+            partes.append(f"P{self.period}")
+        if self.clock_seconds is not None:
+            partes.append(f"{self.clock_seconds}s")
+        if parciales:
+            partes.append(parciales)
+        if not self.total_from_header:
+            partes.append("(total deducido)")
+        return " ".join(partes)
+
 
 # --------------------------------------------------------------------------
 # Clasificacion de tokens
@@ -316,19 +337,28 @@ def _read_team_row(tokens: List[str], start: int,
     nombre: List[str] = []
     index = start
     while index < len(tokens):
+        # Tirada COMPLETA de numeros que empieza aqui.
         numeros: List[int] = []
         cursor = index
-        while cursor < len(tokens) and len(numeros) < expected:
+        while cursor < len(tokens):
             limpio = _tidy(tokens[cursor]).replace(" ", "")
             if not limpio.isdigit():
                 break
             numeros.append(int(limpio))
             cursor += 1
-        if len(numeros) == expected:
+
+        if len(numeros) >= expected:
+            # Si sobran numeros por la izquierda son del nombre del equipo
+            # ("Real Madrid 2"), no del tablero: los datos son SIEMPRE los
+            # ultimos, que es donde la casa pone las columnas.
+            sobran = len(numeros) - expected
+            nombre.extend(clean(tokens[index + i]) for i in range(sobran))
             texto = " ".join(nombre).strip(" -–—•·|")
             if not any(ch.isalpha() for ch in texto):
                 return None
-            return texto, numeros, cursor
+            return texto, numeros[sobran:], cursor
+
+        # Ni el nombre ni una tirada suficiente: se avanza un token.
         nombre.append(clean(tokens[index]))
         index += 1
     return None
