@@ -13,6 +13,7 @@ def main(argv: list = None) -> int:
     from .app import AppController
     from .ui.main_window import MainWindow
     from .ui.styles import STYLESHEET
+    from .runtime_adjustments import install_runtime_adjustments
 
     parser = argparse.ArgumentParser(
         prog="visorunder",
@@ -25,6 +26,10 @@ def main(argv: list = None) -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Visor UNDER")
     app.setStyleSheet(STYLESHEET)
+
+    # Ajustes acordados para el uso en vivo: mercados retirados fuera del radar
+    # y tiempo jugado del cuarto con mayor jerarquia que el tiempo restante.
+    install_runtime_adjustments()
 
     controller = AppController(db_path=args.db)
     if args.demo:

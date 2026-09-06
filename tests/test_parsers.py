@@ -201,3 +201,36 @@ def test_linea_asociada_al_mercado_indicado():
     snap = parse_lines_block("40.5 1.95 1.72", key=MarketKey.quarter(3))
     assert snap.lines[0].quarter == 3
     assert snap.lines[0].market_type is MarketType.QUARTER_TOTAL
+
+
+# --------------------------- tiempo jugado del partido -> restante del cuarto
+
+def test_convierte_tiempo_jugado_en_restante_del_cuarto():
+    from visorunder.domain.rules import FIBA, NBA
+    from visorunder.domain.time_utils import period_remaining_from_game_elapsed as convertir
+
+    # El caso REAL de BetPlay: "Q4 - 33:52" con reglas FIBA (4x10).
+    assert convertir(33 * 60 + 52, 4, FIBA) == 6 * 60 + 8
+
+    # El mismo valor con NBA (4x12) no cae dentro del cuarto 4: sin respuesta.
+    assert convertir(33 * 60 + 52, 4, NBA) is None
+
+    # Principios y finales exactos de cuarto.
+    assert convertir(30 * 60, 4, FIBA) == 10 * 60      # acaba de empezar el Q4
+    assert convertir(40 * 60, 4, FIBA) == 0            # se acabo el partido
+    assert convertir(0, 1, FIBA) == 10 * 60
+
+    # Prorroga: el periodo 5 dura 5 minutos y empieza en 40:00.
+    assert convertir(40 * 60 + 30, 5, FIBA) == 4 * 60 + 30
+
+
+def test_no_convierte_lo_que_no_cuadra():
+    from visorunder.domain.rules import FIBA
+    from visorunder.domain.time_utils import period_remaining_from_game_elapsed as convertir
+
+    assert convertir(5 * 60, 4, FIBA) is None          # 05:00 no es del cuarto 4
+    assert convertir(45 * 60, 4, FIBA) is None         # pasado el final
+    assert convertir(None, 4, FIBA) is None
+    assert convertir(600, None, FIBA) is None
+    assert convertir(-1, 1, FIBA) is None
+    assert convertir(600, 0, FIBA) is None

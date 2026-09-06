@@ -3,7 +3,7 @@
 Jerarquia visual, de mas grande a mas pequeno:
 
     1. FALTAN PARA PERDER   (el numero mas grande de la pantalla)
-    2. RITMO NECESARIO PARA PERDER
+    2. PROMEDIO FALTANTE (RITMO NECESARIO)
     3. mi apuesta / limite de perdida
     4. marcador, reloj, puntos del cuarto y promedios
 
@@ -16,19 +16,24 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from ..calculations.entry import LineEvaluation
-from ..calculations.metrics import GeneralMetrics
+from ..calculations.metrics import ClosedPeriodAverage, GeneralMetrics
 from ..calculations.signals import SignalLevel
+from ..domain.event_markets import FreshnessState
 from ..config.criteria import EntryCriteria
 from ..domain.bet import LockedBet
 from ..domain.game_state import GamePhase, GameState, PointsSource
@@ -76,34 +81,52 @@ class MetricsPanel(QWidget):
     # ----------------------------------------------------------- construccion
     def _build_scoreboard(self) -> QFrame:
         card = _card()
-        grid = QGridLayout(card)
-        grid.setContentsMargins(12, 10, 12, 10)
-        grid.setSpacing(4)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+        layout.addWidget(_title("RESULTADOS ACTUALES"))
 
+        # Alias conservados para compatibilidad con consumidores existentes;
+        # la vista real es ahora la tabla compacta por periodo.
         self.team_a_label = QLabel(fmt.UNKNOWN)
-        self.team_a_label.setObjectName("teamName")
         self.team_a_score = QLabel(fmt.UNKNOWN)
-        self.team_a_score.setObjectName("teamScore")
-        self.team_a_score.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
         self.team_b_label = QLabel(fmt.UNKNOWN)
-        self.team_b_label.setObjectName("teamName")
         self.team_b_score = QLabel(fmt.UNKNOWN)
-        self.team_b_score.setObjectName("teamScore")
-        self.team_b_score.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
         self.total_label = QLabel(fmt.UNKNOWN)
-        self.total_label.setObjectName("metricValue")
-        self.total_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        grid.addWidget(self.team_a_label, 0, 0)
-        grid.addWidget(self.team_a_score, 0, 1)
-        grid.addWidget(self.team_b_label, 1, 0)
-        grid.addWidget(self.team_b_score, 1, 1)
-        grid.addWidget(_title("TOTAL PARTIDO"), 2, 0)
-        grid.addWidget(self.total_label, 2, 1)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnMinimumWidth(1, 110)
+        self.results_table = QTableWidget(3, 6)
+        self.results_table.setObjectName("resultsTable")
+        self.results_table.verticalHeader().setVisible(False)
+        self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.results_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.results_table.setFocusPolicy(Qt.NoFocus)
+        self.results_table.setShowGrid(False)
+        self.results_table.setWordWrap(False)
+        self.results_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.results_table.verticalHeader().setDefaultSectionSize(23)
+        self.results_table.horizontalHeader().setFixedHeight(23)
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 6):
+            self.results_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeToContents)
+        self.results_table.setHorizontalHeaderLabels(["", "Q1", "Q2", "Q3", "Q4", "TOTAL"])
+        self.results_table.setFixedHeight(96)
+        layout.addWidget(self.results_table)
+
+        self.closed_period_averages_strip = QFrame()
+        self.closed_period_averages_strip.setObjectName("closedPeriodAveragesStrip")
+        averages_layout = QVBoxLayout(self.closed_period_averages_strip)
+        averages_layout.setContentsMargins(0, 5, 0, 0)
+        averages_layout.setSpacing(3)
+        averages_layout.addWidget(_title("PROMEDIOS DE CUARTOS CERRADOS"))
+        self.closed_period_average_row = QGridLayout()
+        self.closed_period_average_row.setContentsMargins(0, 0, 0, 0)
+        self.closed_period_average_row.setSpacing(6)
+        self.closed_period_average_row.setColumnStretch(3, 1)
+        averages_layout.addLayout(self.closed_period_average_row)
+        self.closed_period_average_chips = []
+        self.closed_period_averages_strip.setVisible(False)
+        layout.addWidget(self.closed_period_averages_strip)
         return card
 
     def _build_clock(self) -> QFrame:
@@ -145,12 +168,45 @@ class MetricsPanel(QWidget):
         self.period_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.period_pace_label = QLabel(fmt.UNKNOWN)
-        self.period_pace_label.setObjectName("metricValue")
+        self.period_pace_label.setObjectName("paceHighlight")
         self.period_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.period_projection_label = QLabel(fmt.UNKNOWN)
+        self.period_projection_label.setObjectName("metricValue")
+        self.period_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.half_points_title = _title("PUNTOS DE LA MITAD")
+        self.half_points_label = QLabel(fmt.UNKNOWN)
+        self.half_points_label.setObjectName("metricValue")
+        self.half_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.half_pace_title = _title("PROMEDIO ACTUAL DE LA MITAD")
+        self.half_pace_label = QLabel(fmt.UNKNOWN)
+        self.half_pace_label.setObjectName("paceHighlight")
+        self.half_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.half_projection_label = QLabel(fmt.UNKNOWN)
+        self.half_projection_label.setObjectName("metricValue")
+        self.half_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.first_half_points_title = _title("PUNTOS 1H")
+        self.first_half_points_label = QLabel(fmt.UNKNOWN)
+        self.first_half_points_label.setObjectName("metricValue")
+        self.first_half_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.first_half_pace_title = _title("PROMEDIO ACTUAL 1H")
+        self.first_half_pace_label = QLabel(fmt.UNKNOWN)
+        self.first_half_pace_label.setObjectName("metricValue")
+        self.first_half_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.game_points_label = QLabel(fmt.UNKNOWN)
+        self.game_points_label.setObjectName("metricValue")
+        self.game_points_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.game_pace_label = QLabel(fmt.UNKNOWN)
-        self.game_pace_label.setObjectName("metricValue")
+        self.game_pace_label.setObjectName("paceHighlight")
         self.game_pace_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.game_projection_label = QLabel(fmt.UNKNOWN)
+        self.game_projection_label.setObjectName("metricValue")
+        self.game_projection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.reference_label = QLabel(fmt.UNKNOWN)
         self.reference_label.setObjectName("metricValue")
@@ -171,18 +227,38 @@ class MetricsPanel(QWidget):
         self.baseline_button.clicked.connect(self.baselineRequested.emit)
         self.baseline_button.setVisible(False)
 
-        grid.addWidget(self.period_points_title, 0, 0)
-        grid.addWidget(self.period_points_label, 0, 1)
-        grid.addWidget(_title("PROMEDIO DEL CUARTO"), 1, 0)
-        grid.addWidget(self.period_pace_label, 1, 1)
-        grid.addWidget(_title("PROMEDIO DEL PARTIDO"), 2, 0)
+        self.period_pace_title = _title("PROMEDIO ACTUAL DEL CUARTO")
+        grid.addWidget(self.period_pace_title, 0, 0)
+        grid.addWidget(self.period_pace_label, 0, 1)
+        grid.addWidget(self.half_pace_title, 1, 0)
+        grid.addWidget(self.half_pace_label, 1, 1)
+        grid.addWidget(_title("PROMEDIO ACTUAL PARTIDO"), 2, 0)
         grid.addWidget(self.game_pace_label, 2, 1)
-        grid.addWidget(_title("MI REFERENCIA"), 3, 0)
-        grid.addWidget(self.reference_label, 3, 1)
-        grid.addWidget(_title("MI CUOTA UNDER OBJETIVO"), 4, 0)
-        grid.addWidget(self.target_odds_label, 4, 1)
-        grid.addWidget(self.points_source_label, 5, 0, 1, 2)
-        grid.addWidget(self.baseline_button, 6, 0, 1, 2)
+        grid.addWidget(_title("PROYECCIÓN Q RESTANTE"), 3, 0)
+        grid.addWidget(self.period_projection_label, 3, 1)
+        grid.addWidget(_title("PROYECCIÓN MITAD RESTANTE"), 4, 0)
+        grid.addWidget(self.half_projection_label, 4, 1)
+        grid.addWidget(_title("PROYECCIÓN PARTIDO RESTANTE"), 5, 0)
+        grid.addWidget(self.game_projection_label, 5, 1)
+        grid.addWidget(self.period_points_title, 6, 0)
+        grid.addWidget(self.period_points_label, 6, 1)
+        grid.addWidget(self.half_points_title, 7, 0)
+        grid.addWidget(self.half_points_label, 7, 1)
+        grid.addWidget(_title("PUNTOS DEL PARTIDO"), 8, 0)
+        grid.addWidget(self.game_points_label, 8, 1)
+        grid.addWidget(_title("MI REFERENCIA"), 9, 0)
+        grid.addWidget(self.reference_label, 9, 1)
+        grid.addWidget(_title("MI CUOTA UNDER OBJETIVO"), 10, 0)
+        grid.addWidget(self.target_odds_label, 10, 1)
+
+        # La referencia historica de 1H se conserva, pero queda fuera del
+        # bloque principal ordenado y solo aparece durante la segunda mitad.
+        grid.addWidget(self.first_half_pace_title, 11, 0)
+        grid.addWidget(self.first_half_pace_label, 11, 1)
+        grid.addWidget(self.first_half_points_title, 12, 0)
+        grid.addWidget(self.first_half_points_label, 12, 1)
+        grid.addWidget(self.points_source_label, 13, 0, 1, 2)
+        grid.addWidget(self.baseline_button, 14, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnMinimumWidth(1, 110)
         return card
@@ -200,11 +276,14 @@ class MetricsPanel(QWidget):
         self.bet_market_label.setObjectName("status")
         self.market_now_label = QLabel("")
         self.market_now_label.setObjectName("status")
+        self.freshness_label = QLabel("")
+        self.freshness_label.setObjectName("status")
 
         layout.addWidget(self.bet_title)
         layout.addWidget(self.bet_label)
         layout.addWidget(self.bet_market_label)
         layout.addWidget(self.market_now_label)
+        layout.addWidget(self.freshness_label)
         return card
 
     def _build_critical(self) -> QFrame:
@@ -212,6 +291,7 @@ class MetricsPanel(QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(2)
+        layout.addWidget(_title("SEGUIMIENTO"))
 
         limit_row = QHBoxLayout()
         limit_row.addWidget(_title("LIMITE PARA PERDER"))
@@ -235,7 +315,7 @@ class MetricsPanel(QWidget):
         self.exceeded_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.exceeded_label)
 
-        layout.addWidget(_title("RITMO NECESARIO PARA SUPERARLA"))
+        layout.addWidget(_title("PROMEDIO FALTANTE (RITMO NECESARIO)"))
         self.required_pace_label = QLabel(fmt.UNKNOWN)
         self.required_pace_label.setObjectName("paceValue")
         self.required_pace_label.setAlignment(Qt.AlignCenter)
@@ -250,12 +330,15 @@ class MetricsPanel(QWidget):
         margins.setSpacing(2)
         self.margin_reference_label = QLabel(fmt.UNKNOWN)
         self.margin_period_label = QLabel(fmt.UNKNOWN)
+        self.margin_half_label = QLabel(fmt.UNKNOWN)
         self.margin_game_label = QLabel(fmt.UNKNOWN)
         self.margin_reference_title = _title("MARGEN VS REFERENCIA")
         self.margin_period_title = _title("MARGEN VS CUARTO")
+        self.margin_half_title = _title("MARGEN VS MITAD")
         for row, (title, widget) in enumerate((
             (self.margin_reference_title, self.margin_reference_label),
             (self.margin_period_title, self.margin_period_label),
+            (self.margin_half_title, self.margin_half_label),
             (_title("MARGEN VS PARTIDO"), self.margin_game_label),
         )):
             widget.setObjectName("metricValue")
@@ -299,13 +382,17 @@ class MetricsPanel(QWidget):
                     evaluation: Optional[LineEvaluation] = None,
                     current_market_line: Optional[MarketLine] = None,
                     criteria: Optional[EntryCriteria] = None,
-                    needs_baseline: bool = False) -> None:
+                    needs_baseline: bool = False,
+                    focus_freshness: Optional[FreshnessState] = None,
+                    focus_age_text: str = "") -> None:
         """Vuelca un ciclo completo de datos en la interfaz."""
         self.team_a_label.setText(fmt.text(state.team_a.usable_value()) or "EQUIPO A")
         self.team_b_label.setText(fmt.text(state.team_b.usable_value()) or "EQUIPO B")
         self.team_a_score.setText(fmt.integer(state.score_a_value))
         self.team_b_score.setText(fmt.integer(state.score_b_value))
         self.total_label.setText(fmt.integer(general.total_points))
+        self._update_results_table(state)
+        self._update_closed_period_averages(general.closed_period_averages)
 
         self.period_label.setText(state.label())
         self.clock_label.setText(fmt.clock(general.remaining_period_seconds))
@@ -315,11 +402,33 @@ class MetricsPanel(QWidget):
         period_label = state.label()
         self.period_points_title.setText(
             f"PUNTOS {period_label}" if period_label != "--" else "PUNTOS DEL CUARTO")
+        self.period_pace_title.setText(
+            f"PROMEDIO ACTUAL {period_label}" if period_label != "--"
+            else "PROMEDIO ACTUAL DEL CUARTO")
         self.margin_period_title.setText(
             f"MARGEN VS {period_label}" if period_label != "--" else "MARGEN VS CUARTO")
         self.period_points_label.setText(_period_points_text(general))
         self.period_pace_label.setText(fmt.pace(general.period_pace))
+        self.period_projection_label.setText(fmt.projection(general.period_projection))
+        half_label = f"{general.half_number}H" if general.half_number else "MITAD"
+        self.half_points_title.setText(f"PUNTOS {half_label}")
+        self.half_pace_title.setText(f"PROMEDIO ACTUAL {half_label}")
+        self.half_points_label.setText(_score_total_text(
+            general.half_points_a, general.half_points_b, general.half_points))
+        self.half_pace_label.setText(fmt.pace(general.half_pace))
+        self.half_projection_label.setText(fmt.projection(general.half_projection))
+        show_first_half = general.half_number == 2 and general.first_half_points is not None
+        for widget in (self.first_half_points_title, self.first_half_points_label,
+                       self.first_half_pace_title, self.first_half_pace_label):
+            widget.setVisible(show_first_half)
+        self.first_half_points_label.setText(_score_total_text(
+            general.first_half_points_a, general.first_half_points_b,
+            general.first_half_points))
+        self.first_half_pace_label.setText(fmt.pace(general.first_half_pace))
+        self.game_points_label.setText(_score_total_text(
+            state.score_a_value, state.score_b_value, general.total_points))
         self.game_pace_label.setText(fmt.pace(general.game_pace))
+        self.game_projection_label.setText(fmt.projection(general.game_projection))
         self.points_source_label.setText(_points_source_text(general.period_points_source))
         self.baseline_button.setVisible(bool(needs_baseline))
         if criteria is not None:
@@ -327,8 +436,17 @@ class MetricsPanel(QWidget):
             self.target_odds_label.setText(f"{criteria.target_under_odds:.2f}")
 
         self._update_bet(bet, evaluation, current_market_line, criteria)
+        self._update_market_state(focus_freshness, focus_age_text)
         self.halftime_label.setText(fmt.halftime(general.seconds_to_halftime))
         self.end_label.setText(fmt.clock(general.remaining_game_seconds))
+
+    def _update_market_state(self, estado, edad: str) -> None:
+        texto = _freshness_text(estado, edad)
+        self.freshness_label.setText(texto)
+        if estado is not None and not estado.is_trustworthy_now:
+            self.freshness_label.setStyleSheet(f"color: {COLOR_WARN};")
+        else:
+            self.freshness_label.setStyleSheet("")
 
     def _update_bet(self, bet: Optional[LockedBet], m: Optional[LineEvaluation],
                     current_line: Optional[MarketLine],
@@ -361,7 +479,7 @@ class MetricsPanel(QWidget):
             self.exceeded_label.setText("")
             self.signal_label.setText("")
             for widget in (self.margin_reference_label, self.margin_period_label,
-                           self.margin_game_label):
+                           self.margin_half_label, self.margin_game_label):
                 widget.setText(fmt.UNKNOWN)
             self.scope_label.setText("")
             return
@@ -399,9 +517,76 @@ class MetricsPanel(QWidget):
             self.margin_reference_title.setText(
                 f"MARGEN VS REFERENCIA ({criteria.reference_pace:.2f})")
         self.margin_period_label.setText(_margin(m.margin_vs_period_pace))
+        self.margin_half_label.setText(_margin(m.margin_vs_half_pace))
         self.margin_game_label.setText(_margin(m.margin_vs_game_pace))
         self.margin_reference_label.setText(_margin(m.margin_vs_reference))
         self.scope_label.setText(_scope_text(m))
+
+    def _update_results_table(self, state: GameState) -> None:
+        scores = state.period_grid_scores()
+        headers = ["", *(state.rules.label(score.period) for score in scores), "TOTAL"]
+        self.results_table.setColumnCount(len(headers))
+        self.results_table.setHorizontalHeaderLabels(headers)
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, len(headers)):
+            self.results_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeToContents)
+
+        names = [
+            fmt.text(state.team_a.usable_value()) or "EQUIPO A",
+            fmt.text(state.team_b.usable_value()) or "EQUIPO B",
+            "TOTAL",
+        ]
+        for row, name in enumerate(names):
+            values = [name]
+            for score in scores:
+                if row == 0:
+                    values.append(fmt.integer(score.points_a))
+                elif row == 1:
+                    values.append(fmt.integer(score.points_b))
+                else:
+                    values.append(fmt.integer(score.total))
+            values.append(fmt.integer(
+                state.score_a_value if row == 0 else
+                state.score_b_value if row == 1 else state.total_points))
+            for column, text in enumerate(values):
+                item = self.results_table.item(row, column) or QTableWidgetItem()
+                item.setText(text)
+                item.setTextAlignment(
+                    Qt.AlignLeft | Qt.AlignVCenter if column == 0
+                    else Qt.AlignCenter)
+                if column == 0:
+                    item.setToolTip(name)
+                font = item.font()
+                font.setBold(column == len(values) - 1 or row == 2)
+                item.setFont(font)
+                self.results_table.setItem(row, column, item)
+
+    def _update_closed_period_averages(
+            self, averages: tuple[ClosedPeriodAverage, ...]) -> None:
+        while self.closed_period_average_row.count():
+            item = self.closed_period_average_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.closed_period_average_chips = []
+        for index, average in enumerate(averages):
+            chip = QLabel(f"{average.label}  {fmt.pace(average.pace)}")
+            chip.setObjectName("closedPeriodAverageChip")
+            chip.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.closed_period_average_row.addWidget(chip, index // 3, index % 3)
+            self.closed_period_average_chips.append(chip)
+        self.closed_period_averages_strip.setVisible(bool(averages))
+
+
+def _freshness_text(estado: Optional[FreshnessState], edad: str) -> str:
+    """La tarjeta nunca oculta cuando se leyo por ultima vez ese mercado."""
+    if estado is None:
+        return ""
+    if estado.is_trustworthy_now:
+        return f"ESTADO DEL MERCADO: {estado.label}"
+    return f"ESTADO DEL MERCADO: {estado.label}   ·   ultima lectura {edad}"
 
 
 def _phase_text(phase: GamePhase) -> str:
@@ -422,6 +607,15 @@ def _period_points_text(general: GeneralMetrics) -> str:
     if general.period_points_a is None or general.period_points_b is None:
         return str(general.period_points)
     return f"{general.period_points}   ({general.period_points_a} - {general.period_points_b})"
+
+
+def _score_total_text(points_a: Optional[int], points_b: Optional[int],
+                      total: Optional[int]) -> str:
+    if total is None:
+        return fmt.UNKNOWN
+    if points_a is None or points_b is None:
+        return f"{total} pts"
+    return f"{points_a} - {points_b}   ·   {total} pts"
 
 
 def _points_source_text(source: PointsSource) -> str:
@@ -458,6 +652,8 @@ def _scope_text(m: LineEvaluation) -> str:
         return ""
     parts = [f"Ambito: {m.key.label}"]
     parts.append(f"puntos {fmt.integer(m.scope_points)}")
+    parts.append(f"tiempo jugado {fmt.clock(m.scope_elapsed_seconds)}")
+    parts.append(f"promedio actual {fmt.pace(m.current_pace)}")
     parts.append(f"tiempo restante {fmt.clock(m.scope_remaining_seconds)}")
     if not m.started:
         parts.append("(el cuarto todavia no ha empezado)")

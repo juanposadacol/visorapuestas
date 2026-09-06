@@ -12,8 +12,10 @@ El paso 3 es el que evita configuraciones que "parecen bien" pero leen mal.
 from __future__ import annotations
 
 from typing import Dict, Optional
+from copy import deepcopy
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -78,11 +80,16 @@ class ProfileDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Configurar perfil de casa de apuestas")
         self.setMinimumSize(820, 620)
-        self.profile = profile
+        self.profile = deepcopy(profile)
         self.capture = capture
         self.engine = engine
         self._overlay: Optional[RoiOverlay] = None
         self._test_results: Dict[RoiKind, str] = {}
+        self._hidden_windows = []
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setSingleShot(True)
+        self._capture_timer.timeout.connect(self._capture_selection)
+        self._selection_kind = None
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_settings())
@@ -131,6 +138,13 @@ class ProfileDialog(QDialog):
         self.ttl_spin.setSuffix(" s hasta caducar")
 
         self.screen_label = QLabel("")
+        self.monitor_combo = QComboBox()
+        monitors = self.capture.monitors()
+        self._desktop = monitors[0] if monitors else self.profile.frame
+        for index, monitor in enumerate(monitors[1:] or monitors, start=1):
+            self.monitor_combo.addItem(
+                f"Pantalla {index}: {monitor.width} × {monitor.height} "
+                f"({monitor.x}, {monitor.y})", monitor)
 
         form.addRow("Nombre del perfil", self.name_edit)
         form.addRow("Casa de apuestas", self.sportsbook_combo)
@@ -142,6 +156,7 @@ class ProfileDialog(QDialog):
         form.addRow("Confirmaciones exigidas", self.confirm_spin)
         form.addRow("Caducidad de un dato", self.ttl_spin)
         form.addRow("Pantalla de referencia", self.screen_label)
+        form.addRow("Pantalla para seleccionar", self.monitor_combo)
         return box
 
     def _build_regions(self) -> QGroupBox:
@@ -250,36 +265,73 @@ class ProfileDialog(QDialog):
     def _define_selected(self) -> None:
         kind = self._selected_kind()
         if kind is None:
+            QMessageBox.information(self, "Region", "Selecciona una fila de la lista.")
             return
-        try:
-            image, monitor = grab_desktop(self.capture)
-        except CaptureError as exc:
-            QMessageBox.warning(self, "Captura", f"No se pudo capturar la pantalla:\n{exc}")
+        if self._capture_timer.isActive() or self._overlay is not None:
             return
-
-        # El marco de referencia es el monitor donde se configura.
-        self.profile.frame = monitor
-        self.profile.screen = ScreenContext(width=monitor.width, height=monitor.height,
-                                            dpi_scale=self.profile.screen.dpi_scale)
-
-        overlay = RoiOverlay(image, monitor, title=f"Selecciona: {kind.display_name}")
-        overlay.regionSelected.connect(lambda rect, k=kind: self._on_region(k, rect))
-        overlay.cancelled.connect(self._on_region_cancelled)
-        self._overlay = overlay
+        self._selection_kind = kind
+        self._hidden_windows = []
+        parent = self.parentWidget()
+        if parent is not None and parent.window().isVisible():
+            self._hidden_windows.append(parent.window())
         self.hide()
-        overlay.showFullScreen()
+        for window in self._hidden_windows:
+            window.hide()
+        # Dejar que Windows repinte el navegador antes de tomar la imagen.
+        self._capture_timer.start(300)
+
+    def _capture_selection(self) -> None:
+        kind = self._selection_kind
+        try:
+            monitor = self.monitor_combo.currentData()
+            if monitor is None:
+                raise CaptureError("No hay una pantalla disponible.")
+            image, monitor = grab_desktop(self.capture, monitor)
+            target = next((s for s in QGuiApplication.screens()
+                           if (s.geometry().x(), s.geometry().y()) == (monitor.x, monitor.y)),
+                          self.screen())
+            overlay = RoiOverlay(image, monitor, title=f"Selecciona: {kind.display_name}",
+                                 screen=target)
+            overlay.regionSelected.connect(lambda rect, k=kind: self._on_region(k, rect))
+            overlay.cancelled.connect(self._on_region_cancelled)
+            self._overlay = overlay
+            overlay.showFullScreen()
+            overlay.raise_()
+            overlay.activateWindow()
+            overlay.setFocus()
+        except Exception as exc:
+            self._restore_editor()
+            QMessageBox.warning(self, "Captura", f"No se pudo capturar la pantalla:\n{exc}")
+
+    def _restore_editor(self) -> None:
+        self._capture_timer.stop()
+        overlay, self._overlay = self._overlay, None
+        if overlay is not None:
+            overlay.deleteLater()
+        for window in self._hidden_windows:
+            window.show()
+        self._hidden_windows = []
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _on_region(self, kind: RoiKind, rect: Rect) -> None:
+        # Un marco comun conserva regiones de diferentes monitores sin moverlas.
+        from ..capture.roi import NormalizedRect
+        for roi in self.profile.rois.values():
+            absolute = roi.resolve(self.profile.frame)
+            roi.rect = NormalizedRect.from_rect(absolute, self._desktop)
+        self.profile.frame = self._desktop
+        self.profile.screen = ScreenContext(width=self._desktop.width, height=self._desktop.height,
+                                            dpi_scale=self.profile.screen.dpi_scale)
         self.profile.set_roi(kind, rect)
         self._test_results.pop(kind, None)
-        self._overlay = None
-        self.show()
+        self._restore_editor()
         self._update_screen_label()
         self._refresh_table()
 
     def _on_region_cancelled(self) -> None:
-        self._overlay = None
-        self.show()
+        self._restore_editor()
 
     def _clear_selected(self) -> None:
         kind = self._selected_kind()

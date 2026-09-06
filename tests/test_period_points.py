@@ -91,3 +91,30 @@ def test_estado_sin_datos_devuelve_none_en_todo():
     assert s.elapsed_period_seconds is None
     assert s.remaining_game_seconds is None
     assert s.label() == "--"
+
+
+def test_puntos_de_un_cuarto_pasado_a_partir_de_dos_marcadores_base():
+    """Conocer el marcador al empezar Q3 y Q4 determina los puntos del Q3.
+
+    Es un hecho, no una suposicion, y es lo que permite evaluar el mercado de
+    la segunda mitad cuando ya se juega el Q4 habiendo entrado a mitad del Q3.
+    """
+    tracker = PeriodPointsTracker(FIBA)
+    tracker.set_manual_baseline(3, 50, 44)
+    tracker.set_manual_baseline(4, 62, 55)
+    q3 = tracker.period_score(3, current_period=4, score_a=70, score_b=62)
+    assert (q3.points_a, q3.points_b, q3.total) == (12, 11, 23)
+    assert q3.closed is True
+
+
+def test_sin_la_base_del_cuarto_siguiente_no_se_deduce_nada():
+    tracker = PeriodPointsTracker(FIBA)
+    tracker.set_manual_baseline(3, 50, 44)
+    assert tracker.period_score(3, current_period=4, score_a=70, score_b=62).total is None
+
+
+def test_la_mitad_se_completa_con_cuartos_pasados_deducidos():
+    s = _state(70, 62, 4, clock=300)
+    s.tracker.set_manual_baseline(3, 50, 44)
+    s.tracker.set_manual_baseline(4, 62, 55)
+    assert s.half_score(2).total == (70 - 50) + (62 - 44)

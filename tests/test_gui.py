@@ -50,6 +50,15 @@ def _pump(window, controller, cycles: int = 4):
     window._refresh()
 
 
+def _q3_block(window):
+    """Bloque del mercado del Q3 dentro del radar."""
+    from visorunder.domain.market import MarketKey
+
+    block = window.entry_board.block_for(MarketKey.quarter(3))
+    assert block is not None, "no hay bloque para el Q3 en el tablero"
+    return block
+
+
 def _line_with_value(window, value):
     """Localiza en el tablero la linea con ese valor."""
     for evaluation in window.controller.build_view_model(
@@ -84,16 +93,19 @@ def test_v1_flujo_completo(window):
     # 9: sin marcador inicial NO se inventan los puntos del cuarto
     assert win.metrics_panel.period_points_label.text() == "--"
     assert win.metrics_panel.period_pace_label.text() == "--"
-    assert win.metrics_panel.baseline_button.isVisible() or True  # visible al pintar
+    assert not win.metrics_panel.baseline_button.isHidden()
+    assert not win.baseline_button.isHidden(), "el fallback manual sigue disponible"
 
     # el usuario introduce el marcador con el que empezo el Q3
     controller.set_period_baseline(3, 34, 21)
     _pump(win, controller, 1)
     assert win.metrics_panel.period_points_label.text().startswith("19")
     assert win.metrics_panel.period_pace_label.text() == "4.19 pts/min"
+    assert win.metrics_panel.baseline_button.isHidden()
+    assert win.baseline_button.isHidden()
 
     # 12-13: se evaluan varias lineas y se selecciona una
-    assert win.entry_board.table.rowCount() == 4
+    assert _q3_block(win).table.rowCount() == 4
     controller.select_line(_line_with_value(win, 40.5), manual=True)
     _pump(win, controller, 1)
     linea = controller.selected_line
@@ -175,18 +187,18 @@ def test_el_tablero_evalua_todas_las_lineas(window):
     controller.set_period_baseline(3, 30, 25)   # 20 puntos en el cuarto
     _pump(win, controller, 1)
 
-    board = win.entry_board
+    board = _q3_block(win)
     assert board.table.rowCount() == 4
     filas = {}
     for row in range(board.table.rowCount()):
         celdas = [board.table.item(row, c).text() for c in range(board.table.columnCount())]
         filas[celdas[0]] = celdas
-    assert filas["37.5"][2:5] == ["18", "4.50", "+0.50"]
-    assert filas["38.5"][2:5] == ["19", "4.75", "+0.75"]
-    assert filas["39.5"][2:5] == ["20", "5.00", "+1.00"]
-    assert filas["40.5"][2:5] == ["21", "5.25", "+1.25"]
-    assert filas["37.5"][7] == "EXIGENTE"
-    assert filas["40.5"][7] == "MUY EXIGENTE"
+    assert filas["37.5"][2:6] == ["3.33", "18", "4.50", "+0.50"]
+    assert filas["38.5"][2:6] == ["3.33", "19", "4.75", "+0.75"]
+    assert filas["39.5"][2:6] == ["3.33", "20", "5.00", "+1.00"]
+    assert filas["40.5"][2:6] == ["3.33", "21", "5.25", "+1.25"]
+    assert filas["37.5"][-1] == "EXIGENTE"
+    assert filas["40.5"][-1] == "MUY EXIGENTE"
 
 
 def test_el_tablero_enfoca_por_cuota_objetivo(window):
@@ -229,13 +241,14 @@ def test_sin_marcador_inicial_las_lineas_del_cuarto_no_son_evaluables(window):
     _start(win, controller)
     _pump(win, controller)
 
-    board = win.entry_board
+    board = _q3_block(win)
     assert board.table.rowCount() == 4
+    ultima = board.table.columnCount() - 1
     for row in range(board.table.rowCount()):
-        assert board.table.item(row, 7).text() == "FALTA MARCADOR INICIAL Q3"
-        assert board.table.item(row, 2).text() == "--"   # no se inventan puntos
-        assert board.table.item(row, 3).text() == "--"   # ni ritmo
-    assert "Ninguna linea evaluable" in board.status_label.text()
+        assert board.table.item(row, ultima).text() == "FALTA MARCADOR INICIAL Q3"
+        assert board.table.item(row, 2).text() == "--"   # no se inventa promedio actual
+        assert board.table.item(row, 3).text() == "--"   # ni puntos faltantes
+        assert board.table.item(row, 4).text() == "--"   # ni promedio faltante
 
 
 def test_linea_en_revision_mientras_la_casa_cambia(window):
@@ -244,14 +257,14 @@ def test_linea_en_revision_mientras_la_casa_cambia(window):
     _pump(win, controller)
     controller.set_period_baseline(3, 30, 25)
     _pump(win, controller, 1)
-    assert win.entry_board.review_label.isHidden() or not win.entry_board.review_label.isVisible()
+    assert not win.entry_board.review_label.isVisible()
 
     # La casa mueve las lineas: una sola lectura no basta para publicarlas.
     game.move_lines(2.0)
     controller.reader.tick()
     win._refresh()
     assert controller.reader.last_snapshot.market_under_review is True
-    assert "LINEA EN REVISION" in win.entry_board.review_label.text()
+    assert "REVISION" in win.entry_board.review_label.text()
 
     # Confirmada la nueva propuesta, el tablero pasa a reflejarla.
     _pump(win, controller, 2)
@@ -276,5 +289,298 @@ def test_el_modo_cambia_al_fijar_la_apuesta(window):
     assert controller.mode is AppMode.APUESTA_FIJADA
     assert win.entry_board.mode_label.text() == "APUESTA FIJADA"
     # el tablero sigue vivo junto a la apuesta fijada
-    assert win.entry_board.table.rowCount() == 4
+    assert _q3_block(win).table.rowCount() == 4
     assert win.metrics_panel.points_title.text() == "FALTAN PARA PERDER"
+
+
+# ------------------------------------------------ radar multi-mercado (etapa 4)
+def _visit_tab(window, controller, tab, ticks=5):
+    window.controller.demo_game.show_tab(tab)
+    for _ in range(ticks):
+        controller.reader.tick()
+    window._refresh()
+
+
+def test_el_radar_muestra_un_bloque_por_mercado(window):
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    game.clock_seconds = 360
+    game.score_a, game.score_b = 55, 48
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    _visit_tab(win, controller, "HALF1")
+    _visit_tab(win, controller, "QUARTER")
+
+    bloques = win.entry_board.blocks()
+    assert set(bloques) == {MarketKey.game(), MarketKey.half_market(1), MarketKey.quarter(3)}
+    assert bloques[MarketKey.game()].table.rowCount() == 4
+    assert bloques[MarketKey.half_market(1)].table.rowCount() == 3
+    assert bloques[MarketKey.quarter(3)].table.rowCount() == 4
+
+
+def test_la_cabecera_de_un_mercado_no_visible_muestra_su_antiguedad(window):
+    """Regla critica: una linea vieja nunca se presenta como actual."""
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    _visit_tab(win, controller, "QUARTER")
+
+    juego = win.entry_board.block_for(MarketKey.game())
+    cuarto = win.entry_board.block_for(MarketKey.quarter(3))
+    assert "EN VIVO" in cuarto.state_label.text()
+    assert "EN VIVO" not in juego.state_label.text()
+    assert "·" in juego.state_label.text()          # lleva su antiguedad
+    # y sus lineas siguen ahi
+    assert juego.table.rowCount() == 4
+
+
+def test_la_apuesta_fijada_sobrevive_al_cambio_de_pestana(window):
+    """Requisito 19: la apuesta y el mercado visible son cosas distintas."""
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    controller.set_period_baseline(3, 50, 44)
+
+    _visit_tab(win, controller, "GAME")
+    juego = controller.build_view_model(controller.reader.last_snapshot)
+    linea = next(e for e in juego.blocks if e.key == MarketKey.game()).evaluations[-1]
+    controller.select_line(linea.line, manual=True)
+    win.lock_bet()
+    apuesta = controller.locked_bet
+    assert apuesta.key == MarketKey.game()
+
+    # el usuario se va a otra pestana
+    _visit_tab(win, controller, "QUARTER")
+    assert controller.locked_bet.key == MarketKey.game()
+    assert controller.locked_bet.line == apuesta.line
+    assert controller.locked_bet.odds == apuesta.odds
+    vm = controller.build_view_model(controller.reader.last_snapshot)
+    assert vm.bet_tracking is not None
+    assert vm.bet_tracking.key == MarketKey.game()      # se sigue su mercado
+    assert vm.snapshot.markets.visible_key == MarketKey.quarter(3)
+
+
+def test_el_selector_manual_de_mercado_visible(window):
+    from visorunder.domain.market import MarketKey
+
+    win, controller, game = window
+    _start(win, controller)
+    _pump(win, controller)
+    assert win.entry_board.market_index(MarketKey.half_market(2)) > 0
+    win.entry_board.select_visible_market(MarketKey.half_market(2))
+    assert controller.reader.manual_visible_key == MarketKey.half_market(2)
+
+    # volver a automatico limpia la eleccion manual
+    win.entry_board.select_visible_market(None)
+    assert controller.reader.manual_visible_key is None
+
+
+# ------------------------------------------------- conexion con la extension
+def _enviar_al_puente(controller, cuerpo):
+    import json
+    import urllib.request
+
+    from visorunder.bridge.server import BRIDGE_HEADER
+
+    peticion = urllib.request.Request(
+        f"{controller.bridge.url}/v1/browser-state",
+        data=json.dumps(cuerpo).encode("utf-8"), method="POST")
+    peticion.add_header("Content-Type", "application/json")
+    peticion.add_header(BRIDGE_HEADER, "1")
+    with urllib.request.urlopen(peticion, timeout=5) as respuesta:
+        return respuesta.status
+
+
+def _payload_betplay(**cambios):
+    base = {
+        "protocol": 1, "source": "betplay", "observedAt": "2026-08-19T02:00:00.000Z",
+        "event": {"id": "9876543", "name": "Equipo A vs Equipo B"},
+        "visibleMarket": {"marketType": "QUARTER_TOTAL", "period": 4, "half": None,
+                          "confidence": 0.95, "rawTitle": "Total de puntos - Cuarto 4",
+                          "sidesConfirmed": True},
+        "lines": [{"line": 44.5, "overOdds": 1.75, "underOdds": 1.90}],
+        "gameState": {"scoreA": 58, "scoreB": 52, "period": 4, "clock": "06:24"},
+    }
+    base.update(cambios)
+    return base
+
+
+@pytest.fixture()
+def window_bridge(qapp, tmp_path):
+    from visorunder.app import AppController
+    from visorunder.bridge.server import BridgeSettings
+
+    controller = AppController(db_path=str(tmp_path / "bridge.db"))
+    controller.settings.log_to_file = False
+    controller.settings.bridge = BridgeSettings(port=0)
+    controller.bridge.settings = controller.settings.bridge
+    win = MainWindow(controller)
+    yield win, controller
+    controller.finish_game()
+    win.timer.stop()
+    win.hotkeys.stop()
+    controller.shutdown()
+
+
+def test_sin_extension_el_panel_dice_desconectada(window_bridge):
+    from visorunder.bridge.source import LinkState
+
+    win, controller = window_bridge
+    win._refresh()
+    assert win.connection_panel.state_label.text() == LinkState.DISCONNECTED.label
+    assert win.betplay_status_label.text() == "BETPLAY DESCONECTADO"
+    assert controller.reader is None       # no arranca solo sin datos
+
+
+def test_la_conexion_tecnica_esta_en_diagnostico_y_no_en_panel(window_bridge):
+    win, _ = window_bridge
+    operational_tab = win.tabs.widget(0)
+    diagnostics_tab = win.tabs.widget(1)
+
+    assert not operational_tab.isAncestorOf(win.connection_panel)
+    assert diagnostics_tab.isAncestorOf(win.connection_panel)
+    assert operational_tab.isAncestorOf(win.metrics_panel)
+    assert win.metrics_scroll.parentWidget().layout().itemAt(0).widget() is win.metrics_scroll
+    first_card = win.metrics_panel.layout().itemAt(0).widget()
+    assert first_card.isAncestorOf(win.metrics_panel.results_table)
+
+
+def test_la_sesion_arranca_sola_al_conectar_la_extension(window_bridge):
+    """Criterio de exito: abrir las dos cosas y que el radar empiece solo."""
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+
+    win._refresh()
+    assert controller.reader is not None, "no arranco la sesion sola"
+    controller.reader.stop()
+    assert "CONECTADO" in win.status_label.text()
+    assert win.betplay_status_label.text() == "BETPLAY ✓"
+
+
+def test_el_panel_dice_de_donde_sale_cada_dato(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    panel = win.connection_panel
+    assert "BETPLAY CONECTADO" in panel.state_label.text()
+    for campo in ("market", "lines", "score_a", "period", "clock_seconds"):
+        assert panel.field_labels[campo].text() == "DOM ✓", campo
+
+
+def test_las_lineas_del_DOM_llegan_al_tablero(window_bridge):
+    from visorunder.domain.market import MarketKey
+
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    bloque = win.entry_board.block_for(MarketKey.quarter(4))
+    assert bloque is not None, "el mercado del DOM no aparece en el tablero"
+    assert bloque.table.rowCount() == 1
+    assert bloque.table.item(0, 0).text() == "44.5"
+    assert bloque.table.item(0, 1).text() == "1.90"      # cuota UNDER
+
+
+def test_un_cambio_de_cuota_se_refleja_sin_tocar_nada(window_bridge):
+    from visorunder.domain.market import MarketKey
+
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    controller.reader.tick()
+    win._refresh()
+
+    _enviar_al_puente(controller, _payload_betplay(
+        lines=[{"line": 44.5, "overOdds": 1.68, "underOdds": 2.05}]))
+    controller.reader.tick()
+    win._refresh()
+
+    bloque = win.entry_board.block_for(MarketKey.quarter(4))
+    assert bloque.table.item(0, 1).text() == "2.05"
+
+
+def test_cambiar_de_partido_cierra_la_sesion_anterior(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay())
+    win._refresh()
+    controller.reader.stop()
+    primera = controller.session_id
+
+    _enviar_al_puente(controller, _payload_betplay(
+        event={"id": "1111111", "name": "Equipo C vs Equipo D"}))
+    win._refresh()
+
+    assert controller.session_id != primera
+    assert "Nuevo partido" in win.status_label.text() or controller.reader is not None
+
+
+# ---------------------------------- el panel distingue extension y datos
+#
+# Antes una sola linea decia EXTENSION DESCONECTADA tanto si la extension no
+# estaba como si estaba y todavia no habia reconocido ningun mercado. En la
+# prueba real eso mando el diagnostico por el camino contrario.
+
+def test_el_panel_distingue_extension_conectada_de_datos_disponibles(window_bridge):
+    from visorunder.bridge.source import ExtensionState, LinkState
+
+    win, controller = window_bridge
+    controller.browser.note_contact()
+    win._refresh()
+
+    panel = win.connection_panel
+    assert panel.extension_label.text() == ExtensionState.CONNECTED.label
+    assert panel.state_label.text() == LinkState.DISCONNECTED.label
+    assert "SIN DATOS DEL DOM" in panel.state_label.text()
+    assert controller.reader is None, "sin marcador todavia no arranca"
+
+
+def test_el_panel_dice_que_falta_en_vez_de_pedir_regiones(window_bridge):
+    win, controller = window_bridge
+    controller.browser.note_contact()
+    _enviar_al_puente(controller, _payload_betplay(gameState=None))
+    win._refresh()
+
+    texto = win.connection_panel.waiting_label.text()
+    assert texto.startswith("Esperando"), texto
+    assert "marcador" in texto
+    assert "region" not in texto.lower(), "las regiones son el ultimo recurso"
+    assert "Esperando" in win.status_label.text()
+
+
+def test_sin_extension_se_explica_que_hacer(window_bridge):
+    win, controller = window_bridge
+    win._refresh()
+    assert "extension" in win.status_label.text().lower()
+    assert win.connection_panel.extension_label.text() == "EXTENSION DESCONECTADA"
+
+
+def test_un_mercado_sin_marcador_llega_igual_al_panel(window_bridge):
+    win, controller = window_bridge
+    _enviar_al_puente(controller, _payload_betplay(gameState=None))
+    win._refresh()
+
+    panel = win.connection_panel
+    assert panel.field_labels["market"].text() == "DOM ✓"
+    assert panel.field_labels["lines"].text() == "DOM ✓"
+    # Lo que el DOM no sabe se dice con un guion, no con un dato inventado.
+    assert panel.field_labels["score_a"].text() == "--"
+    assert panel.field_labels["clock_seconds"].text() == "--"

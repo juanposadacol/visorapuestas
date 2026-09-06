@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..bridge.server import BridgeSettings
+from ..bridge.source import BrowserSourceSettings
 from .criteria import EntryCriteria
+from .freshness import FreshnessCriteria
 from .paths import settings_path
 
 
@@ -27,6 +30,12 @@ class AppSettings:
     log_to_file: bool = True
     #: Criterios de entrada (ritmo de referencia, cuota objetivo, umbrales).
     entry: EntryCriteria = field(default_factory=EntryCriteria)
+    #: Umbrales de frescura de los mercados no visibles.
+    freshness: FreshnessCriteria = field(default_factory=FreshnessCriteria)
+    #: Puente local con la extension del navegador.
+    bridge: BridgeSettings = field(default_factory=BridgeSettings)
+    #: Cuando dejar de fiarse de lo que llego por el puente.
+    browser: BrowserSourceSettings = field(default_factory=BrowserSourceSettings)
 
     def save(self, path: Optional[Path] = None) -> None:
         target = Path(path) if path else settings_path()
@@ -46,6 +55,12 @@ class AppSettings:
         for key, value in data.items():
             if key == "entry":
                 settings.entry = EntryCriteria.from_dict(value)
+            elif key == "freshness":
+                settings.freshness = FreshnessCriteria.from_dict(value)
+            elif key == "bridge":
+                settings.bridge = BridgeSettings.from_dict(value)
+            elif key == "browser":
+                settings.browser = BrowserSourceSettings(**value).validate()
             elif hasattr(settings, key):
                 setattr(settings, key, value)
         return settings

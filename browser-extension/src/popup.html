@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>VisorApuestas DOM Diagnostic</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>VISORAPUESTAS DOM DIAGNOSTIC</h1>
+    <p class="sub">Solo lectura. No apuesta, no navega y no modifica la pagina.</p>
+  </header>
+
+  <!-- Cada linea responde UNA pregunta. Antes una sola palabra
+       ("DESCONECTADA") mezclaba la conexion con la falta de datos. -->
+  <section class="card" id="tarjeta-puente">
+    <div class="fila"><span class="etiqueta">App local</span><span id="app-local" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">BetPlay</span><span id="sitio" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Escaner</span><span id="escaner" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Mercados</span><span id="mercados-resumen" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Enviando</span><span id="enviando" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Ultimo envio</span><span id="ultimo-envio" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Puerto</span><span id="puerto" class="valor mono">--</span></div>
+  </section>
+
+  <section class="card" id="tarjeta-partido">
+    <h2>Estado del partido</h2>
+    <div class="fila"><span class="etiqueta">Marcador</span><span id="marcador" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Cuarto</span><span id="cuarto" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Reloj</span><span id="reloj" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Parciales</span><span id="parciales" class="valor mono">--</span></div>
+  </section>
+
+  <section id="estado" class="card">
+    <h2>Mercado</h2>
+    <div class="fila"><span class="etiqueta">URL</span><span id="url" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Mercado visualmente activo</span><span id="visible" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Lineas actuales</span><span id="lineas-actuales" class="valor">--</span></div>
+    <div class="fila"><span class="etiqueta">Ultimo escaneo</span><span id="escaneo" class="valor mono">--</span></div>
+    <div class="fila"><span class="etiqueta">Entorno</span><span id="entorno" class="valor">--</span></div>
+  </section>
+
+  <section class="card" id="tarjeta-errores" hidden>
+    <h2>Errores</h2>
+    <div id="errores" class="mono pequeno"></div>
+  </section>
+
+  <section class="card">
+    <h2>Mercados encontrados en DOM</h2>
+    <div id="mercados"></div>
+  </section>
+
+  <section class="card">
+    <h2>Lineas por mercado</h2>
+    <div id="lineas"></div>
+  </section>
+
+  <section class="card">
+    <h2>Historial de la sesion</h2>
+    <div id="historial" class="mono pequeno"></div>
+  </section>
+
+  <section class="card" id="tarjeta-debug" hidden>
+    <h2>Debug</h2>
+    <div id="debug" class="mono pequeno"></div>
+  </section>
+
+  <footer>
+    <label class="check"><input type="checkbox" id="ver-debug"> Mostrar debug</label>
+    <div class="botones">
+      <button id="copiar-texto" class="primario">COPIAR DIAGNOSTICO</button>
+      <button id="copiar-estructura">COPIAR ESTRUCTURA DEL MERCADO</button>
+      <button id="copiar-scoreboard">COPIAR ESTRUCTURA SCOREBOARD</button>
+      <button id="copiar-json">COPIAR JSON</button>
+      <button id="descargar">DESCARGAR JSON</button>
+      <button id="refrescar">REFRESCAR</button>
+    </div>
+    <p id="aviso" class="aviso"></p>
+  </footer>
+
+  <script src="lib/dom.js"></script>
+  <script src="lib/errors.js"></script>
+  <script src="lib/text.js"></script>
+  <script src="lib/markets.js"></script>
+  <script src="lib/lines.js"></script>
+  <script src="lib/dedupe.js"></script>
+  <script src="lib/visibility.js"></script>
+  <script src="lib/options.js"></script>
+  <script src="lib/scan.js"></script>
+  <script src="lib/report.js"></script>
+  <script src="lib/scoreboard.js"></script>
+  <script src="lib/gamestate.js"></script>
+  <script src="lib/structure.js"></script>
+  <script src="lib/payload.js"></script>
+  <script src="lib/bridge_client.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

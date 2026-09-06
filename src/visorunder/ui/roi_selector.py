@@ -50,7 +50,7 @@ class RoiOverlay(QWidget):
     cancelled = Signal()
 
     def __init__(self, image: Any, monitor: Rect, title: str = "",
-                 parent: Optional[QWidget] = None) -> None:
+                 parent: Optional[QWidget] = None, screen=None) -> None:
         super().__init__(parent, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setWindowTitle(title or "Selecciona la region")
         self.setCursor(Qt.CrossCursor)
@@ -62,9 +62,11 @@ class RoiOverlay(QWidget):
         self._origin: Optional[QPoint] = None
         self._current: Optional[QPoint] = None
         self._title = title
+        self._completed = False
 
-        screen = QGuiApplication.primaryScreen()
+        screen = screen or QGuiApplication.primaryScreen()
         if screen is not None:
+            self.setScreen(screen)
             self.setGeometry(screen.geometry())
 
     # ------------------------------------------------------------- geometria
@@ -110,12 +112,18 @@ class RoiOverlay(QWidget):
             self.update()
             return
         physical = self._to_physical(rect)
+        self._completed = True
         self.close()
         self.regionSelected.emit(physical)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
             self.close()
+
+    def closeEvent(self, event) -> None:
+        super().closeEvent(event)
+        if not self._completed:
+            self._completed = True
             self.cancelled.emit()
 
     def paintEvent(self, event) -> None:

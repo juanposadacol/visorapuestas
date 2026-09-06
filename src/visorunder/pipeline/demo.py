@@ -38,6 +38,10 @@ class DemoGame:
     team_b: str = "CHINESE TAIPEI"
     market_period: int = 3
     lines: Tuple[float, ...] = (37.5, 38.5, 39.5, 40.5)
+    #: Pestana que la casa esta mostrando: "QUARTER", "GAME", "HALF1", "HALF2".
+    visible_tab: str = "QUARTER"
+    game_lines: Tuple[float, ...] = (176.5, 178.5, 180.5, 182.5)
+    half_lines: Tuple[float, ...] = (78.5, 80.5, 82.5)
     speed: float = 1.0
     seed: int = 7
     _rng: random.Random = field(default=None, repr=False)
@@ -88,14 +92,34 @@ class DemoGame:
         if roi_kind == RoiKind.TEAM_B.value:
             return (self.team_b, confidence)
         if roi_kind == RoiKind.MARKET_LABEL.value:
-            return (f"{self.market_period}.er Cuarto - Total de puntos", confidence)
+            return (self._label_text(), confidence)
         if roi_kind == RoiKind.MARKET_BLOCK.value:
             return (self._market_text(), confidence)
         return ("", 0.0)
 
+    def show_tab(self, tab: str) -> None:
+        """Simula que el usuario pincha otra pestana de la casa."""
+        self.visible_tab = tab
+
+    def _label_text(self) -> str:
+        if self.visible_tab == "GAME":
+            return "Partido - Total de puntos"
+        if self.visible_tab == "HALF1":
+            return "1.a mitad - Total de puntos"
+        if self.visible_tab == "HALF2":
+            return "2.a mitad - Total de puntos"
+        return f"{self.market_period}.er Cuarto - Total de puntos"
+
+    def _visible_lines(self) -> Tuple[float, ...]:
+        if self.visible_tab == "GAME":
+            return self.game_lines
+        if self.visible_tab in ("HALF1", "HALF2"):
+            return self.half_lines
+        return self.lines
+
     def _market_text(self) -> str:
         rows = []
-        for index, line in enumerate(self.lines):
+        for index, line in enumerate(self._visible_lines()):
             over = 1.55 + index * 0.13
             under = 2.25 - index * 0.17
             rows.append(f"{line:g} OVER {over:.2f} UNDER {under:.2f}")

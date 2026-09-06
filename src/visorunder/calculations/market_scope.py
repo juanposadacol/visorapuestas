@@ -1,4 +1,4 @@
-"""Resolucion generica de mercado -> (acumulador de puntos, tiempo restante).
+"""Resolucion generica de mercado -> puntos, tiempo jugado y restante.
 
 Requisito 14: "Crea una arquitectura generica donde el mercado determine el
 acumulador de puntos utilizado y el tiempo restante utilizado."
@@ -21,13 +21,15 @@ class ScopeResolution:
     """Datos que el mercado aporta a las metricas.
 
     points:            puntos ya anotados dentro del ambito del mercado.
+    elapsed_seconds:   segundos realmente jugados dentro del ambito.
     remaining_seconds: segundos de juego que todavia pueden sumar puntos
                        a ese mercado.
-    Ambos pueden ser None: significa NO DISPONIBLE, nunca cero por defecto.
+    Los tres pueden ser None: significa NO DISPONIBLE, nunca cero por defecto.
     """
 
     key: MarketKey
     points: Optional[int]
+    elapsed_seconds: Optional[int]
     remaining_seconds: Optional[int]
     points_source: PointsSource = PointsSource.UNKNOWN
     settled: bool = False   # el ambito ya termino: no pueden entrar mas puntos
@@ -54,6 +56,7 @@ def _resolve_game(state: GameState, key: MarketKey) -> ScopeResolution:
     return ScopeResolution(
         key=key,
         points=points,
+        elapsed_seconds=state.elapsed_game_seconds,
         remaining_seconds=remaining,
         points_source=PointsSource.HISTORY if points is not None else PointsSource.UNKNOWN,
         settled=bool(settled),
@@ -67,26 +70,32 @@ def _resolve_quarter(state: GameState, key: MarketKey) -> ScopeResolution:
     ps = state.period_score(period)
     points = ps.total
 
+    elapsed: Optional[int]
     remaining: Optional[int]
     settled = False
     started = True
     if current is None:
+        elapsed = None
         remaining = None
     elif period == current:
+        elapsed = state.elapsed_period_seconds
         remaining = state.remaining_period_seconds
     elif period < current:
         # El cuarto ya termino: no pueden entrar mas puntos.
+        elapsed = state.rules.period_seconds(period)
         remaining = 0
         settled = True
     else:
         # El cuarto todavia no ha empezado. La casa ya ofrece la linea pero el
         # tiempo disponible es el cuarto completo y los puntos son 0 de hecho.
+        elapsed = 0
         remaining = state.rules.period_seconds(period)
         started = False
 
     return ScopeResolution(
         key=key,
         points=points,
+        elapsed_seconds=elapsed,
         remaining_seconds=remaining,
         points_source=ps.source,
         settled=settled,
@@ -106,23 +115,33 @@ def _resolve_half(state: GameState, key: MarketKey) -> ScopeResolution:
     current = state.period_value
     clock = state.clock_value
 
+    scope_seconds = sum(rules.period_seconds(p) for p in range(first, last + 1))
+    elapsed: Optional[int]
     remaining: Optional[int]
     settled = False
     started = True
-    if current is None or clock is None:
+    if current is None:
+        elapsed = None
         remaining = None
     elif current > last:
+        elapsed = scope_seconds
         remaining = 0
         settled = True
     elif current < first:
-        remaining = sum(rules.period_seconds(p) for p in range(first, last + 1))
+        elapsed = 0
+        remaining = scope_seconds
         started = False
+    elif clock is None:
+        elapsed = None
+        remaining = None
     else:
         remaining = clock + sum(rules.period_seconds(p) for p in range(current + 1, last + 1))
+        elapsed = scope_seconds - remaining
 
     return ScopeResolution(
         key=key,
         points=points,
+        elapsed_seconds=elapsed,
         remaining_seconds=remaining,
         points_source=hs.source,
         settled=settled,

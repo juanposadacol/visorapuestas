@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "VisorApuestas Bridge",
+  "version": "0.2.0",
+  "description": "Lee de solo lectura el mercado visible de BetPlay y lo envia a la aplicacion local VisorApuestas. No apuesta, no navega y no modifica la pagina.",
+  "icons": {},
+  "host_permissions": [
+    "https://*.betplay.com.co/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.betplay.com.co/*"
+      ],
+      "js": [
+        "src/lib/dom.js",
+        "src/lib/errors.js",
+        "src/lib/text.js",
+        "src/lib/markets.js",
+        "src/lib/lines.js",
+        "src/lib/dedupe.js",
+        "src/lib/visibility.js",
+        "src/lib/options.js",
+        "src/lib/scan.js",
+        "src/lib/report.js",
+        "src/lib/scoreboard.js",
+        "src/lib/gamestate.js",
+        "src/lib/clock_q1_guard.js",
+        "src/lib/structure.js",
+        "src/lib/payload.js",
+        "src/lib/bridge_client.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "VisorApuestas DOM Diagnostic",
+    "default_popup": "src/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "permissions": [
+    "storage"
+  ]
+}

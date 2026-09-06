@@ -1,8 +1,9 @@
 """Motor matematico. Funciones puras, independientes y testeables (requisito 11).
 
-Ninguna funcion de este modulo predice nada. Todas describen el ESTADO
-MATEMATICO REAL a partir de datos observados. Si un dato de entrada es
-desconocido, la salida es None (nunca un valor inventado).
+Salvo las proyecciones lineales de presentacion explicitamente identificadas,
+las funciones describen el ESTADO MATEMATICO REAL a partir de datos observados.
+Si un dato de entrada es desconocido, la salida es None (nunca un valor
+inventado).
 
 Todo el tiempo entra en SEGUNDOS. Solo se convierte a minutos decimales
 dentro de los ratios.
@@ -12,10 +13,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..domain.bet import LockedBet
-from ..domain.game_state import GameState, PointsSource
+from ..domain.game_state import GamePhase, GameState, PointsSource
 from ..domain.market import MarketKey, Side
 from ..domain.time_utils import seconds_to_clock, seconds_to_decimal_minutes
 from . import market_scope
@@ -74,6 +75,17 @@ def points_per_minute(points: Optional[int], seconds_played: Optional[int]) -> O
     if minutes <= 0:
         return None
     return points / minutes
+
+
+def projected_points_remaining(pace: Optional[float],
+                               remaining_seconds: Optional[int]) -> Optional[float]:
+    """Puntos que se harian en el intervalo restante al ritmo observado.
+
+    Es una proyeccion lineal de presentacion, no un total final ni una señal.
+    """
+    if pace is None or remaining_seconds is None:
+        return None
+    return pace * seconds_to_decimal_minutes(max(0, remaining_seconds))
 
 
 # --------------------------------------------------------------------------
@@ -201,6 +213,46 @@ def seconds_to_game_end(rules, period: Optional[int], remaining_seconds: Optiona
 # Agregados que consume la interfaz
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
+class ClosedPeriodAverage:
+    """Promedio descriptivo de un periodo cuyo marcador ya es definitivo."""
+
+    period: int
+    label: str
+    points: int
+    pace: float
+
+
+def closed_period_averages(state: GameState) -> Tuple[ClosedPeriodAverage, ...]:
+    """Devuelve solo periodos cerrados y conocidos, en orden cronologico."""
+    current = state.period_value
+    if current is None:
+        last_closed = (state.rules.halftime_after_period
+                       if state.phase is GamePhase.HALFTIME else 0)
+    elif state.phase in (GamePhase.PERIOD_END, GamePhase.HALFTIME,
+                         GamePhase.GAME_OVER):
+        last_closed = current
+    else:
+        last_closed = current - 1
+
+    result = []
+    for period in range(1, last_closed + 1):
+        score = state.period_score(period)
+        if score.total is None:
+            continue
+        duration = state.rules.period_seconds(period)
+        pace = points_per_minute(score.total, duration)
+        if pace is None:
+            continue
+        result.append(ClosedPeriodAverage(
+            period=period,
+            label=state.rules.label(period),
+            points=score.total,
+            pace=pace,
+        ))
+    return tuple(result)
+
+
+@dataclass(frozen=True)
 class GeneralMetrics:
     """Metricas del panel principal que no dependen de la apuesta fijada."""
 
@@ -216,6 +268,22 @@ class GeneralMetrics:
     seconds_to_halftime: Optional[int] = None
     period_pace: Optional[float] = None
     game_pace: Optional[float] = None
+    period_projection: Optional[float] = None
+    game_projection: Optional[float] = None
+    #: Ritmo real de la mitad en curso (Q1+Q2 o Q3+Q4).
+    half_pace: Optional[float] = None
+    half_projection: Optional[float] = None
+    half_points: Optional[int] = None
+    half_points_a: Optional[int] = None
+    half_points_b: Optional[int] = None
+    half_number: Optional[int] = None
+    half_elapsed_seconds: Optional[int] = None
+    #: Primera mitad ya terminada, conservada como referencia en Q3/Q4.
+    first_half_pace: Optional[float] = None
+    first_half_points: Optional[int] = None
+    first_half_points_a: Optional[int] = None
+    first_half_points_b: Optional[int] = None
+    closed_period_averages: Tuple[ClosedPeriodAverage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,14 +295,38 @@ class BetMetrics:
     odds: Optional[float] = None
     side: Side = Side.UNDER
     scope_points: Optional[int] = None
+    scope_elapsed_seconds: Optional[int] = None
     scope_remaining_seconds: Optional[int] = None
     scope_points_source: PointsSource = PointsSource.UNKNOWN
     exceed_threshold: Optional[int] = None
     points_to_exceed: Optional[int] = None
+    current_pace: Optional[float] = None
     required_pace: Optional[float] = None
     exceeded: Optional[bool] = None
     settled: bool = False
     started: bool = True
+
+
+def current_half(rules, period: Optional[int]) -> Optional[int]:
+    """Mitad a la que pertenece el periodo en curso. None en prorroga."""
+    if period is None:
+        return None
+    if rules.is_overtime(period):
+        return None
+    per_half = rules.regulation_quarters // 2
+    return 1 + (period - 1) // per_half
+
+
+def elapsed_half_seconds(rules, period: Optional[int],
+                         remaining_seconds: Optional[int]) -> Optional[int]:
+    """Tiempo de juego transcurrido dentro de la mitad en curso."""
+    half = current_half(rules, period)
+    if half is None or remaining_seconds is None:
+        return None
+    per_half = rules.regulation_quarters // 2
+    first = 1 + (half - 1) * per_half
+    previos = sum(rules.period_seconds(p) for p in range(first, period))
+    return previos + max(0, rules.period_seconds(period) - remaining_seconds)
 
 
 def compute_general_metrics(state: GameState) -> GeneralMetrics:
@@ -242,19 +334,69 @@ def compute_general_metrics(state: GameState) -> GeneralMetrics:
     ps = state.current_period_score()
     elapsed_q = state.elapsed_period_seconds
     elapsed_game = state.elapsed_game_seconds
+
+    # Ritmo de la mitad en curso: se reutiliza half_score, que ya sabe sumar
+    # los cuartos de la mitad y devolver UNKNOWN si falta alguno.
+    half = current_half(state.rules, state.period_value)
+    half_points = None
+    half_points_a = None
+    half_points_b = None
+    half_elapsed = None
+    if half is not None:
+        hs = state.half_score(half)
+        half_points = hs.total
+        half_points_a = hs.points_a
+        half_points_b = hs.points_b
+        half_elapsed = elapsed_half_seconds(state.rules, state.period_value, state.clock_value)
+
+    half_remaining = None
+    if half is not None and half_elapsed is not None:
+        per_half = state.rules.regulation_quarters // 2
+        first = 1 + (half - 1) * per_half
+        half_duration = sum(
+            state.rules.period_seconds(p) for p in range(first, first + per_half))
+        half_remaining = max(0, half_duration - half_elapsed)
+
+    first_half = state.half_score(1)
+    first_half_finished = (state.period_value is not None and
+                           state.period_value > state.rules.halftime_after_period)
+    first_half_points = first_half.total if first_half_finished else None
+    first_half_seconds = (sum(state.rules.period_seconds(p) for p in range(
+        1, state.rules.halftime_after_period + 1)) if first_half_finished else None)
+
+    period_pace = points_per_minute(ps.total, elapsed_q)
+    half_pace = points_per_minute(half_points, half_elapsed)
+    game_pace = points_per_minute(state.total_points, elapsed_game)
+    remaining_period = state.remaining_period_seconds
+    remaining_game = state.remaining_game_seconds
+
     return GeneralMetrics(
+        closed_period_averages=closed_period_averages(state),
+        half_pace=half_pace,
+        half_projection=projected_points_remaining(half_pace, half_remaining),
+        half_points=half_points,
+        half_points_a=half_points_a,
+        half_points_b=half_points_b,
+        half_number=half,
+        half_elapsed_seconds=half_elapsed,
+        first_half_pace=points_per_minute(first_half_points, first_half_seconds),
+        first_half_points=first_half_points,
+        first_half_points_a=first_half.points_a if first_half_finished else None,
+        first_half_points_b=first_half.points_b if first_half_finished else None,
         total_points=state.total_points,
         period_points=ps.total,
         period_points_a=ps.points_a,
         period_points_b=ps.points_b,
         period_points_source=ps.source,
         elapsed_period_seconds=elapsed_q,
-        remaining_period_seconds=state.remaining_period_seconds,
+        remaining_period_seconds=remaining_period,
         elapsed_game_seconds=elapsed_game,
-        remaining_game_seconds=state.remaining_game_seconds,
+        remaining_game_seconds=remaining_game,
         seconds_to_halftime=seconds_to_halftime(state.rules, state.period_value, state.clock_value),
-        period_pace=points_per_minute(ps.total, elapsed_q),
-        game_pace=points_per_minute(state.total_points, elapsed_game),
+        period_pace=period_pace,
+        game_pace=game_pace,
+        period_projection=projected_points_remaining(period_pace, remaining_period),
+        game_projection=projected_points_remaining(game_pace, remaining_game),
     )
 
 
@@ -274,10 +416,12 @@ def compute_bet_metrics(state: GameState, key: MarketKey, line: float,
         odds=odds,
         side=side,
         scope_points=resolution.points,
+        scope_elapsed_seconds=resolution.elapsed_seconds,
         scope_remaining_seconds=resolution.remaining_seconds,
         scope_points_source=resolution.points_source,
         exceed_threshold=threshold,
         points_to_exceed=needed,
+        current_pace=points_per_minute(resolution.points, resolution.elapsed_seconds),
         required_pace=required_pace_to_exceed(needed, resolution.remaining_seconds),
         exceeded=line_exceeded(line, resolution.points),
         settled=resolution.settled,

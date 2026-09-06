@@ -11,6 +11,7 @@ from visorunder.calculations.metrics import (
     compute_general_metrics,
     exceed_threshold,
     points_per_minute,
+    projected_points_remaining,
     points_to_exceed,
     required_pace_to_exceed,
     seconds_to_game_end,
@@ -96,6 +97,12 @@ def test_promedio_sin_tiempo_jugado():
     assert points_per_minute(0, 0) is None
 
 
+def test_proyeccion_restante_usa_ritmo_por_minutos_decimales():
+    assert projected_points_remaining(4.5, 5 * 60 + 18) == pytest.approx(23.85)
+    assert projected_points_remaining(None, 318) is None
+    assert projected_points_remaining(4.5, None) is None
+
+
 # ------------------------------------------------------------ requisitos 15/16
 def test_tiempo_jugado_y_para_final_en_q3():
     """Q3, duracion 10:00, reloj 05:28."""
@@ -150,6 +157,9 @@ def test_metricas_generales_ejemplo_del_panel():
     assert g.period_points == 28  # (43-24) + (31-22)
     assert seconds_to_clock(g.elapsed_period_seconds) == "04:32"
     assert g.game_pace == pytest.approx(74 / ((1200 + 272) / 60), abs=1e-6)
+    assert g.period_projection == pytest.approx(g.period_pace * (328 / 60))
+    assert g.half_projection == pytest.approx(g.half_pace * ((328 + 600) / 60))
+    assert g.game_projection == pytest.approx(g.game_pace * ((328 + 600) / 60))
 
 
 def test_metricas_generales_sin_baseline_no_inventan_puntos_del_cuarto():
