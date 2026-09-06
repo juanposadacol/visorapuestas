@@ -373,3 +373,47 @@ def test_cierre_externo_del_overlay_se_trata_como_cancelacion(qapp):
     overlay.close()          # como si se cerrara desde el gestor de ventanas
 
     assert avisos == ["cancelado"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Redes de seguridad: nunca colgarse ni dejar el guardia puesto
+# ---------------------------------------------------------------------------
+def test_una_seleccion_que_muere_sin_avisar_no_cuelga_exec(qapp, editor):
+    """Si el overlay desaparece sin avisar, `exec()` no puede quedarse esperando."""
+    dialog, _main = editor
+
+    _select_row(dialog, RoiKind.CLOCK)
+    dialog.define_button.click()
+    dialog._capture_timer.stop()          # la captura nunca llega a ocurrir
+    assert dialog.is_selecting_roi is True
+    assert dialog._overlay is None
+
+    # exec() detecta que no hay nada a lo que esperar y restaura el editor.
+    dialog._wait_for_selection()
+
+    assert dialog.is_selecting_roi is False
+    assert dialog.isVisible()
+    assert qapp.quitOnLastWindowClosed() is True, "el guardia quedo colgado"
+
+
+def test_cerrar_el_dialogo_durante_la_seleccion_lo_deja_todo_limpio(qapp):
+    main = QMainWindow()
+    main.show()
+    profile = SportsbookProfile(name="Stake principal", sportsbook="Stake")
+    dialog = ProfileDialog(profile, FakeCapture(), None, main)
+    dialog.show()
+
+    _select_row(dialog, RoiKind.CLOCK)
+    dialog.define_button.click()
+    dialog._capture_timer.stop()
+    dialog._capture_selection()
+    assert dialog._overlay is not None
+
+    dialog.reject()          # el usuario cierra el editor con la seleccion abierta
+
+    assert dialog.is_selecting_roi is False
+    assert dialog._overlay is None, "quedo un overlay huerfano en pantalla"
+    assert qapp.quitOnLastWindowClosed() is True, "el guardia quedo colgado"
+    assert profile.get_roi(RoiKind.CLOCK) is None
+    assert main.isVisible(), "la ventana principal no volvio"
+    main.close()

@@ -316,12 +316,32 @@ class ProfileDialog(QDialog):
         """Bucle propio mientras el overlay esta en pantalla."""
         if not self._selecting_roi:
             return
+        # Red de seguridad: si no hay overlay ni captura pendiente, la
+        # seleccion murio sin avisar. Se restaura el editor en vez de esperar
+        # a un aviso que ya no va a llegar nunca.
+        if self._overlay is None and not self._capture_timer.isActive():
+            self._restore_editor()
+            return
         loop = QEventLoop()
         self._selection_loop = loop
         try:
             loop.exec()
         finally:
             self._selection_loop = None
+
+    def done(self, result: int) -> None:
+        """Cerrar el dialogo cancela cualquier seleccion en curso.
+
+        Asi no puede quedar un overlay huerfano ocupando la pantalla ni el
+        guardia de cierre puesto despues de que el dialogo haya terminado.
+        """
+        if self._selecting_roi:
+            overlay = self._overlay
+            if overlay is not None:
+                overlay.finish(None)
+            else:
+                self._restore_editor()
+        super().done(result)
 
     @property
     def is_selecting_roi(self) -> bool:
