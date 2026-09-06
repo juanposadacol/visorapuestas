@@ -340,6 +340,48 @@ funcionando cuando la ventana del visor tiene el foco.
 
 ---
 
+## 6.bis Apuestas manuales: seguimiento en vivo
+
+El panel inferior **no es un historial de dinero**: es una herramienta de seguimiento.
+Introduces la apuesta una vez y la aplicación le hace el mismo cálculo en vivo que a una
+apuesta fijada desde el radar, usando el marcador real del partido.
+
+Ejemplo. Apuestas en Stake `Q4 UNDER 40.5 @ 1.80`, la escribes en el panel y pulsas
+**AGREGAR Y SEGUIR**. A partir de ahí, cada lectura actualiza sola:
+
+| Columna | Qué dice |
+|---|---|
+| `ACTUAL` | puntos que lleva **su** mercado (el Q4, no el partido) |
+| `MARGEN` | distancia hasta la línea: `línea - puntos` |
+| `P/CRUZAR` | puntos enteros que harían superar la línea |
+| `PROYECCIÓN` | a dónde lleva el ritmo actual dentro de ese mercado |
+| `DIF. LÍNEA` | proyección menos línea: el signo dice de qué lado cae |
+| `ESTADO` | `FAVORABLE`, `EN RIESGO` o `SUPERADA` |
+
+Al seleccionar una fila, el bloque de detalle añade los puntos que **todavía caben**, el
+ritmo actual y el ritmo que haría falta para cruzar.
+
+**Margen y puntos no son lo mismo.** Con `UNDER 40.5` y 32 puntos anotados:
+
+- margen hasta la línea: **8.5**
+- puntos que todavía caben: **8** → terminaría en 40 y el UNDER aguanta
+- puntos que la cruzan: **9** → el noveno lleva a 41 y la línea cae
+
+Detalles que importan:
+
+- El **mercado** decide qué puntos se miran: `Q4` usa los del Q4, `1.ª mitad` usa Q1+Q2,
+  `Partido` usa el total. Es la misma lógica que emplea el radar.
+- Puedes seguir **varias apuestas a la vez** de casas y mercados distintos. Cada una usa su
+  propia línea y no se mezclan: el partido es común, la línea no.
+- El **monto es opcional**. Sin monto la apuesta se sigue igual; solo no entra en el conteo
+  de utilidad y ROI, que se conserva como información secundaria.
+- Nada se marca solo. `GANADA` / `PERDIDA` / `NULA` las decides tú; el sistema únicamente
+  lo afirma cuando el mercado terminó de verdad o la línea ya quedó superada.
+- Una línea entera (`40.0`) tiene **zona de empate**: terminar exactamente en 40 devuelve el
+  dinero y se marca `NULA`, no `GANADA`.
+
+---
+
 ## 7. La línea que ves NO es siempre la del cuarto que se juega
 
 Es el error más caro y la aplicación lo evita explícitamente.
@@ -432,6 +474,8 @@ entera**, no solo el .exe, porque incluye los modelos del OCR.
 | `EXTENSIÓN DESCONECTADA` con Chrome abierto | la extensión no está cargada, o el puerto no coincide | recarga la extensión en `chrome://extensions`; comprueba el puerto en su popup |
 | El puente no arranca | el puerto 8765 está ocupado | cambia `bridge.port` en `settings.json` y el puerto en el popup de la extensión |
 | Va lento / mucha CPU | frecuencia alta o regiones enormes | baja a 2 lecturas/s y recorta las regiones |
+| `Esperando líneas del mercado actual` | la casa acaba de cambiar de cuarto y aún no publica la oferta | no hay nada que hacer: la sesión sigue leyendo marcador, reloj y cuarto, y las líneas entran solas al aparecer |
+| `Esperando reloj` / `marcador` / `periodo` | ese dato no llega ni por DOM ni por región | conecta la extensión o define esa región concreta |
 | Nada funciona y no sé por qué | — | pestaña **Diagnóstico** → *Exportar log* |
 
 Ajustes útiles en el perfil: **frecuencia de lectura** (2–4/s es lo recomendado),
