@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .bridge.server import BridgeServer
 from .bridge.source import BrowserSource, ExtensionState, LinkState, SourceKind
 from .calculations import entry as entry_mod
+from .calculations import manual_tracking as manual_tracking_mod
 from .calculations import metrics as metrics_mod
 from .calculations.entry import LineEvaluation, MarketEvaluation
 from .calculations.metrics import BetMetrics, GeneralMetrics
@@ -28,6 +29,7 @@ from .config.profiles import ScreenContext, SportsbookProfile
 from .config.settings import AppSettings
 from .diagnostics.logbus import LogBus
 from .domain.bet import LockedBet
+from .calculations.manual_tracking import ManualBetTracking
 from .domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
 from .domain.market import MarketKey, MarketType, MarketLine, MarketSnapshot, Side
 from .domain.rules import rules_from_name
@@ -122,7 +124,12 @@ class ViewModel:
     link_latency_ms: Optional[float] = None
     field_sources: Dict[str, str] = field(default_factory=dict)
     source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    #: Apuestas manuales del Browser Bridge (flujo anterior, sin monto).
     manual_bets: list = field(default_factory=list)
+    #: Seguimiento en vivo de cada apuesta manual del libro: puntos del
+    #: mercado, margen, puntos para cruzar, proyeccion y estado. Una entrada
+    #: por apuesta, calculada contra SU mercado y SU linea.
+    manual_tracking: List[ManualBetTracking] = field(default_factory=list)
 
 
 class AppController:
@@ -145,6 +152,10 @@ class AppController:
         # - manual_bets: apuestas manuales vinculadas al flujo/browser anterior.
         self.manual_bet_repo = ManualBetRepository(self.db)
         self.manual_bets = self.bets.list_manual()
+        #: Copia del libro manual. La interfaz se refresca 4 veces por segundo
+        #: y el seguimiento no puede depender de consultar SQLite cada vez.
+        #: Se invalida en cuanto se agrega, liquida o borra una apuesta.
+        self._manual_ledger: Optional[List[ManualBet]] = None
 
         self._capture = capture
         #: Fuente DOM y puente local. Se arrancan al abrir la aplicacion para
@@ -539,6 +550,7 @@ class AppController:
             session_id=self.session_id,
         )
         saved = self.manual_bet_repo.save(bet)
+        self._invalidate_manual_ledger()
         self.log.info(
             f"APUESTA MANUAL #{saved.bet_id}: {saved.sportsbook} | "
             f"{saved.key.label} | {saved.description} | monto {saved.stake:g}"
@@ -548,20 +560,60 @@ class AppController:
     def list_manual_bets(self, limit: int = 100) -> List[ManualBet]:
         return self.manual_bet_repo.list_recent(limit)
 
+    def _invalidate_manual_ledger(self) -> None:
+        self._manual_ledger = None
+
+    def manual_ledger(self, limit: int = 100) -> List[ManualBet]:
+        """Libro manual con memoria, para poder consultarlo en cada refresco."""
+        if self._manual_ledger is None:
+            self._manual_ledger = self.manual_bet_repo.list_recent(limit)
+        return self._manual_ledger
+
     def settle_manual_bet(
         self, bet_id: int, status: ManualBetStatus
     ) -> Optional[ManualBet]:
         bet = self.manual_bet_repo.settle(bet_id, status)
+        self._invalidate_manual_ledger()
         if bet is not None:
             self.log.info(f"APUESTA MANUAL #{bet_id}: {status.label}")
         return bet
 
     def delete_manual_bet(self, bet_id: int) -> None:
         self.manual_bet_repo.delete(bet_id)
+        self._invalidate_manual_ledger()
         self.log.info(f"APUESTA MANUAL #{bet_id}: eliminada")
 
     def manual_bet_summary(self) -> ManualBetSummary:
         return self.manual_bet_repo.summary()
+
+    # ------------------------------------------- seguimiento en vivo manual
+    def manual_bet_tracking(
+        self, snapshot: Optional[ReaderSnapshot] = None
+    ) -> List[ManualBetTracking]:
+        """Seguimiento de TODAS las apuestas manuales contra el partido actual.
+
+        Cada apuesta se calcula contra SU mercado y SU linea, asi que tres
+        apuestas simultaneas (BetPlay Q4 40.5, Stake Q4 42.5 y BetPlay partido
+        185.5) se actualizan a la vez sin mezclarse.
+
+        La casa NO interviene en el calculo: el marcador y el reloj son del
+        partido, no de la casa. Por eso una apuesta de Stake se sigue con los
+        datos que llegan por el DOM de BetPlay, que es justo lo que hace falta
+        mientras Stake no tenga su propio parser.
+        """
+        if snapshot is None and self.reader is not None:
+            snapshot = self.reader.last_snapshot
+        state = snapshot.state if snapshot is not None else None
+        return manual_tracking_mod.track_manual_bets(state, self.manual_ledger())
+
+    def manual_bet_tracking_for(
+        self, bet_id: int, snapshot: Optional[ReaderSnapshot] = None
+    ) -> Optional[ManualBetTracking]:
+        """Seguimiento de una apuesta concreta, para el bloque de detalle."""
+        for tracking in self.manual_bet_tracking(snapshot):
+            if tracking.bet.bet_id == bet_id:
+                return tracking
+        return None
 
     def set_period_baseline(self, period: int, score_a: int, score_b: int) -> None:
         if self.reader is None:
@@ -674,6 +726,7 @@ class AppController:
             # ya el DOM: es justo lo que hace falta para entender por que no
             # arranca, en vez de un "faltan regiones" que no explica nada.
             return ViewModel(manual_bets=self.manual_bet_views(None),
+                             manual_tracking=self.manual_bet_tracking(None),
                              criteria=self.criteria, link_state=self.browser.link_state(),
                              extension_state=self.browser.extension_state(),
                              waiting_for=self.missing_requirements(self.profile),
@@ -729,6 +782,9 @@ class AppController:
         paquete = self.browser.last_packet
         return ViewModel(
             manual_bets=self.manual_bet_views(snapshot),
+            # Cada apuesta manual se recalcula con ESTE snapshot: cuando el
+            # marcador pasa de 32 a 34 el seguimiento cambia solo.
+            manual_tracking=self.manual_bet_tracking(snapshot),
             link_state=self.browser.link_state(),
             extension_state=self.browser.extension_state(),
             waiting_for=self.missing_requirements(self.profile),
