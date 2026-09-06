@@ -27,7 +27,8 @@ from .config.profiles import ScreenContext, SportsbookProfile
 from .config.settings import AppSettings
 from .diagnostics.logbus import LogBus
 from .domain.bet import LockedBet
-from .domain.market import MarketLine, MarketSnapshot, Side
+from .domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
+from .domain.market import MarketKey, MarketLine, MarketSnapshot, Side
 from .domain.rules import rules_from_name
 from .ocr.base import EngineNotAvailable, OcrEngine
 from .ocr.engine import create_engine
@@ -36,6 +37,7 @@ from .storage.database import Database
 from .storage.repositories import (
     BetRepository,
     HistoryRepository,
+    ManualBetRepository,
     ProfileRepository,
     SessionRepository,
 )
@@ -136,6 +138,7 @@ class AppController:
         self.sessions = SessionRepository(self.db)
         self.history = HistoryRepository(self.db)
         self.bets = BetRepository(self.db)
+        self.manual_bets = ManualBetRepository(self.db)
 
         self._capture = capture
         #: Fuente DOM y puente local. Se arrancan al abrir la aplicacion para
@@ -302,6 +305,9 @@ class AppController:
     # -------------------------------------------------------------- perfiles
     def profile_names(self) -> List[str]:
         return self.profiles.list_names()
+
+    def profile_exists(self, name: str, *, exclude_profile_id: Optional[int] = None) -> bool:
+        return self.profiles.exists(name, exclude_profile_id=exclude_profile_id)
 
     def load_profile(self, name: str) -> Optional[SportsbookProfile]:
         profile = self.profiles.load(name)
@@ -499,6 +505,46 @@ class AppController:
             self.bets.close(self.locked_bet.bet_id, "RELEASED")
         self.locked_bet = None
         self.log.info("Apuesta liberada")
+
+    # ------------------------------------------------------ apuestas manuales
+    def add_manual_bet(self, *, sportsbook: str, event: str, key: MarketKey,
+                       side: Side, line: float, odds: float, stake: float,
+                       notes: str = "") -> ManualBet:
+        bet = ManualBet(
+            sportsbook=sportsbook,
+            event=event,
+            key=key,
+            side=side,
+            line=float(line),
+            odds=float(odds),
+            stake=float(stake),
+            notes=notes,
+            session_id=self.session_id,
+        )
+        saved = self.manual_bets.save(bet)
+        self.log.info(
+            f"APUESTA MANUAL #{saved.bet_id}: {saved.sportsbook} | "
+            f"{saved.key.label} | {saved.description} | monto {saved.stake:g}"
+        )
+        return saved
+
+    def list_manual_bets(self, limit: int = 100) -> List[ManualBet]:
+        return self.manual_bets.list_recent(limit)
+
+    def settle_manual_bet(
+        self, bet_id: int, status: ManualBetStatus
+    ) -> Optional[ManualBet]:
+        bet = self.manual_bets.settle(bet_id, status)
+        if bet is not None:
+            self.log.info(f"APUESTA MANUAL #{bet_id}: {status.label}")
+        return bet
+
+    def delete_manual_bet(self, bet_id: int) -> None:
+        self.manual_bets.delete(bet_id)
+        self.log.info(f"APUESTA MANUAL #{bet_id}: eliminada")
+
+    def manual_bet_summary(self) -> ManualBetSummary:
+        return self.manual_bets.summary()
 
     def set_period_baseline(self, period: int, score_a: int, score_b: int) -> None:
         if self.reader is None:
