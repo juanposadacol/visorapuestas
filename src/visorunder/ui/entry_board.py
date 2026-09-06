@@ -5,9 +5,11 @@ numeros y su senal, para poder leer la situacion de un vistazo de uno o dos
 segundos.
 
 Columnas acordadas:
-    LINEA | CUOTA U | PROMEDIO ACTUAL | PUNTOS FALTANTES |
-    PROMEDIO FALTANTE | VS REFERENCIA | VS CUARTO | VS MITAD |
-    VS PARTIDO | SENAL
+    LINEA | CUOTA U | VS REFERENCIA | VS CUARTO | VS MITAD | VS PARTIDO |
+    PROMEDIO ACTUAL | PUNTOS FALTANTES | PROMEDIO FALTANTE | SENAL
+
+Las comparaciones van juntas y delante porque son la lectura rapida; los
+promedios y los puntos quedan detras como respaldo. La senal cierra siempre.
 
 La senal se transmite SIEMPRE con etiqueta de texto ademas del color, para no
 depender de la vista cromatica ni de la iluminacion de la pantalla.
@@ -42,10 +44,14 @@ from ..domain.event_markets import FreshnessState
 from ..domain.market import MarketKey, MarketSnapshot, Side
 from . import formatters as fmt
 
-COLUMNS = ["LINEA", "CUOTA U", "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.",
-           "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO", "SENAL"]
-(COL_LINE, COL_ODDS, COL_CURRENT_PACE, COL_POINTS, COL_MISSING_PACE, COL_REF,
- COL_QUARTER, COL_HALF, COL_GAME, COL_SIGNAL) = range(10)
+COLUMNS = ["LINEA", "CUOTA U", "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO",
+           "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.", "SENAL"]
+#: Los indices se desempaquetan EN EL MISMO ORDEN que `COLUMNS`, y la lista de
+#: valores de cada fila se construye tambien en ese orden. Cambiar el orden
+#: obliga a mover los tres sitios a la vez o los datos quedarian bajo otro
+#: encabezado.
+(COL_LINE, COL_ODDS, COL_REF, COL_QUARTER, COL_HALF, COL_GAME,
+ COL_CURRENT_PACE, COL_POINTS, COL_MISSING_PACE, COL_SIGNAL) = range(10)
 # Alias historico: RITMO NEC. y PROMEDIO FALTANTE son la misma metrica.
 COL_PACE = COL_MISSING_PACE
 
@@ -172,15 +178,16 @@ class MarketBlock(QWidget):
 
         for row, e in enumerate(block.evaluations):
             values = [
-                fmt.line(e.line_value),
-                fmt.odds(e.under_odds),
-                _pace_text(e.current_pace),
-                fmt.integer(e.points_to_exceed),
-                _pace_text(e.required_pace),
-                _margin_text(e.margin_vs_reference),
-                _margin_text(e.margin_vs_period_pace),
-                _margin_text(e.margin_vs_half_pace),
-                _margin_text(e.margin_vs_game_pace),
+                fmt.line(e.line_value),                         # LINEA
+                fmt.odds(e.under_odds),                         # CUOTA U
+                _margin_text(e.margin_vs_reference),            # VS REF.
+                _margin_text(e.margin_vs_period_pace),          # VS Q
+                _margin_text(e.margin_vs_half_pace),            # VS MITAD
+                _margin_text(e.margin_vs_game_pace),            # VS PARTIDO
+                _pace_text(e.current_pace),                     # PROM. ACTUAL
+                fmt.integer(e.points_to_exceed),                # PUNTOS FALT.
+                _pace_text(e.required_pace),                    # PROM. FALT.
+                # SENAL
                 e.signal.label if e.is_evaluable else (e.unavailable_reason or e.signal.label),
             ]
             color = QColor(criteria.color_for(e.signal.value))
