@@ -334,15 +334,21 @@ class AppController:
         dom = set(self.dom_fields())
         faltan: List[StartBlocker] = []
 
+        # El tablero completo aporta reloj, cuarto y marcador de una vez. Un
+        # perfil de Stake se configura con esa sola region en vez de cuatro.
+        tablero = perfil is not None and perfil.has(RoiKind.SCOREBOARD)
+
         tiene_mercado = "market" in dom or (perfil is not None and perfil.has(RoiKind.MARKET_BLOCK))
         if not tiene_mercado:
             faltan.append(StartBlocker.MARKET)
 
-        tiene_reloj = "clock_seconds" in dom or (perfil is not None and perfil.has(RoiKind.CLOCK))
+        tiene_reloj = ("clock_seconds" in dom or tablero
+                       or (perfil is not None and perfil.has(RoiKind.CLOCK)))
         if not tiene_reloj:
             faltan.append(StartBlocker.CLOCK)
 
-        tiene_cuarto = "period" in dom or (perfil is not None and perfil.has(RoiKind.PERIOD))
+        tiene_cuarto = ("period" in dom or tablero
+                        or (perfil is not None and perfil.has(RoiKind.PERIOD)))
         if not tiene_cuarto:
             faltan.append(StartBlocker.PERIOD)
 
@@ -350,7 +356,7 @@ class AppController:
         marcador_roi = perfil is not None and (
             perfil.has(RoiKind.SCORE_PAIR) or
             (perfil.has(RoiKind.SCORE_A) and perfil.has(RoiKind.SCORE_B)))
-        if not (marcador_dom or marcador_roi):
+        if not (marcador_dom or marcador_roi or tablero):
             faltan.append(StartBlocker.SCORE)
 
         return faltan

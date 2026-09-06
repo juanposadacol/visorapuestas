@@ -76,6 +76,10 @@ from .roi_selector import RoiOverlay, grab_desktop, quit_guard
 
 #: Orden en que se ofrecen las regiones: primero las imprescindibles.
 ROI_ORDER = [
+    # El tablero completo va primero: en las casas cuyo marcador cambia de
+    # columnas durante el partido (Stake) es la forma recomendada, porque
+    # cubre reloj, cuarto y marcador con una sola region que no caduca.
+    RoiKind.SCOREBOARD,
     RoiKind.CLOCK,
     RoiKind.PERIOD,
     RoiKind.SCORE_PAIR,
@@ -198,7 +202,11 @@ class ProfileDialog(QDialog):
         info = QLabel(
             "Abre la casa de apuestas en el navegador y deja visible el partido. "
             "Pulsa 'Definir' y arrastra el raton sobre la zona. ESC cancela.\n"
-            "Imprescindibles: Reloj, Cuarto, Marcador y Bloque de lineas."
+            "Imprescindibles: Reloj, Cuarto, Marcador y Bloque de lineas.\n"
+            "Si la casa cambia las columnas del marcador durante el partido "
+            "(por ejemplo Stake, que anade una columna cada cuarto), define en "
+            "su lugar el 'Tablero completo': cubre reloj, cuarto y marcador de "
+            "una vez y no hay que redibujarlo al cambiar de cuarto."
         )
         info.setWordWrap(True)
         info.setObjectName("status")

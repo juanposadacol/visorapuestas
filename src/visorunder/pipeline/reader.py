@@ -47,6 +47,7 @@ from ..parsers.clock_parser import parse_clock
 from ..parsers.odds_parser import parse_odds
 from ..parsers.quarter_parser import GAME_OVER, HALFTIME, parse_period
 from ..parsers.score_parser import parse_breakdown, parse_score, parse_score_pair
+from ..parsers.scoreboard_parser import parse_scoreboard
 from .market_tracker import MarketTracker
 
 #: Regiones que solo se capturan cuando toca refrescar el mercado.
@@ -327,6 +328,12 @@ class LiveReader:
         # --- desglose por cuartos (opcional, maxima prioridad) ------------
         self._read_breakdown(frames, now)
 
+        # --- tablero completo con columnas variables (opcional) -----------
+        # Va DESPUES de las regiones sueltas: solo rellena lo que ninguna de
+        # ellas cubre, asi que un perfil que ya tiene reloj o marcador propios
+        # conserva su fuente y esto no le cambia nada.
+        ocr_ms += self._read_scoreboard(frames, now)
+
         # --- estado del partido ------------------------------------------
         self._sync_state(now)
         self._apply_browser_source(now)
@@ -422,6 +429,82 @@ class LiveReader:
             return
         for index, (pa, pb) in enumerate(zip(parsed_a.value, parsed_b.value), start=1):
             self.state.tracker.set_breakdown(index, pa, pb)
+
+    # ------------------------------------------------ tablero de columnas variables
+    def _scoreboard_covers(self, kind: RoiKind) -> bool:
+        """True si `kind` tiene su PROPIA region configurada.
+
+        El tablero completo es un respaldo, no un sustituto: si el perfil ya
+        define el reloj o el marcador por separado, esos siguen mandando y el
+        tablero no los toca. Es la politica que pidio conservarse para no
+        romper los perfiles que ya existen.
+        """
+        if kind is RoiKind.SCORE_PAIR:
+            profile = self.roi_manager.profile
+            return profile.has(RoiKind.SCORE_PAIR) or (
+                profile.has(RoiKind.SCORE_A) and profile.has(RoiKind.SCORE_B))
+        return self.roi_manager.profile.has(kind)
+
+    def _read_scoreboard(self, frames: Dict[RoiKind, RoiFrame], now: float) -> float:
+        """Lee el tablero completo y rellena lo que no cubra otra region.
+
+        Devuelve los milisegundos de OCR consumidos.
+
+        Ninguna de estas lecturas se aplica directamente al estado: todas
+        pasan por los MISMOS estabilizadores que el resto del OCR, asi que una
+        lectura suelta no puede mover el marcador ni el cuarto. Y como el DOM
+        se aplica despues, BetPlay sigue mandando sobre todo esto.
+        """
+        frame = frames.get(RoiKind.SCOREBOARD)
+        if not (frame and frame.ok):
+            return 0.0
+
+        result = self._recognize(frame, self._hints_for(RoiKind.SCOREBOARD))
+        parsed = parse_scoreboard(
+            result.text,
+            regulation_quarters=self.rules.regulation_quarters,
+            halftime_after_period=self.rules.halftime_after_period,
+            confidence=result.confidence)
+        self._log_reading(RoiKind.SCOREBOARD, result, parsed, None)
+
+        lectura = parsed.value
+        if lectura is None or parsed.suspicious:
+            # Incoherente o ilegible: no se toca nada. El estado bueno anterior
+            # se queda como esta y solo envejece por su propio TTL.
+            return result.elapsed_ms
+
+        def _submit(stabilizer, value, normalized: str) -> None:
+            stabilizer.submit(ParseResult(
+                value=value, raw=parsed.raw, normalized=normalized,
+                confidence=parsed.confidence), now)
+
+        if lectura.clock_seconds is not None and not self._scoreboard_covers(RoiKind.CLOCK):
+            _submit(self.clock, lectura.clock_seconds, seconds_to_clock(lectura.clock_seconds))
+        if lectura.period is not None and not self._scoreboard_covers(RoiKind.PERIOD):
+            _submit(self.period, lectura.period, f"Q{lectura.period}")
+        if lectura.has_scores and not self._scoreboard_covers(RoiKind.SCORE_PAIR):
+            _submit(self.score_a, lectura.score_a, str(lectura.score_a))
+            _submit(self.score_b, lectura.score_b, str(lectura.score_b))
+        if lectura.team_a and not self._scoreboard_covers(RoiKind.TEAM_A):
+            _submit(self.team_a, lectura.team_a, lectura.team_a)
+        if lectura.team_b and not self._scoreboard_covers(RoiKind.TEAM_B):
+            _submit(self.team_b, lectura.team_b, lectura.team_b)
+
+        # Los parciales entran por el MISMO camino que BREAKDOWN_A/B: no hay
+        # un segundo sistema de parciales, asi que Q1..Q4, 1H, 2H y PARTIDO
+        # siguen calculandose exactamente igual que siempre.
+        # El descanso NO se toca: es un acumulado, no un periodo.
+        if not (self._scoreboard_covers(RoiKind.BREAKDOWN_A)
+                and self._scoreboard_covers(RoiKind.BREAKDOWN_B)):
+            for period, puntos_a, puntos_b in lectura.breakdown_pairs():
+                self.state.tracker.set_breakdown(period, puntos_a, puntos_b)
+
+        if lectura.phase == HALFTIME:
+            self.state.phase = GamePhase.HALFTIME
+        elif lectura.phase == GAME_OVER:
+            self.state.phase = GamePhase.GAME_OVER
+
+        return result.elapsed_ms
 
     def _resolve_visible_key(self, now: float) -> Optional[MarketKey]:
         """Decide a QUE mercado pertenece lo que se esta viendo en pantalla.
