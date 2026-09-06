@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -27,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..capture.roi import RoiKind
 from ..diagnostics.logbus import LEVELS, LogBus
 from .styles import COLOR_DANGER, COLOR_MUTED, COLOR_WARN
+from .flow_layout import FlowRow
 
 
 class DiagnosticsPanel(QWidget):
@@ -40,7 +40,10 @@ class DiagnosticsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        controls = QHBoxLayout()
+        # La fila de filtros tambien se parte: si no, sus 781 px de minimo
+        # subian el minimo de TODA la ventana (la pestana mas exigente manda)
+        # y esta no cabia en una pantalla vertical.
+        controls = FlowRow(spacing=6, vertical_spacing=4)
         self.region_filter = QComboBox()
         self.region_filter.addItem("Todas las regiones", "")
         for kind in RoiKind:
@@ -56,14 +59,14 @@ class DiagnosticsPanel(QWidget):
         self.clear_button = QPushButton("Limpiar")
         self.clear_button.clicked.connect(self.logbus.clear)
 
-        controls.addWidget(QLabel("Filtros:"))
-        controls.addWidget(self.region_filter)
-        controls.addWidget(self.level_filter)
-        controls.addWidget(self.autoscroll)
-        controls.addStretch(1)
-        controls.addWidget(self.export_button)
-        controls.addWidget(self.clear_button)
-        layout.addLayout(controls)
+        controls.add(QLabel("Filtros:"))
+        controls.add(self.region_filter)
+        controls.add(self.level_filter)
+        controls.add(self.autoscroll)
+        controls.add_stretch()
+        controls.add(self.export_button)
+        controls.add(self.clear_button)
+        layout.addWidget(controls)
 
         self.table = QTableWidget(0, len(LogBus.COLUMNS))
         self.table.setHorizontalHeaderLabels(LogBus.COLUMNS)

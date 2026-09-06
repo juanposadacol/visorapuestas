@@ -43,6 +43,7 @@ from ..config.criteria import EntryCriteria
 from ..domain.event_markets import FreshnessState
 from ..domain.market import MarketKey, MarketSnapshot, Side
 from . import formatters as fmt
+from .flow_layout import FlowRow
 
 COLUMNS = ["LINEA", "CUOTA U", "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO",
            "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.", "SENAL"]
@@ -119,6 +120,13 @@ class MarketBlock(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(COL_SIGNAL,
                                                            QHeaderView.ResizeToContents)
+        # `Stretch` reparte el ancho SIN suelo: en un panel estrecho las diez
+        # columnas caian a 26 px y la cabecera se leia "INE OTA ; RE /S C".
+        # Con un minimo por columna la tabla prefiere DESPLAZARSE en
+        # horizontal antes que aplastar los numeros hasta hacerlos ilegibles.
+        # Se mide con la fuente real, asi que acompana a la fuente y al DPI.
+        self.table.horizontalHeader().setMinimumSectionSize(
+            self.table.horizontalHeader().fontMetrics().horizontalAdvance("VS MITAD") + 8)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.cellDoubleClicked.connect(
             lambda *_: self.lineActivated.emit(self.selected_evaluation))
@@ -211,6 +219,11 @@ class MarketBlock(QWidget):
         alto = self.table.horizontalHeader().height() + 4
         for row in range(self.table.rowCount()):
             alto += self.table.rowHeight(row)
+        # Si las columnas no caben, la barra horizontal ocupa alto real: sin
+        # reservarlo tapaba la ultima linea del mercado.
+        cabecera = self.table.horizontalHeader()
+        if cabecera.length() > self.table.viewport().width():
+            alto += self.table.horizontalScrollBar().sizeHint().height()
         alto = max(60, alto)
         self.table.setFixedHeight(alto)
         self.setFixedHeight(alto + self.title_label.sizeHint().height() + 8)
@@ -244,10 +257,13 @@ class EntryBoard(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        header = QHBoxLayout()
-        header.addWidget(QLabel("Mercado visible:"))
+        header = FlowRow(spacing=6, vertical_spacing=4)
+        header.add(QLabel("Mercado visible:"))
         self.market_combo = QComboBox()
-        self.market_combo.setMinimumWidth(210)
+        # Un minimo de 210 px obligaba a la fila entera a medir 457 px y era
+        # parte del suelo que impedia estrechar este panel. El desplegable
+        # sigue siendo legible con menos y ademas ahora la fila se parte.
+        self.market_combo.setMinimumWidth(140)
         self.market_combo.setToolTip(
             "Automatico usa el titulo leido en pantalla. Elige uno a mano si tu casa "
             "no muestra un titulo legible.")
@@ -259,10 +275,10 @@ class EntryBoard(QWidget):
         self.mode_label = QLabel("BUSCANDO ENTRADA")
         self.mode_label.setObjectName("sectionTitle")
         self.mode_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        header.addWidget(self.market_combo)
-        header.addStretch(1)
-        header.addWidget(self.mode_label)
-        layout.addLayout(header)
+        header.add(self.market_combo)
+        header.add_stretch()
+        header.add(self.mode_label)
+        layout.addWidget(header)
 
         self.review_label = QLabel("")
         self.review_label.setObjectName("danger")
@@ -287,7 +303,7 @@ class EntryBoard(QWidget):
         self.status_label.setMinimumHeight(34)
         layout.addWidget(self.status_label)
 
-        buttons = QHBoxLayout()
+        buttons = FlowRow(spacing=6, vertical_spacing=4)
         self.lock_button = QPushButton("FIJAR APUESTA (F9)")
         self.lock_button.setObjectName("primary")
         self.lock_button.setEnabled(False)
@@ -299,10 +315,10 @@ class EntryBoard(QWidget):
         self.auto_button.setToolTip(
             "Vuelve a enfocar la linea cuya cuota UNDER este mas cerca de tu cuota objetivo")
         self.auto_button.clicked.connect(self.autoFocusRequested.emit)
-        buttons.addWidget(self.lock_button, 2)
-        buttons.addWidget(self.unlock_button, 1)
-        buttons.addWidget(self.auto_button, 1)
-        layout.addLayout(buttons)
+        buttons.add(self.lock_button)
+        buttons.add(self.unlock_button)
+        buttons.add(self.auto_button)
+        layout.addWidget(buttons)
 
     # ------------------------------------------------------------- seleccion
     @property
