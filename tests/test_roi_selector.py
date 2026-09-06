@@ -417,3 +417,57 @@ def test_cerrar_el_dialogo_durante_la_seleccion_lo_deja_todo_limpio(qapp):
     assert profile.get_roi(RoiKind.CLOCK) is None
     assert main.isVisible(), "la ventana principal no volvio"
     main.close()
+
+
+# ---------------------------------------------------------------------------
+# 8. La region del tablero completo se configura como cualquier otra
+# ---------------------------------------------------------------------------
+def test_el_tablero_completo_aparece_en_el_editor(qapp, editor):
+    """Debe poder elegirse en CONFIGURAR PERFIL, con nombre reconocible."""
+    from visorunder.ui.profile_dialog import ROI_ORDER
+
+    dialog, _main = editor
+    assert RoiKind.SCOREBOARD in ROI_ORDER, "el tablero no se puede configurar"
+
+    fila = ROI_ORDER.index(RoiKind.SCOREBOARD)
+    nombre = dialog.table.item(fila, 0).text()
+    assert "Tablero" in nombre
+    assert "*" not in nombre, "el tablero no puede ser obligatorio para todos"
+
+
+def test_definir_el_tablero_no_cierra_la_aplicacion(qapp, editor):
+    """El mismo requisito que las demas regiones, tambien para esta."""
+    dialog, main = editor
+    cerrada = []
+    qapp.lastWindowClosed.connect(lambda: cerrada.append("lastWindowClosed"))
+
+    _select_row(dialog, RoiKind.SCOREBOARD)
+    dialog.define_button.click()
+    dialog._capture_timer.stop()
+    dialog._capture_selection()
+
+    overlay = dialog._overlay
+    assert overlay is not None
+    _drag(overlay, QPoint(300, 80), QPoint(1200, 260))
+    qapp.processEvents()
+
+    assert cerrada == []
+    assert QApplication.instance() is not None
+    assert dialog.isVisible() and main.isVisible()
+    assert dialog.profile.get_roi(RoiKind.SCOREBOARD) is not None
+
+
+def test_con_el_tablero_definido_no_hacen_falta_las_otras_regiones(qapp, editor):
+    """Un perfil de Stake se completa con el tablero y el bloque de lineas."""
+    dialog, _main = editor
+
+    for kind, inicio, fin in ((RoiKind.SCOREBOARD, QPoint(300, 80), QPoint(1200, 260)),
+                              (RoiKind.MARKET_BLOCK, QPoint(1300, 350), QPoint(1700, 650))):
+        _select_row(dialog, kind)
+        dialog.define_button.click()
+        dialog._capture_timer.stop()
+        dialog._capture_selection()
+        _drag(dialog._overlay, inicio, fin)
+
+    assert dialog.profile.missing_required() == [], (
+        "el tablero debe cubrir reloj, cuarto y marcador")
