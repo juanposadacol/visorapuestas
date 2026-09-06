@@ -412,10 +412,11 @@ class MainWindow(QMainWindow):
         if controller.reader is None:
             reader = controller.start_session()
             if reader is None:
-                QMessageBox.warning(
-                    self, "No se puede iniciar",
-                    "Revisa el panel de diagnostico: falta el perfil, alguna region "
-                    "imprescindible o el motor OCR.")
+                # Mensaje ESPECIFICO: se nombra el dato que falta, nunca un
+                # "revisa el diagnostico" que no dice nada.
+                motivo = controller.describe_start_blockers()
+                QMessageBox.warning(self, "No se puede iniciar", motivo)
+                self.status_label.setText(motivo.replace("\n", "   |   "))
                 return
             self.start_button.setText("PAUSAR (F8)")
             self.finish_button.setEnabled(True)
@@ -494,7 +495,7 @@ class MainWindow(QMainWindow):
             return
         if not self.controller.browser.is_live:
             return
-        if self.controller.missing_requirements(self.controller.profile):
+        if self.controller.blocking_requirements(self.controller.profile):
             return
         reader = self.controller.start_session(self.controller.profile)
         if reader is None:
@@ -580,8 +581,13 @@ class MainWindow(QMainWindow):
                 "Esperando a la extension. Abre BetPlay en un partido en vivo, "
                 "o define las regiones como ultimo recurso.")
             return
-        faltan = ", ".join(view.waiting_for) or "datos"
-        self.status_label.setText(f"EXTENSION CONECTADA. Esperando {faltan}.")
+        # Frases concretas por dato que falta, en vez de una lista suelta.
+        bloqueos = self.controller.blocking_requirements(self.controller.profile)
+        if bloqueos:
+            detalle = "   ".join(b.message for b in bloqueos)
+        else:
+            detalle = "Esperando lineas del mercado actual."
+        self.status_label.setText(f"EXTENSION CONECTADA. {detalle}")
 
     def _check_event_change(self) -> None:
         """La extension cambio de partido: no se mezclan eventos."""
@@ -602,6 +608,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             f"Nuevo partido detectado: {cambio['name'] or cambio['to']}")
 
+    def _market_wait_text(self, view) -> str:
+        """Aviso de transicion: el cuarto ya se detecto, faltan sus lineas.
+
+        Cambiar de Q3 a Q4 deja unos segundos sin oferta publicada. La sesion
+        sigue leyendo marcador, reloj y cuarto; lo unico que falta son las
+        lineas, y eso es lo que se dice.
+        """
+        if not view.snapshot or view.blocks:
+            return ""
+        estado = view.snapshot.state
+        etiqueta = estado.label() if estado.period_value is not None else ""
+        if etiqueta:
+            return f"{etiqueta} detectado - esperando lineas"
+        return "Esperando lineas del mercado actual"
+
     def _update_status(self, view) -> None:
         snapshot = view.snapshot
         parts = [view.mode.label]
@@ -609,6 +630,9 @@ class MainWindow(QMainWindow):
         # iniciar, faltan regiones". El ROI es el ultimo recurso.
         if view.session_state is SessionState.WAITING_FOR_DATA and view.waiting_for:
             parts.append(f"ESPERANDO: {', '.join(view.waiting_for)}")
+        espera_mercado = self._market_wait_text(view)
+        if espera_mercado:
+            parts.append(espera_mercado)
         if self.controller.reader is not None:
             estado = "PAUSADO" if self.controller.reader.is_paused else "LEYENDO"
             parts.append(estado)
