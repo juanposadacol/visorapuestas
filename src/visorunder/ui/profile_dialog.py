@@ -7,14 +7,37 @@ Aqui el usuario:
    saca el OCR y el valor que se interpreta.
 
 El paso 3 es el que evita configuraciones que "parecen bien" pero leen mal.
+
+POR QUE "DEFINIR REGION" CERRABA LA APLICACION
+----------------------------------------------
+Para dibujar la region hay que quitar de en medio este dialogo y la ventana
+principal, o saldrian en la captura. Eso provocaba dos danos encadenados:
+
+1. Ocultar un QDialog TERMINA su bucle modal: `QDialog::setVisible(false)`
+   hace `eventLoop->exit()`. Asi que `dialog.exec()` devolvia "cancelado" en
+   cuanto se pulsaba el boton, y quien lo habia abierto daba el perfil por
+   descartado mientras la seleccion seguia viva por su cuenta.
+2. Con el editor y la ventana principal ocultos, el overlay quedaba como
+   unica ventana visible. Al cerrarlo, Qt emitia `lastWindowClosed` y
+   cerraba el proceso entero.
+
+La solucion tiene tres piezas:
+
+* `quit_guard()` desactiva el cierre automatico mientras dura la seleccion.
+* El overlay avisa del resultado antes de cerrarse (ver `roi_selector`).
+* `exec()` se reengancha aqui: si el bucle modal se rompio por una seleccion
+  de region, se espera a que la seleccion termine y se vuelve a entrar, de
+  modo que quien abrio el dialogo sigue viendo una llamada modal normal.
 """
 
 from __future__ import annotations
 
+import traceback
+from sys import stderr as _stderr
 from typing import Dict, Optional
 from copy import deepcopy
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -49,7 +72,7 @@ from ..domain.rules import preset_names
 from ..ocr import preprocessing
 from ..ocr.base import OcrEngine
 from ..ocr.engine import available_engines
-from .roi_selector import RoiOverlay, grab_desktop
+from .roi_selector import RoiOverlay, grab_desktop, quit_guard
 
 #: Orden en que se ofrecen las regiones: primero las imprescindibles.
 ROI_ORDER = [
@@ -90,6 +113,15 @@ class ProfileDialog(QDialog):
         self._capture_timer.setSingleShot(True)
         self._capture_timer.timeout.connect(self._capture_selection)
         self._selection_kind = None
+        #: True mientras se esta eligiendo una region. Ocultar el dialogo rompe
+        #: su bucle modal, asi que `exec()` usa esta marca para volver a entrar
+        #: en vez de darle a quien lo abrio un "cancelado" que nadie pidio.
+        self._selecting_roi = False
+        self._selection_loop: Optional[QEventLoop] = None
+        #: Estado de `quitOnLastWindowClosed` antes de ocultar las ventanas.
+        self._quit_guard = None
+        #: Ultimo error real de captura, para poder verlo en las pruebas.
+        self.last_capture_error: str = ""
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_settings())
@@ -261,15 +293,59 @@ class ProfileDialog(QDialog):
             return None
         return RoiKind(item.data(Qt.UserRole))
 
+    # ---------------------------------------------------- modal + seleccion
+    def exec(self) -> int:  # noqa: A003 - la firma la impone QDialog
+        """Igual que `QDialog.exec()`, pero inmune a la seleccion de regiones.
+
+        Ocultar un QDialog termina su bucle modal. Como definir una region
+        exige ocultar este dialogo, `exec()` devolvia "cancelado" nada mas
+        pulsar el boton y la ventana que lo abrio descartaba el perfil.
+
+        Aqui se distingue una cosa de la otra: si el bucle se rompio porque hay
+        una seleccion en curso, se espera a que termine y se vuelve a entrar.
+        Quien llama sigue viendo una unica llamada modal que solo devuelve
+        cuando el usuario guarda o cancela de verdad.
+        """
+        while True:
+            result = super().exec()
+            if not self._selecting_roi:
+                return result
+            self._wait_for_selection()
+
+    def _wait_for_selection(self) -> None:
+        """Bucle propio mientras el overlay esta en pantalla."""
+        if not self._selecting_roi:
+            return
+        loop = QEventLoop()
+        self._selection_loop = loop
+        try:
+            loop.exec()
+        finally:
+            self._selection_loop = None
+
+    @property
+    def is_selecting_roi(self) -> bool:
+        """True mientras el overlay de seleccion sigue abierto."""
+        return self._selecting_roi
+
     # -------------------------------------------------------------- acciones
     def _define_selected(self) -> None:
         kind = self._selected_kind()
         if kind is None:
             QMessageBox.information(self, "Region", "Selecciona una fila de la lista.")
             return
-        if self._capture_timer.isActive() or self._overlay is not None:
+        if self._selecting_roi or self._capture_timer.isActive() or self._overlay is not None:
             return
+
         self._selection_kind = kind
+        self._selecting_roi = True
+        self.last_capture_error = ""
+
+        # A partir de aqui no queda ninguna ventana visible de la aplicacion.
+        # Sin este guardia, cerrar el overlay al terminar cerraria el proceso.
+        self._quit_guard = quit_guard()
+        self._quit_guard.__enter__()
+
         self._hidden_windows = []
         parent = self.parentWidget()
         if parent is not None and parent.window().isVisible():
@@ -285,12 +361,13 @@ class ProfileDialog(QDialog):
         try:
             monitor = self.monitor_combo.currentData()
             if monitor is None:
-                raise CaptureError("No hay una pantalla disponible.")
+                raise CaptureError("No hay una pantalla disponible para capturar.")
             image, monitor = grab_desktop(self.capture, monitor)
             target = next((s for s in QGuiApplication.screens()
                            if (s.geometry().x(), s.geometry().y()) == (monitor.x, monitor.y)),
                           self.screen())
-            overlay = RoiOverlay(image, monitor, title=f"Selecciona: {kind.display_name}",
+            titulo = kind.display_name if kind is not None else "la region"
+            overlay = RoiOverlay(image, monitor, title=f"Selecciona: {titulo}",
                                  screen=target)
             overlay.regionSelected.connect(lambda rect, k=kind: self._on_region(k, rect))
             overlay.cancelled.connect(self._on_region_cancelled)
@@ -300,14 +377,30 @@ class ProfileDialog(QDialog):
             overlay.activateWindow()
             overlay.setFocus()
         except Exception as exc:
+            # El error se REGISTRA entero y se explica; no se traga. Lo unico
+            # que se evita es que una excepcion aqui deje la aplicacion sin
+            # ninguna ventana visible, que es lo que la mataba.
+            self.last_capture_error = traceback.format_exc()
+            print(self.last_capture_error, file=_stderr)
             self._restore_editor()
-            QMessageBox.warning(self, "Captura", f"No se pudo capturar la pantalla:\n{exc}")
+            QMessageBox.warning(
+                self, "Captura",
+                f"No se pudo capturar la pantalla:\n{exc}\n\n"
+                "La aplicacion sigue abierta. Revisa el backend de captura en "
+                "el panel de diagnostico.")
 
     def _restore_editor(self) -> None:
+        """Devuelve la aplicacion al estado anterior a la seleccion.
+
+        El orden importa: primero vuelven las ventanas que se ocultaron y solo
+        despues se suelta el guardia de cierre, de modo que nunca hay un
+        instante sin ventanas visibles con el cierre automatico activo.
+        """
         self._capture_timer.stop()
         overlay, self._overlay = self._overlay, None
         if overlay is not None:
             overlay.deleteLater()
+
         for window in self._hidden_windows:
             window.show()
         self._hidden_windows = []
@@ -315,7 +408,23 @@ class ProfileDialog(QDialog):
         self.raise_()
         self.activateWindow()
 
+        self._selecting_roi = False
+        self._selection_kind = None
+
+        guard, self._quit_guard = self._quit_guard, None
+        if guard is not None:
+            guard.__exit__(None, None, None)
+
+        # Si `exec()` estaba esperando a que terminara la seleccion, ya puede
+        # volver a entrar en su bucle modal.
+        loop, self._selection_loop = self._selection_loop, None
+        if loop is not None and loop.isRunning():
+            loop.quit()
+
     def _on_region(self, kind: RoiKind, rect: Rect) -> None:
+        if kind is None or rect is None:
+            self._restore_editor()
+            return
         # Un marco comun conserva regiones de diferentes monitores sin moverlas.
         from ..capture.roi import NormalizedRect
         for roi in self.profile.rois.values():

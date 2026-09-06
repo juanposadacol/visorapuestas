@@ -1,0 +1,2 @@
+[console_scripts]
+visorunder = visorunder.__main__:main
