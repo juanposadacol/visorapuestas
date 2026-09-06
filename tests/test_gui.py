@@ -193,12 +193,26 @@ def test_el_tablero_evalua_todas_las_lineas(window):
     for row in range(board.table.rowCount()):
         celdas = [board.table.item(row, c).text() for c in range(board.table.columnCount())]
         filas[celdas[0]] = celdas
-    assert filas["37.5"][2:6] == ["3.33", "18", "4.50", "+0.50"]
-    assert filas["38.5"][2:6] == ["3.33", "19", "4.75", "+0.75"]
-    assert filas["39.5"][2:6] == ["3.33", "20", "5.00", "+1.00"]
-    assert filas["40.5"][2:6] == ["3.33", "21", "5.25", "+1.25"]
-    assert filas["37.5"][-1] == "EXIGENTE"
-    assert filas["40.5"][-1] == "MUY EXIGENTE"
+    # Se localiza cada dato por SU columna, no por una posicion fija: asi
+    # reordenar el tablero no puede hacer que esta prueba mire otra celda.
+    from visorunder.ui.entry_board import (
+        COL_CURRENT_PACE, COL_MISSING_PACE, COL_POINTS, COL_REF, COL_SIGNAL,
+    )
+
+    esperado = {
+        "37.5": ("3.33", "18", "4.50", "+0.50", "EXIGENTE"),
+        "38.5": ("3.33", "19", "4.75", "+0.75", None),
+        "39.5": ("3.33", "20", "5.00", "+1.00", None),
+        "40.5": ("3.33", "21", "5.25", "+1.25", "MUY EXIGENTE"),
+    }
+    for linea, (actual, puntos, faltante, referencia, senal) in esperado.items():
+        celdas = filas[linea]
+        assert celdas[COL_CURRENT_PACE] == actual
+        assert celdas[COL_POINTS] == puntos
+        assert celdas[COL_MISSING_PACE] == faltante
+        assert celdas[COL_REF] == referencia
+        if senal is not None:
+            assert celdas[COL_SIGNAL] == senal
 
 
 def test_el_tablero_enfoca_por_cuota_objetivo(window):

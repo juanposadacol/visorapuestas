@@ -37,6 +37,12 @@ class RoiKind(str, Enum):
     TEAM_B = "TEAM_B"
     BREAKDOWN_A = "BREAKDOWN_A"        # desglose por cuartos del equipo A
     BREAKDOWN_B = "BREAKDOWN_B"
+    #: Tablero superior COMPLETO, con encabezados y las dos filas de equipo.
+    #: Pensado para casas cuyo tablero cambia de columnas durante el partido
+    #: (Stake anade una columna al empezar cada cuarto): al leerlo entero, el
+    #: parser localiza cada columna por su encabezado y la region no se queda
+    #: obsoleta. De aqui salen equipos, cuarto, reloj, parciales y totales.
+    SCOREBOARD = "SCOREBOARD"
     ANCHOR = "ANCHOR"                  # recorte estable para re-anclar
 
     @property
@@ -55,7 +61,21 @@ class RoiKind(str, Enum):
                     RoiKind.CLOCK, RoiKind.LINES, RoiKind.OVER_ODDS,
                     RoiKind.UNDER_ODDS, RoiKind.BREAKDOWN_A, RoiKind.BREAKDOWN_B):
             return "digits"
+        # El tablero mezcla nombres de equipo, encabezados y numeros: es texto.
         return "text"
+
+    @property
+    def covers(self) -> tuple:
+        """Que datos aporta esta region por si sola.
+
+        El tablero completo cubre reloj, cuarto y marcador de una vez, asi que
+        configurarlo evita tener que dibujar esas tres regiones por separado.
+        """
+        if self is RoiKind.SCOREBOARD:
+            return (RoiKind.CLOCK, RoiKind.PERIOD, RoiKind.SCORE_PAIR,
+                    RoiKind.TEAM_A, RoiKind.TEAM_B,
+                    RoiKind.BREAKDOWN_A, RoiKind.BREAKDOWN_B)
+        return ()
 
 
 _ROI_LABELS: Dict[RoiKind, str] = {
@@ -73,6 +93,7 @@ _ROI_LABELS: Dict[RoiKind, str] = {
     RoiKind.TEAM_B: "Nombre equipo B",
     RoiKind.BREAKDOWN_A: "Desglose por cuartos equipo A",
     RoiKind.BREAKDOWN_B: "Desglose por cuartos equipo B",
+    RoiKind.SCOREBOARD: "Tablero completo / marcador dinamico",
     RoiKind.ANCHOR: "Ancla de referencia",
 }
 
@@ -198,6 +219,11 @@ class OcrHints:
         if kind in (RoiKind.MARKET_BLOCK, RoiKind.LINES, RoiKind.OVER_ODDS,
                     RoiKind.UNDER_ODDS, RoiKind.BREAKDOWN_A, RoiKind.BREAKDOWN_B):
             # Varias filas: aqui si hace falta la deteccion de texto.
+            return OcrHints(scale=2.0, psm=6, roi_kind=kind.value, single_line=False)
+        if kind is RoiKind.SCOREBOARD:
+            # Bloque grande con encabezados, nombres y numeros. Sin lista
+            # blanca: las palabras del encabezado son las que identifican las
+            # columnas, y recortarlas dejaria el tablero sin referencia.
             return OcrHints(scale=2.0, psm=6, roi_kind=kind.value, single_line=False)
         return OcrHints(scale=2.0, psm=7, roi_kind=kind.value, single_line=True)
 

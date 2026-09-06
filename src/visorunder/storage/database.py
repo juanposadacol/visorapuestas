@@ -203,12 +203,31 @@ def _migration_003(cx: sqlite3.Connection) -> None:
 
 
 
+def _manual_bets_columns(cx: sqlite3.Connection) -> set:
+    """Columnas actuales de ``manual_bets``. Vacio si la tabla no existe."""
+    return {str(row[1]) for row in cx.execute("PRAGMA table_info(manual_bets)").fetchall()}
+
+
 def _migration_004(cx: sqlite3.Connection) -> None:
     """Registro persistente de apuestas introducidas manualmente.
 
     Se mantiene separado de ``bets`` porque una apuesta manual puede existir
     sin una sesion de lectura y necesita monto, resultado, utilidad y ROI.
+
+    OJO CON LAS BASES YA INSTALADAS. Una version anterior del Browser Bridge
+    creaba una tabla ``manual_bets`` distinta, con solo ``bet_id`` y
+    ``browser_event_id``. Sobre una base asi, el CREATE TABLE IF NOT EXISTS de
+    abajo no hace nada (la tabla ya existe) pero los indices siguientes
+    fallaban con "no such column: placed_at", y esa excepcion dejaba la base
+    sin poder abrirse: ni esta migracion ni la 005 llegaban a completarse.
+
+    Por eso, si se encuentra la estructura antigua, esta migracion no toca
+    nada: la 005 es la que sabe convertirla conservando los enlaces.
     """
+    columnas = _manual_bets_columns(cx)
+    if columnas and "placed_at" not in columnas:
+        return
+
     cx.executescript(
         """
         CREATE TABLE IF NOT EXISTS manual_bets (

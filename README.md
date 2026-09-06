@@ -224,6 +224,52 @@ Consejos para que el OCR acierte:
 
 ---
 
+## 5.bis Casas con marcador dinámico (Stake)
+
+Algunas casas **añaden columnas al marcador durante el partido**, siempre por delante del
+total:
+
+```
+Q1:  1 | Puntos
+Q2:  1 | 2 | Medio tiempo | Puntos
+Q3:  1 | 2 | Medio tiempo | 3 | Puntos
+Q4:  1 | 2 | Medio tiempo | 3 | 4 | Puntos
+```
+
+Si dibujas una región sobre «Puntos» en el Q2, en el Q3 esa coordenada ya apunta a otra
+columna. Por eso **no uses regiones sueltas de marcador en estas casas**: define la región
+**Tablero completo / marcador dinámico**.
+
+Un perfil de Stake se configura entero con **dos regiones**:
+
+| Región | Qué abarcar |
+|---|---|
+| **Tablero completo** | todo el marcador superior: la línea de `3 cuarto • 10:00`, la fila de encabezados (`1  2  Medio tiempo  3  Puntos`) y las dos filas de equipo con sus números |
+| **Bloque de líneas y cuotas** | la zona del mercado, como siempre |
+
+De ahí salen solos los nombres de los equipos, el cuarto, el reloj, los parciales de cada
+cuarto y el marcador total. **No hay que redefinir nada al cambiar de cuarto**: la columna
+del total se localiza por su encabezado, no por su posición.
+
+Detalles que conviene saber:
+
+- **«Medio tiempo» es un acumulado, no un cuarto.** Con `1=28  2=17  Medio tiempo=45  3=0`
+  los parciales son 28, 17 y 0. La 1.ª mitad son Q1+Q2 y la 2.ª, Q3+Q4.
+- El visor **comprueba el tablero contra sí mismo** (`Q1+Q2 = Medio tiempo` y
+  `suma de cuartos = Puntos`). Una lectura que no cuadre se descarta y **no pisa** el
+  marcador bueno anterior.
+- Si el OCR no logra leer la palabra «Puntos», el total **no se inventa**: solo se deduce
+  cuando están todos los parciales.
+- Si además defines las regiones sueltas (Reloj, Cuarto, Marcador), **esas mandan** y el
+  tablero solo rellena lo que falte.
+- Con BetPlay la extensión sigue teniendo prioridad: el tablero OCR es para las casas que
+  no tienen extensión.
+
+Consejo al dibujar la región: incluye un poco de margen a la derecha para que quepan las
+columnas que todavía no han aparecido.
+
+---
+
 ## 6. Durante el partido
 
 1. Elige el perfil y pulsa **INICIAR** (o `F8`).
@@ -340,6 +386,48 @@ funcionando cuando la ventana del visor tiene el foco.
 
 ---
 
+## 6.bis Apuestas manuales: seguimiento en vivo
+
+El panel inferior **no es un historial de dinero**: es una herramienta de seguimiento.
+Introduces la apuesta una vez y la aplicación le hace el mismo cálculo en vivo que a una
+apuesta fijada desde el radar, usando el marcador real del partido.
+
+Ejemplo. Apuestas en Stake `Q4 UNDER 40.5 @ 1.80`, la escribes en el panel y pulsas
+**AGREGAR Y SEGUIR**. A partir de ahí, cada lectura actualiza sola:
+
+| Columna | Qué dice |
+|---|---|
+| `ACTUAL` | puntos que lleva **su** mercado (el Q4, no el partido) |
+| `MARGEN` | distancia hasta la línea: `línea - puntos` |
+| `P/CRUZAR` | puntos enteros que harían superar la línea |
+| `PROYECCIÓN` | a dónde lleva el ritmo actual dentro de ese mercado |
+| `DIF. LÍNEA` | proyección menos línea: el signo dice de qué lado cae |
+| `ESTADO` | `FAVORABLE`, `EN RIESGO` o `SUPERADA` |
+
+Al seleccionar una fila, el bloque de detalle añade los puntos que **todavía caben**, el
+ritmo actual y el ritmo que haría falta para cruzar.
+
+**Margen y puntos no son lo mismo.** Con `UNDER 40.5` y 32 puntos anotados:
+
+- margen hasta la línea: **8.5**
+- puntos que todavía caben: **8** → terminaría en 40 y el UNDER aguanta
+- puntos que la cruzan: **9** → el noveno lleva a 41 y la línea cae
+
+Detalles que importan:
+
+- El **mercado** decide qué puntos se miran: `Q4` usa los del Q4, `1.ª mitad` usa Q1+Q2,
+  `Partido` usa el total. Es la misma lógica que emplea el radar.
+- Puedes seguir **varias apuestas a la vez** de casas y mercados distintos. Cada una usa su
+  propia línea y no se mezclan: el partido es común, la línea no.
+- El **monto es opcional**. Sin monto la apuesta se sigue igual; solo no entra en el conteo
+  de utilidad y ROI, que se conserva como información secundaria.
+- Nada se marca solo. `GANADA` / `PERDIDA` / `NULA` las decides tú; el sistema únicamente
+  lo afirma cuando el mercado terminó de verdad o la línea ya quedó superada.
+- Una línea entera (`40.0`) tiene **zona de empate**: terminar exactamente en 40 devuelve el
+  dinero y se marca `NULA`, no `GANADA`.
+
+---
+
 ## 7. La línea que ves NO es siempre la del cuarto que se juega
 
 Es el error más caro y la aplicación lo evita explícitamente.
@@ -432,6 +520,9 @@ entera**, no solo el .exe, porque incluye los modelos del OCR.
 | `EXTENSIÓN DESCONECTADA` con Chrome abierto | la extensión no está cargada, o el puerto no coincide | recarga la extensión en `chrome://extensions`; comprueba el puerto en su popup |
 | El puente no arranca | el puerto 8765 está ocupado | cambia `bridge.port` en `settings.json` y el puerto en el popup de la extensión |
 | Va lento / mucha CPU | frecuencia alta o regiones enormes | baja a 2 lecturas/s y recorta las regiones |
+| `Esperando líneas del mercado actual` | la casa acaba de cambiar de cuarto y aún no publica la oferta | no hay nada que hacer: la sesión sigue leyendo marcador, reloj y cuarto, y las líneas entran solas al aparecer |
+| En Stake el marcador se descuadra al cambiar de cuarto | hay regiones sueltas de marcador y la casa insertó una columna | borra Marcador A/B y define el **Tablero completo** (sección 5.bis) |
+| `Esperando reloj` / `marcador` / `periodo` | ese dato no llega ni por DOM ni por región | conecta la extensión o define esa región concreta |
 | Nada funciona y no sé por qué | — | pestaña **Diagnóstico** → *Exportar log* |
 
 Ajustes útiles en el perfil: **frecuencia de lectura** (2–4/s es lo recomendado),

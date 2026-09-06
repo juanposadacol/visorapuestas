@@ -4,6 +4,12 @@ Estas apuestas son independientes del lector OCR: sirven para registrar lo que
 realmente se apuesta en cualquier casa, incluso si esa casa no esta abierta en
 el perfil activo. Se persisten y se pueden liquidar como ganadas, perdidas,
 nulas o dejarlas pendientes.
+
+Lo IMPORTANTE de una apuesta manual es su seguimiento en vivo (mercado, linea,
+puntos, margen y proyeccion), que calcula `calculations.manual_tracking`. El
+monto es opcional justamente por eso: se puede seguir una apuesta sin haber
+dicho cuanto se jugo. Si se indica, ademas entra en el conteo de utilidad y
+ROI, que es informacion complementaria.
 """
 
 from __future__ import annotations
@@ -40,7 +46,8 @@ class ManualBet:
     side: Side
     line: float
     odds: float
-    stake: float
+    #: Opcional. 0 significa "no lo dije", no "aposte cero".
+    stake: float = 0.0
     status: ManualBetStatus = ManualBetStatus.PENDING
     placed_at: float = field(default_factory=time.time)
     settled_at: Optional[float] = None
@@ -53,15 +60,20 @@ class ManualBet:
             raise ValueError("La casa de apuestas es obligatoria.")
         if self.odds <= 1.0:
             raise ValueError("La cuota debe ser mayor que 1.00.")
-        if self.stake <= 0:
-            raise ValueError("El monto apostado debe ser mayor que cero.")
+        if self.stake < 0:
+            raise ValueError("El monto apostado no puede ser negativo.")
         if self.line < 0:
             raise ValueError("La linea no puede ser negativa.")
 
     @property
+    def has_stake(self) -> bool:
+        """True si se indico un monto. Sin monto no hay utilidad que contar."""
+        return self.stake > 0
+
+    @property
     def profit(self) -> Optional[float]:
-        """Ganancia neta. Pendiente -> None; nula -> 0."""
-        if self.status is ManualBetStatus.PENDING:
+        """Ganancia neta. Pendiente o sin monto -> None; nula -> 0."""
+        if self.status is ManualBetStatus.PENDING or not self.has_stake:
             return None
         if self.status is ManualBetStatus.WON:
             return self.stake * (self.odds - 1.0)

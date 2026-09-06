@@ -12,18 +12,18 @@ from __future__ import annotations
 
 from typing import Optional, Set
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -38,6 +38,7 @@ from ..domain.market import Side
 from .diagnostics_panel import DiagnosticsPanel
 from .hotkeys import HotkeyManager
 from .entry_board import EntryBoard
+from .flow_layout import FlowRow
 from .metrics_panel import MetricsPanel
 from .manual_bets_panel import ManualBetsPanel
 from .connection_panel import ConnectionPanel
@@ -45,6 +46,62 @@ from .criteria_dialog import CriteriaDialog
 from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
 from .styles import STYLESHEET
+
+#: Reparto vertical del panel principal frente a las apuestas manuales.
+#: Son PROPORCIONES: Qt las usa como pesos y las reescala con la ventana, asi
+#: que no atan la interfaz a ninguna resolucion concreta.
+MAIN_AREA_SHARE = 800
+MANUAL_AREA_SHARE = 200
+
+#: Reparto horizontal entre la columna de metricas y el radar de mercados.
+#: La izquierda es la zona de lectura (marcador, promedios, jugado/restante,
+#: linea enfocada y seguimiento) y manda: se lleva el 60 % y, cuando falta
+#: sitio, es el radar el que cede. Tambien son proporciones, no pixeles.
+LEFT_AREA_SHARE = 600
+RIGHT_AREA_SHARE = 400
+
+
+class _StatusLine(QLabel):
+    """Linea de estado que se recorta con puntos suspensivos.
+
+    Una `QLabel` normal exige como ancho minimo el de su texto completo. El de
+    la barra de estado es largo ("BUSCANDO ENTRADA | LEYENDO | ciclo 8 ms |
+    ...") y llegaba a pedir 997 px, que era lo que mantenia el ancho minimo de
+    TODA la ventana en 1210 px: mas de lo que mide de ancho una pantalla
+    vertical, asi que la ventana no cabia y no habia forma de dar mas sitio a
+    la columna de metricas.
+
+    Aqui el minimo es cero y el texto se recorta al ancho que haya. No se
+    pierde informacion: el mensaje entero queda en el tooltip y `text()` sigue
+    devolviendolo completo.
+    """
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__()
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:          # noqa: N802 (API de Qt)
+        self._full_text = text
+        self.setToolTip(text)
+        self._elide()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def minimumSizeHint(self) -> QSize:            # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:          # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        recortado = self.fontMetrics().elidedText(
+            self._full_text, Qt.ElideRight, max(0, self.width()))
+        if recortado != QLabel.text(self):
+            QLabel.setText(self, recortado)
 
 
 class MainWindow(QMainWindow):
@@ -76,7 +133,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        layout.addLayout(self._build_toolbar())
+        layout.addWidget(self._build_toolbar())
 
         splitter = QSplitter(Qt.Horizontal)
         self.metrics_panel = MetricsPanel()
@@ -100,24 +157,38 @@ class MainWindow(QMainWindow):
         columna.addWidget(self.metrics_scroll, 1)
         splitter.addWidget(izquierda)
         splitter.addWidget(self.entry_board)
-        # El tablero de lineas es el elemento dominante: es donde se detecta
-        # el momento de entrada, que es la funcion principal del programa.
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([460, 700])
+        # La columna de metricas es la zona prioritaria: es la que se lee de un
+        # vistazo y la que no puede quedar recortada. Se lleva la mayor parte
+        # del ancho y, si falta sitio, el que cede es el radar (que ademas
+        # tiene scroll propio). Antes era al reves y la izquierda se ahogaba.
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([LEFT_AREA_SHARE, RIGHT_AREA_SHARE])
+        splitter.setCollapsible(0, False)   # la izquierda nunca desaparece
+        splitter.setCollapsible(1, True)    # el radar si puede plegarse
+        self.main_splitter = splitter
+        self._protect_left_column()
 
-        # El registro manual se mantiene debajo del radar principal.
-        # El splitter vertical permite reducirlo si se quiere dedicar mas
-        # espacio al seguimiento en vivo.
+        # El registro manual es una herramienta SECUNDARIA y vive al pie.
+        # Las metricas del partido y el radar mandan en la pantalla: el
+        # reparto es 4 a 1, asi que al abrir y al redimensionar la ventana el
+        # panel principal se queda con ~80 % del alto. Los tamanos iniciales
+        # son una PROPORCION, no una resolucion: Qt los reescala solo.
         panel_splitter = QSplitter(Qt.Vertical)
         panel_splitter.addWidget(splitter)
         self.manual_bets_panel = ManualBetsPanel(self.controller)
         panel_splitter.addWidget(self.manual_bets_panel)
-        panel_splitter.setStretchFactor(0, 5)
-        panel_splitter.setStretchFactor(1, 2)
+        panel_splitter.setStretchFactor(0, 4)
+        panel_splitter.setStretchFactor(1, 1)
         panel_splitter.setCollapsible(0, False)
         panel_splitter.setCollapsible(1, True)
-        panel_splitter.setSizes([570, 250])
+        panel_splitter.setSizes([MAIN_AREA_SHARE, MANUAL_AREA_SHARE])
+        self.panel_splitter = panel_splitter
+
+        # Al contraer, el alto que suelta el panel pasa al area principal; al
+        # desplegar se recupera el reparto que hubiera en ese momento.
+        self._manual_splitter_sizes = None
+        self.manual_bets_panel.expandedChanged.connect(self._on_manual_panel_toggled)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(panel_splitter, "Panel")
@@ -134,16 +205,36 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status_label = QLabel("Listo")
+        self.status_label = _StatusLine("Listo")
         self.status.addWidget(self.status_label, 1)
         self.betplay_status_label = QLabel("BETPLAY DESCONECTADO")
         self.betplay_status_label.setObjectName("status")
         self.status.addPermanentWidget(self.betplay_status_label)
 
-    def _build_toolbar(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
+    def _protect_left_column(self) -> None:
+        """Hace que el ancho minimo del panel de metricas se RESPETE.
+
+        `QScrollArea` no propaga el minimo de su contenido: su
+        `minimumSizeHint()` son unos 68 px pase lo que pase. Como ademas la
+        barra horizontal esta desactivada a proposito (nadie quiere leer
+        metricas desplazandose de lado), el divisor podia estrechar esta
+        columna por debajo de lo que ocupa el panel y los valores alineados a
+        la derecha -promedios, margenes, puntos- se cortaban sin aviso ni
+        forma de recuperarlos.
+
+        Se traslada aqui el minimo real del panel mas el hueco de la barra
+        vertical. Es un calculo, no una cifra fija: sigue a la fuente y al DPI.
+        """
+        barra = self.metrics_scroll.verticalScrollBar().sizeHint().width()
+        marco = 2 * self.metrics_scroll.frameWidth()
+        minimo = max(self.metrics_panel.minimumWidth(),
+                     self.metrics_panel.minimumSizeHint().width())
+        self.metrics_scroll.setMinimumWidth(minimo + barra + marco)
+
+    def _build_toolbar(self) -> QWidget:
+        bar = FlowRow(spacing=6, vertical_spacing=4)
         self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.setMinimumWidth(150)
         self.profile_combo.setToolTip(
             "Cada casa puede tener su propio perfil. Por ejemplo: "
             "'Stake principal' y 'BetPlay principal'."
@@ -179,17 +270,17 @@ class MainWindow(QMainWindow):
         self.on_top_check.setChecked(self.controller.settings.always_on_top)
         self.on_top_check.toggled.connect(self._apply_always_on_top)
 
-        bar.addWidget(QLabel("Perfil:"))
-        bar.addWidget(self.profile_combo)
-        bar.addWidget(self.new_profile_button)
-        bar.addWidget(self.configure_button)
-        bar.addWidget(self.criteria_button)
-        bar.addSpacing(12)
-        bar.addWidget(self.start_button)
-        bar.addWidget(self.finish_button)
-        bar.addWidget(self.baseline_button)
-        bar.addStretch(1)
-        bar.addWidget(self.on_top_check)
+        bar.add(QLabel("Perfil:"))
+        bar.add(self.profile_combo)
+        bar.add(self.new_profile_button)
+        bar.add(self.configure_button)
+        bar.add(self.criteria_button)
+        bar.add_spacing(12)
+        bar.add(self.start_button)
+        bar.add(self.finish_button)
+        bar.add(self.baseline_button)
+        bar.add_stretch()
+        bar.add(self.on_top_check)
         return bar
 
     def _build_hotkeys(self) -> None:
@@ -412,10 +503,11 @@ class MainWindow(QMainWindow):
         if controller.reader is None:
             reader = controller.start_session()
             if reader is None:
-                QMessageBox.warning(
-                    self, "No se puede iniciar",
-                    "Revisa el panel de diagnostico: falta el perfil, alguna region "
-                    "imprescindible o el motor OCR.")
+                # Mensaje ESPECIFICO: se nombra el dato que falta, nunca un
+                # "revisa el diagnostico" que no dice nada.
+                motivo = controller.describe_start_blockers()
+                QMessageBox.warning(self, "No se puede iniciar", motivo)
+                self.status_label.setText(motivo.replace("\n", "   |   "))
                 return
             self.start_button.setText("PAUSAR (F8)")
             self.finish_button.setEnabled(True)
@@ -449,6 +541,29 @@ class MainWindow(QMainWindow):
             self.activateWindow()
         else:
             self.showMinimized()
+
+    def _on_manual_panel_toggled(self, expanded: bool) -> None:
+        """Reparte el alto al contraer y lo devuelve al desplegar.
+
+        Contraido, el panel solo ocupa su encabezado y todo lo demas es para
+        las metricas. Al volver a desplegar se restaura el reparto que tenia
+        justo antes, de modo que se recuerda mientras la aplicacion sigue
+        abierta sin guardar nada en disco.
+        """
+        splitter = self.panel_splitter
+        if not expanded:
+            self._manual_splitter_sizes = splitter.sizes()
+            alto = sum(splitter.sizes())
+            # El panel ya esta contraido: su sizeHint es el del encabezado.
+            self.manual_bets_panel.updateGeometry()
+            minimo = max(self.manual_bets_panel.minimumHeight(),
+                         self.manual_bets_panel.sizeHint().height())
+            splitter.setSizes([max(0, alto - minimo), minimo])
+            return
+
+        if self._manual_splitter_sizes:
+            splitter.setSizes(self._manual_splitter_sizes)
+            self._manual_splitter_sizes = None
 
     def _apply_always_on_top(self, enabled: bool) -> None:
         self.controller.settings.always_on_top = bool(enabled)
@@ -494,7 +609,7 @@ class MainWindow(QMainWindow):
             return
         if not self.controller.browser.is_live:
             return
-        if self.controller.missing_requirements(self.controller.profile):
+        if self.controller.blocking_requirements(self.controller.profile):
             return
         reader = self.controller.start_session(self.controller.profile)
         if reader is None:
@@ -523,6 +638,7 @@ class MainWindow(QMainWindow):
                 conflicts=view.source_conflicts,
                 extension_state=view.extension_state, waiting_for=view.waiting_for,
             )
+            self.manual_bets_panel.update_tracking(view.manual_tracking)
             self._update_waiting_status(view)
             return
 
@@ -547,6 +663,9 @@ class MainWindow(QMainWindow):
             in_transition=view.snapshot.market_in_transition,
             now=view.snapshot.ts,
         )
+        # Cada lectura actualiza sola el seguimiento de las apuestas manuales:
+        # cuando el marcador pasa de 32 a 34, la tabla cambia sin tocar nada.
+        self.manual_bets_panel.update_tracking(view.manual_tracking)
         self._update_status(view)
         self._check_event_change()
 
@@ -576,8 +695,13 @@ class MainWindow(QMainWindow):
                 "Esperando a la extension. Abre BetPlay en un partido en vivo, "
                 "o define las regiones como ultimo recurso.")
             return
-        faltan = ", ".join(view.waiting_for) or "datos"
-        self.status_label.setText(f"EXTENSION CONECTADA. Esperando {faltan}.")
+        # Frases concretas por dato que falta, en vez de una lista suelta.
+        bloqueos = self.controller.blocking_requirements(self.controller.profile)
+        if bloqueos:
+            detalle = "   ".join(b.message for b in bloqueos)
+        else:
+            detalle = "Esperando lineas del mercado actual."
+        self.status_label.setText(f"EXTENSION CONECTADA. {detalle}")
 
     def _check_event_change(self) -> None:
         """La extension cambio de partido: no se mezclan eventos."""
@@ -598,6 +722,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             f"Nuevo partido detectado: {cambio['name'] or cambio['to']}")
 
+    def _market_wait_text(self, view) -> str:
+        """Aviso de transicion: el cuarto ya se detecto, faltan sus lineas.
+
+        Cambiar de Q3 a Q4 deja unos segundos sin oferta publicada. La sesion
+        sigue leyendo marcador, reloj y cuarto; lo unico que falta son las
+        lineas, y eso es lo que se dice.
+        """
+        if not view.snapshot or view.blocks:
+            return ""
+        estado = view.snapshot.state
+        etiqueta = estado.label() if estado.period_value is not None else ""
+        if etiqueta:
+            return f"{etiqueta} detectado - esperando lineas"
+        return "Esperando lineas del mercado actual"
+
     def _update_status(self, view) -> None:
         snapshot = view.snapshot
         parts = [view.mode.label]
@@ -605,6 +744,9 @@ class MainWindow(QMainWindow):
         # iniciar, faltan regiones". El ROI es el ultimo recurso.
         if view.session_state is SessionState.WAITING_FOR_DATA and view.waiting_for:
             parts.append(f"ESPERANDO: {', '.join(view.waiting_for)}")
+        espera_mercado = self._market_wait_text(view)
+        if espera_mercado:
+            parts.append(espera_mercado)
         if self.controller.reader is not None:
             estado = "PAUSADO" if self.controller.reader.is_paused else "LEYENDO"
             parts.append(estado)

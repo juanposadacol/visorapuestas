@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .bridge.server import BridgeServer
 from .bridge.source import BrowserSource, ExtensionState, LinkState, SourceKind
 from .calculations import entry as entry_mod
+from .calculations import manual_tracking as manual_tracking_mod
 from .calculations import metrics as metrics_mod
 from .calculations.entry import LineEvaluation, MarketEvaluation
 from .calculations.metrics import BetMetrics, GeneralMetrics
@@ -28,6 +29,7 @@ from .config.profiles import ScreenContext, SportsbookProfile
 from .config.settings import AppSettings
 from .diagnostics.logbus import LogBus
 from .domain.bet import LockedBet
+from .calculations.manual_tracking import ManualBetTracking
 from .domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
 from .domain.market import MarketKey, MarketType, MarketLine, MarketSnapshot, Side
 from .domain.rules import rules_from_name
@@ -85,6 +87,57 @@ class SessionState(str, Enum):
                 "RUNNING": "RADAR ACTIVO"}[self.value]
 
 
+class StartBlocker(str, Enum):
+    """Que impide EXACTAMENTE arrancar la lectura.
+
+    Existe para no repetir un "revisa el panel de diagnostico" que no dice
+    nada. Cada motivo tiene su frase, y la frase nombra el dato que falta.
+    """
+
+    PROFILE = "PROFILE"
+    OCR = "OCR"
+    CLOCK = "CLOCK"
+    PERIOD = "PERIOD"
+    SCORE = "SCORE"
+    MARKET = "MARKET"
+
+    @property
+    def message(self) -> str:
+        return {
+            StartBlocker.PROFILE: (
+                "Falta el perfil de la casa. Pulsa NUEVO PERFIL para crear uno, "
+                "o conecta la extension de BetPlay."),
+            StartBlocker.OCR: (
+                "Falta el motor OCR. El perfil usa regiones de pantalla y "
+                "ningun motor esta disponible en este equipo."),
+            StartBlocker.CLOCK: "Esperando reloj.",
+            StartBlocker.PERIOD: "Esperando periodo/cuarto.",
+            StartBlocker.SCORE: "Esperando marcador.",
+            StartBlocker.MARKET: "Esperando lineas del mercado actual.",
+        }[self]
+
+    @property
+    def short_label(self) -> str:
+        """Nombre corto, el que ya usaba el panel de diagnostico."""
+        return {
+            StartBlocker.PROFILE: "perfil",
+            StartBlocker.OCR: "motor OCR",
+            StartBlocker.CLOCK: "reloj",
+            StartBlocker.PERIOD: "cuarto",
+            StartBlocker.SCORE: "marcador",
+            StartBlocker.MARKET: "mercado y lineas",
+        }[self]
+
+
+#: Datos SIN LOS CUALES NO SE PUEDE LEER EL PARTIDO. Las lineas no estan aqui
+#: a proposito: una sesion con reloj, cuarto y marcador ya es util (marcador,
+#: proyecciones y seguimiento de apuestas manuales) aunque la casa todavia no
+#: haya publicado ninguna linea. Las lineas hacen falta para EVALUAR una
+#: linea, no para CREAR la sesion, y por eso un cambio de Q3 a Q4 sin oferta
+#: publicada ya no deja la sesion inutilizada.
+SESSION_BLOCKERS = (StartBlocker.CLOCK, StartBlocker.PERIOD, StartBlocker.SCORE)
+
+
 @dataclass
 class ViewModel:
     """Todo lo que la interfaz necesita para pintar un ciclo."""
@@ -122,7 +175,12 @@ class ViewModel:
     link_latency_ms: Optional[float] = None
     field_sources: Dict[str, str] = field(default_factory=dict)
     source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    #: Apuestas manuales del Browser Bridge (flujo anterior, sin monto).
     manual_bets: list = field(default_factory=list)
+    #: Seguimiento en vivo de cada apuesta manual del libro: puntos del
+    #: mercado, margen, puntos para cruzar, proyeccion y estado. Una entrada
+    #: por apuesta, calculada contra SU mercado y SU linea.
+    manual_tracking: List[ManualBetTracking] = field(default_factory=list)
 
 
 class AppController:
@@ -145,6 +203,10 @@ class AppController:
         # - manual_bets: apuestas manuales vinculadas al flujo/browser anterior.
         self.manual_bet_repo = ManualBetRepository(self.db)
         self.manual_bets = self.bets.list_manual()
+        #: Copia del libro manual. La interfaz se refresca 4 veces por segundo
+        #: y el seguimiento no puede depender de consultar SQLite cada vez.
+        #: Se invalida en cuanto se agrega, liquida o borra una apuesta.
+        self._manual_ledger: Optional[List[ManualBet]] = None
 
         self._capture = capture
         #: Fuente DOM y puente local. Se arrancan al abrir la aplicacion para
@@ -167,6 +229,8 @@ class AppController:
         #: automatico por cuota objetivo mientras esa linea siga existiendo.
         self.manual_line_value: Optional[float] = None
         self.manual_market_key = None
+        #: Por que fallo el ultimo intento de arrancar. Vacio si no fallo.
+        self.start_blockers: List[StartBlocker] = []
         self.demo_game = None
 
     # ---------------------------------------------------------------- basico
@@ -241,7 +305,7 @@ class AppController:
         """WAITING_FOR_DATA / READY / RUNNING, sin efectos secundarios."""
         if self.reader is not None:
             return SessionState.RUNNING
-        if self.missing_requirements(self.profile):
+        if self.blocking_requirements(self.profile):
             return SessionState.WAITING_FOR_DATA
         return SessionState.READY
 
@@ -253,39 +317,83 @@ class AppController:
         return {campo: SourceKind.BROWSER_DOM.value for campo in self.dom_fields()}
 
     # ---------------------------------------------------------------- requisitos
-    def missing_requirements(self, profile: Optional[SportsbookProfile] = None) -> List[str]:
-        """Que falta para poder empezar, contando TODAS las fuentes.
+    def missing_blockers(self, profile: Optional[SportsbookProfile] = None) -> List[StartBlocker]:
+        """Que datos faltan, contando TODAS las fuentes.
 
         Una region deja de ser obligatoria en cuanto otra fuente entrega ese
         mismo dato. Es lo que permite abrir un partido sin dibujar nada cuando
         la extension esta conectada.
+
+        Devuelve la lista completa de lo que falta. Cuales de esos impiden
+        arrancar y cuales solo impiden evaluar una linea lo decide
+        `blocking_requirements`.
         """
         from .capture.roi import RoiKind
 
         perfil = profile or self.profile
         dom = set(self.dom_fields())
-        faltan: List[str] = []
+        faltan: List[StartBlocker] = []
+
+        # El tablero completo aporta reloj, cuarto y marcador de una vez. Un
+        # perfil de Stake se configura con esa sola region en vez de cuatro.
+        tablero = perfil is not None and perfil.has(RoiKind.SCOREBOARD)
 
         tiene_mercado = "market" in dom or (perfil is not None and perfil.has(RoiKind.MARKET_BLOCK))
         if not tiene_mercado:
-            faltan.append("mercado y lineas")
+            faltan.append(StartBlocker.MARKET)
 
-        tiene_reloj = "clock_seconds" in dom or (perfil is not None and perfil.has(RoiKind.CLOCK))
+        tiene_reloj = ("clock_seconds" in dom or tablero
+                       or (perfil is not None and perfil.has(RoiKind.CLOCK)))
         if not tiene_reloj:
-            faltan.append("reloj")
+            faltan.append(StartBlocker.CLOCK)
 
-        tiene_cuarto = "period" in dom or (perfil is not None and perfil.has(RoiKind.PERIOD))
+        tiene_cuarto = ("period" in dom or tablero
+                        or (perfil is not None and perfil.has(RoiKind.PERIOD)))
         if not tiene_cuarto:
-            faltan.append("cuarto")
+            faltan.append(StartBlocker.PERIOD)
 
         marcador_dom = {"score_a", "score_b"} <= dom
         marcador_roi = perfil is not None and (
             perfil.has(RoiKind.SCORE_PAIR) or
             (perfil.has(RoiKind.SCORE_A) and perfil.has(RoiKind.SCORE_B)))
-        if not (marcador_dom or marcador_roi):
-            faltan.append("marcador")
+        if not (marcador_dom or marcador_roi or tablero):
+            faltan.append(StartBlocker.SCORE)
 
         return faltan
+
+    def missing_requirements(self, profile: Optional[SportsbookProfile] = None) -> List[str]:
+        """Lo mismo, con los nombres cortos que ensena el panel de diagnostico."""
+        return [blocker.short_label for blocker in self.missing_blockers(profile)]
+
+    def blocking_requirements(
+        self, profile: Optional[SportsbookProfile] = None
+    ) -> List[StartBlocker]:
+        """Solo lo que IMPIDE crear la sesion.
+
+        Las lineas quedan fuera a proposito. Con reloj, cuarto y marcador la
+        sesion ya sirve: ensena el marcador, las proyecciones y el seguimiento
+        de las apuestas manuales. Cuando la casa publique lineas, el radar las
+        recoge en el ciclo siguiente sin reiniciar nada.
+
+        Esto es lo que evita que un cambio de Q3 a Q4 con la oferta todavia sin
+        publicar deje la sesion entera inutilizada.
+        """
+        return [b for b in self.missing_blockers(profile) if b in SESSION_BLOCKERS]
+
+    def describe_start_blockers(
+        self, profile: Optional[SportsbookProfile] = None
+    ) -> str:
+        """Frase concreta de por que no se puede arrancar.
+
+        Nunca un mensaje generico: se nombra el dato que falta.
+        """
+        if self.start_blockers:
+            bloqueos = list(self.start_blockers)
+        else:
+            bloqueos = self.blocking_requirements(profile)
+        if not bloqueos:
+            return "Todo listo para empezar."
+        return "\n".join(b.message for b in bloqueos)
 
     def browser_profile(self) -> SportsbookProfile:
         """Perfil implicito para trabajar solo con la extension, sin regiones.
@@ -352,24 +460,32 @@ class AppController:
     # -------------------------------------------------------------- sesiones
     def start_session(self, profile: Optional[SportsbookProfile] = None) -> Optional[LiveReader]:
         """Crea el lector y arranca la lectura en vivo."""
+        self.start_blockers = []
         profile = profile or self.profile
         if profile is None and self.browser.is_live:
             # Con la extension conectada no hace falta perfil: se usa el
             # implicito y no se pide dibujar ninguna region.
             profile = self.browser_profile()
         if profile is None:
-            self.log.error("No hay perfil seleccionado")
+            self.start_blockers = [StartBlocker.PROFILE]
+            self.log.error(StartBlocker.PROFILE.message)
             return None
 
-        faltan = self.missing_requirements(profile)
+        # Solo se comprueba lo IMPRESCINDIBLE para leer el partido. Que la
+        # casa todavia no publique lineas no impide abrir la sesion.
+        faltan = self.blocking_requirements(profile)
         if faltan:
-            self.log.error("Faltan datos para empezar: " + ", ".join(faltan) +
-                           ". Conecta la extension o define esas regiones.")
+            self.start_blockers = faltan
+            self.log.error("No se puede empezar. " +
+                           " ".join(b.message for b in faltan) +
+                           " Conecta la extension o define esas regiones.")
             return None
 
         necesita_ocr = bool(profile.rois)
         engine = self.ensure_engine(profile.engine) if necesita_ocr else self.engine
         if engine is None and necesita_ocr:
+            self.start_blockers = [StartBlocker.OCR]
+            self.log.error(StartBlocker.OCR.message)
             return None
         if engine is None:
             # Sin regiones no se llama al OCR en ningun momento; el motor
@@ -539,6 +655,7 @@ class AppController:
             session_id=self.session_id,
         )
         saved = self.manual_bet_repo.save(bet)
+        self._invalidate_manual_ledger()
         self.log.info(
             f"APUESTA MANUAL #{saved.bet_id}: {saved.sportsbook} | "
             f"{saved.key.label} | {saved.description} | monto {saved.stake:g}"
@@ -548,20 +665,68 @@ class AppController:
     def list_manual_bets(self, limit: int = 100) -> List[ManualBet]:
         return self.manual_bet_repo.list_recent(limit)
 
+    def _invalidate_manual_ledger(self) -> None:
+        self._manual_ledger = None
+
+    def manual_ledger(self, limit: int = 100) -> List[ManualBet]:
+        """Libro manual con memoria, para poder consultarlo en cada refresco."""
+        if self._manual_ledger is None:
+            self._manual_ledger = self.manual_bet_repo.list_recent(limit)
+        return self._manual_ledger
+
     def settle_manual_bet(
         self, bet_id: int, status: ManualBetStatus
     ) -> Optional[ManualBet]:
         bet = self.manual_bet_repo.settle(bet_id, status)
+        self._invalidate_manual_ledger()
         if bet is not None:
             self.log.info(f"APUESTA MANUAL #{bet_id}: {status.label}")
         return bet
 
     def delete_manual_bet(self, bet_id: int) -> None:
         self.manual_bet_repo.delete(bet_id)
+        self._invalidate_manual_ledger()
         self.log.info(f"APUESTA MANUAL #{bet_id}: eliminada")
 
     def manual_bet_summary(self) -> ManualBetSummary:
         return self.manual_bet_repo.summary()
+
+    # ------------------------------------------- seguimiento en vivo manual
+    def manual_bet_tracking(
+        self, snapshot: Optional[ReaderSnapshot] = None
+    ) -> List[ManualBetTracking]:
+        """Seguimiento de TODAS las apuestas manuales contra el partido actual.
+
+        Cada apuesta se calcula contra SU mercado y SU linea, asi que tres
+        apuestas simultaneas (BetPlay Q4 40.5, Stake Q4 42.5 y BetPlay partido
+        185.5) se actualizan a la vez sin mezclarse.
+
+        La casa NO interviene en el calculo: el marcador y el reloj son del
+        partido, no de la casa. Por eso una apuesta de Stake se sigue con los
+        datos que llegan por el DOM de BetPlay, que es justo lo que hace falta
+        mientras Stake no tenga su propio parser.
+        """
+        if snapshot is None and self.reader is not None:
+            snapshot = self.reader.last_snapshot
+        state = snapshot.state if snapshot is not None else None
+        return self.manual_bet_tracking_state(state)
+
+    def manual_bet_tracking_state(self, state) -> List[ManualBetTracking]:
+        """Igual que `manual_bet_tracking`, partiendo de un GameState concreto.
+
+        Sirve para calcular el seguimiento contra un estado que no viene del
+        lector: una repeticion del historial o una prueba.
+        """
+        return manual_tracking_mod.track_manual_bets(state, self.manual_ledger())
+
+    def manual_bet_tracking_for(
+        self, bet_id: int, snapshot: Optional[ReaderSnapshot] = None
+    ) -> Optional[ManualBetTracking]:
+        """Seguimiento de una apuesta concreta, para el bloque de detalle."""
+        for tracking in self.manual_bet_tracking(snapshot):
+            if tracking.bet.bet_id == bet_id:
+                return tracking
+        return None
 
     def set_period_baseline(self, period: int, score_a: int, score_b: int) -> None:
         if self.reader is None:
@@ -674,6 +839,7 @@ class AppController:
             # ya el DOM: es justo lo que hace falta para entender por que no
             # arranca, en vez de un "faltan regiones" que no explica nada.
             return ViewModel(manual_bets=self.manual_bet_views(None),
+                             manual_tracking=self.manual_bet_tracking(None),
                              criteria=self.criteria, link_state=self.browser.link_state(),
                              extension_state=self.browser.extension_state(),
                              waiting_for=self.missing_requirements(self.profile),
@@ -729,6 +895,9 @@ class AppController:
         paquete = self.browser.last_packet
         return ViewModel(
             manual_bets=self.manual_bet_views(snapshot),
+            # Cada apuesta manual se recalcula con ESTE snapshot: cuando el
+            # marcador pasa de 32 a 34 el seguimiento cambia solo.
+            manual_tracking=self.manual_bet_tracking(snapshot),
             link_state=self.browser.link_state(),
             extension_state=self.browser.extension_state(),
             waiting_for=self.missing_requirements(self.profile),

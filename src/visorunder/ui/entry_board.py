@@ -5,9 +5,11 @@ numeros y su senal, para poder leer la situacion de un vistazo de uno o dos
 segundos.
 
 Columnas acordadas:
-    LINEA | CUOTA U | PROMEDIO ACTUAL | PUNTOS FALTANTES |
-    PROMEDIO FALTANTE | VS REFERENCIA | VS CUARTO | VS MITAD |
-    VS PARTIDO | SENAL
+    LINEA | CUOTA U | VS REFERENCIA | VS CUARTO | VS MITAD | VS PARTIDO |
+    PROMEDIO ACTUAL | PUNTOS FALTANTES | PROMEDIO FALTANTE | SENAL
+
+Las comparaciones van juntas y delante porque son la lectura rapida; los
+promedios y los puntos quedan detras como respaldo. La senal cierra siempre.
 
 La senal se transmite SIEMPRE con etiqueta de texto ademas del color, para no
 depender de la vista cromatica ni de la iluminacion de la pantalla.
@@ -41,11 +43,16 @@ from ..config.criteria import EntryCriteria
 from ..domain.event_markets import FreshnessState
 from ..domain.market import MarketKey, MarketSnapshot, Side
 from . import formatters as fmt
+from .flow_layout import FlowRow
 
-COLUMNS = ["LINEA", "CUOTA U", "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.",
-           "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO", "SENAL"]
-(COL_LINE, COL_ODDS, COL_CURRENT_PACE, COL_POINTS, COL_MISSING_PACE, COL_REF,
- COL_QUARTER, COL_HALF, COL_GAME, COL_SIGNAL) = range(10)
+COLUMNS = ["LINEA", "CUOTA U", "VS REF.", "VS Q", "VS MITAD", "VS PARTIDO",
+           "PROM. ACTUAL", "PUNTOS FALT.", "PROM. FALT.", "SENAL"]
+#: Los indices se desempaquetan EN EL MISMO ORDEN que `COLUMNS`, y la lista de
+#: valores de cada fila se construye tambien en ese orden. Cambiar el orden
+#: obliga a mover los tres sitios a la vez o los datos quedarian bajo otro
+#: encabezado.
+(COL_LINE, COL_ODDS, COL_REF, COL_QUARTER, COL_HALF, COL_GAME,
+ COL_CURRENT_PACE, COL_POINTS, COL_MISSING_PACE, COL_SIGNAL) = range(10)
 # Alias historico: RITMO NEC. y PROMEDIO FALTANTE son la misma metrica.
 COL_PACE = COL_MISSING_PACE
 
@@ -113,6 +120,13 @@ class MarketBlock(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(COL_SIGNAL,
                                                            QHeaderView.ResizeToContents)
+        # `Stretch` reparte el ancho SIN suelo: en un panel estrecho las diez
+        # columnas caian a 26 px y la cabecera se leia "INE OTA ; RE /S C".
+        # Con un minimo por columna la tabla prefiere DESPLAZARSE en
+        # horizontal antes que aplastar los numeros hasta hacerlos ilegibles.
+        # Se mide con la fuente real, asi que acompana a la fuente y al DPI.
+        self.table.horizontalHeader().setMinimumSectionSize(
+            self.table.horizontalHeader().fontMetrics().horizontalAdvance("VS MITAD") + 8)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.cellDoubleClicked.connect(
             lambda *_: self.lineActivated.emit(self.selected_evaluation))
@@ -172,15 +186,16 @@ class MarketBlock(QWidget):
 
         for row, e in enumerate(block.evaluations):
             values = [
-                fmt.line(e.line_value),
-                fmt.odds(e.under_odds),
-                _pace_text(e.current_pace),
-                fmt.integer(e.points_to_exceed),
-                _pace_text(e.required_pace),
-                _margin_text(e.margin_vs_reference),
-                _margin_text(e.margin_vs_period_pace),
-                _margin_text(e.margin_vs_half_pace),
-                _margin_text(e.margin_vs_game_pace),
+                fmt.line(e.line_value),                         # LINEA
+                fmt.odds(e.under_odds),                         # CUOTA U
+                _margin_text(e.margin_vs_reference),            # VS REF.
+                _margin_text(e.margin_vs_period_pace),          # VS Q
+                _margin_text(e.margin_vs_half_pace),            # VS MITAD
+                _margin_text(e.margin_vs_game_pace),            # VS PARTIDO
+                _pace_text(e.current_pace),                     # PROM. ACTUAL
+                fmt.integer(e.points_to_exceed),                # PUNTOS FALT.
+                _pace_text(e.required_pace),                    # PROM. FALT.
+                # SENAL
                 e.signal.label if e.is_evaluable else (e.unavailable_reason or e.signal.label),
             ]
             color = QColor(criteria.color_for(e.signal.value))
@@ -204,6 +219,11 @@ class MarketBlock(QWidget):
         alto = self.table.horizontalHeader().height() + 4
         for row in range(self.table.rowCount()):
             alto += self.table.rowHeight(row)
+        # Si las columnas no caben, la barra horizontal ocupa alto real: sin
+        # reservarlo tapaba la ultima linea del mercado.
+        cabecera = self.table.horizontalHeader()
+        if cabecera.length() > self.table.viewport().width():
+            alto += self.table.horizontalScrollBar().sizeHint().height()
         alto = max(60, alto)
         self.table.setFixedHeight(alto)
         self.setFixedHeight(alto + self.title_label.sizeHint().height() + 8)
@@ -237,10 +257,13 @@ class EntryBoard(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        header = QHBoxLayout()
-        header.addWidget(QLabel("Mercado visible:"))
+        header = FlowRow(spacing=6, vertical_spacing=4)
+        header.add(QLabel("Mercado visible:"))
         self.market_combo = QComboBox()
-        self.market_combo.setMinimumWidth(210)
+        # Un minimo de 210 px obligaba a la fila entera a medir 457 px y era
+        # parte del suelo que impedia estrechar este panel. El desplegable
+        # sigue siendo legible con menos y ademas ahora la fila se parte.
+        self.market_combo.setMinimumWidth(140)
         self.market_combo.setToolTip(
             "Automatico usa el titulo leido en pantalla. Elige uno a mano si tu casa "
             "no muestra un titulo legible.")
@@ -252,10 +275,10 @@ class EntryBoard(QWidget):
         self.mode_label = QLabel("BUSCANDO ENTRADA")
         self.mode_label.setObjectName("sectionTitle")
         self.mode_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        header.addWidget(self.market_combo)
-        header.addStretch(1)
-        header.addWidget(self.mode_label)
-        layout.addLayout(header)
+        header.add(self.market_combo)
+        header.add_stretch()
+        header.add(self.mode_label)
+        layout.addWidget(header)
 
         self.review_label = QLabel("")
         self.review_label.setObjectName("danger")
@@ -280,7 +303,7 @@ class EntryBoard(QWidget):
         self.status_label.setMinimumHeight(34)
         layout.addWidget(self.status_label)
 
-        buttons = QHBoxLayout()
+        buttons = FlowRow(spacing=6, vertical_spacing=4)
         self.lock_button = QPushButton("FIJAR APUESTA (F9)")
         self.lock_button.setObjectName("primary")
         self.lock_button.setEnabled(False)
@@ -292,10 +315,10 @@ class EntryBoard(QWidget):
         self.auto_button.setToolTip(
             "Vuelve a enfocar la linea cuya cuota UNDER este mas cerca de tu cuota objetivo")
         self.auto_button.clicked.connect(self.autoFocusRequested.emit)
-        buttons.addWidget(self.lock_button, 2)
-        buttons.addWidget(self.unlock_button, 1)
-        buttons.addWidget(self.auto_button, 1)
-        layout.addLayout(buttons)
+        buttons.add(self.lock_button)
+        buttons.add(self.unlock_button)
+        buttons.add(self.auto_button)
+        layout.addWidget(buttons)
 
     # ------------------------------------------------------------- seleccion
     @property

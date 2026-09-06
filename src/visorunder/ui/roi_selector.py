@@ -9,11 +9,28 @@ pantalla. Detalles importantes:
   convierte a pixeles fisicos con el factor de escala real, de modo que el
   escalado de Windows (125 %, 150 %) no descoloca nada.
 * ESC cancela la seleccion, como pide el requisito 26.
+
+CICLO DE VIDA (por que importa tanto el orden)
+----------------------------------------------
+Mientras se elige la region, el overlay es la UNICA ventana visible: el
+editor de perfil y la ventana principal estan ocultos para que no salgan en
+la captura. En ese estado, cerrar el overlay deja la aplicacion sin ninguna
+ventana visible y Qt, con `quitOnLastWindowClosed` activo (el valor por
+defecto), emite `lastWindowClosed` y TERMINA EL PROCESO.
+
+Por eso aqui se hacen dos cosas:
+
+1. `quit_guard()` desactiva temporalmente ese cierre automatico mientras dura
+   la seleccion, y lo restaura exactamente como estaba al terminar.
+2. El overlay avisa del resultado ANTES de cerrarse (`hide` -> emitir ->
+   `close`), de modo que quien escucha ya ha vuelto a mostrar sus ventanas
+   cuando el overlay desaparece de verdad.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
@@ -43,6 +60,32 @@ def grab_desktop(capture: ScreenCapture, monitor: Optional[Rect] = None) -> Tupl
     return capture.grab(monitor), monitor
 
 
+@contextmanager
+def quit_guard() -> Iterator[None]:
+    """Evita que quedarse sin ventanas visibles termine la aplicacion.
+
+    Qt cierra el proceso cuando se cierra la ultima ventana visible. Durante
+    la seleccion de una region eso es justo lo que pasa: el editor y la
+    ventana principal estan ocultos y el overlay es la unica ventana viva,
+    asi que al cerrarlo Qt daba por terminada la aplicacion entera.
+
+    El guardia desactiva ese comportamiento mientras dura la seleccion y
+    restaura SIEMPRE el valor anterior, incluso si algo falla por el camino.
+    No se deja desactivado: cerrar la ventana principal debe seguir cerrando
+    la aplicacion como siempre.
+    """
+    app = QGuiApplication.instance()
+    if app is None:
+        yield
+        return
+    previous = app.quitOnLastWindowClosed()
+    app.setQuitOnLastWindowClosed(False)
+    try:
+        yield
+    finally:
+        app.setQuitOnLastWindowClosed(previous)
+
+
 class RoiOverlay(QWidget):
     """Ventana a pantalla completa para dibujar UN rectangulo."""
 
@@ -63,6 +106,9 @@ class RoiOverlay(QWidget):
         self._current: Optional[QPoint] = None
         self._title = title
         self._completed = False
+        #: Region elegida, o None si se cancelo. Permite leer el resultado sin
+        #: depender de las senales cuando la llamada es sincrona.
+        self.selected_rect: Optional[Rect] = None
 
         screen = screen or QGuiApplication.primaryScreen()
         if screen is not None:
@@ -111,19 +157,48 @@ class RoiOverlay(QWidget):
         if rect is None or rect.width() < 4 or rect.height() < 4:
             self.update()
             return
-        physical = self._to_physical(rect)
-        self._completed = True
-        self.close()
-        self.regionSelected.emit(physical)
+        self.finish(self._to_physical(rect))
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
-            self.close()
+            self.finish(None)
+            return
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------ resultado
+    def finish(self, rect: Optional[Rect]) -> None:
+        """Termina la seleccion en el UNICO orden que no mata la aplicacion.
+
+        1. `hide()` saca el overlay de la pantalla. Ocultar no dispara el
+           cierre automatico de Qt; cerrar si.
+        2. Se avisa del resultado, de modo que quien escucha vuelva a mostrar
+           el editor de perfil y la ventana principal.
+        3. Solo entonces se cierra el overlay: para ese momento ya hay otra
+           ventana visible, asi que no queda ninguna 'ultima ventana' que
+           cerrar y la aplicacion sigue viva.
+
+        Antes se cerraba primero y se avisaba despues, y ese orden dejaba a la
+        aplicacion sin ninguna ventana visible durante el cierre.
+        """
+        if self._completed:
+            return
+        self._completed = True
+        self.selected_rect = rect
+
+        self.hide()
+        if rect is None:
+            self.cancelled.emit()
+        else:
+            self.regionSelected.emit(rect)
+        self.close()
 
     def closeEvent(self, event) -> None:
         super().closeEvent(event)
+        # Cierre por otra via (boton del gestor de ventanas, cierre forzado):
+        # se trata como cancelacion para que el editor vuelva igualmente.
         if not self._completed:
             self._completed = True
+            self.selected_rect = None
             self.cancelled.emit()
 
     def paintEvent(self, event) -> None:

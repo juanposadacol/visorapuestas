@@ -110,12 +110,22 @@ class SportsbookProfile:
         return roi is not None and roi.enabled
 
     def missing_required(self) -> List[RoiKind]:
-        """ROIs imprescindibles que faltan por configurar."""
-        missing = [k for k in RoiKind if k.is_required and not self.has(k)]
-        # El marcador puede venir por pareja o por equipo separado.
-        if not self.has(RoiKind.SCORE_PAIR) and not (
-            self.has(RoiKind.SCORE_A) and self.has(RoiKind.SCORE_B)
-        ):
+        """ROIs imprescindibles que faltan por configurar.
+
+        Una region puede cubrir varias: el tablero completo aporta reloj,
+        cuarto y marcador de una vez, asi que configurarlo evita tener que
+        dibujar esas tres por separado.
+        """
+        cubiertas = set()
+        for roi in self.rois:
+            cubiertas.update(roi.covers)
+
+        missing = [k for k in RoiKind
+                   if k.is_required and not self.has(k) and k not in cubiertas]
+        # El marcador puede venir por pareja, por equipo separado o del tablero.
+        if (RoiKind.SCORE_PAIR not in cubiertas
+                and not self.has(RoiKind.SCORE_PAIR)
+                and not (self.has(RoiKind.SCORE_A) and self.has(RoiKind.SCORE_B))):
             missing.append(RoiKind.SCORE_PAIR)
         return missing
 

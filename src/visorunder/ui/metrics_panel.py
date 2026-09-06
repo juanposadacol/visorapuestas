@@ -352,6 +352,10 @@ class MetricsPanel(QWidget):
         self.scope_label = QLabel("")
         self.scope_label.setObjectName("status")
         self.scope_label.setAlignment(Qt.AlignCenter)
+        # Es la unica etiqueta de la columna que no cabia en una linea: pide
+        # 587 px y el panel ronda los 450. Envuelve en vez de recortarse, que
+        # es lo que hacia perder el final del ambito ("...tiempo jugado").
+        self.scope_label.setWordWrap(True)
         layout.addWidget(self.scope_label)
         return card
 
