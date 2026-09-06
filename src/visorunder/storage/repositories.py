@@ -317,6 +317,19 @@ class BetRepository:
         rows = self.db.query("SELECT * FROM bets WHERE session_id = ? ORDER BY placed_at", (session_id,))
         return [self._to_bet(r) for r in rows]
 
+    def save_manual(self, bet: LockedBet, browser_event_id: Optional[str]) -> int:
+        with self.db.transaction():
+            bet_id = self.save(bet)
+            self.db.execute("INSERT INTO browser_manual_bets (bet_id, browser_event_id) VALUES (?, ?)",
+                            (bet_id, browser_event_id))
+        return bet_id
+
+    def list_manual(self) -> list:
+        rows = self.db.query(
+            "SELECT b.*, m.browser_event_id FROM bets b JOIN browser_manual_bets m ON m.bet_id=b.id "
+            "ORDER BY b.placed_at DESC, b.id DESC")
+        return [(self._to_bet(r), r["browser_event_id"], r["status"]) for r in rows]
+
     @staticmethod
     def _to_bet(row: Any) -> LockedBet:
         market_type = MarketType(row["market_type"])

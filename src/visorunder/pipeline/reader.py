@@ -88,6 +88,7 @@ class ReaderSnapshot:
     #: Discrepancias DOM/OCR sin resolver en silencio.
     source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
     ts: float = field(default_factory=time.time)
+    browser_event_id: Optional[str] = None
 
 
 class LiveReader:
@@ -340,6 +341,7 @@ class LiveReader:
         confirmed_market = visible_state.snapshot if visible_state else None
 
         snapshot = ReaderSnapshot(
+            browser_event_id=self._browser_event_id,
             state=self.state,
             markets=self.markets,
             market=confirmed_market,

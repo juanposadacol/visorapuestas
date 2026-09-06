@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _migration_001(cx: sqlite3.Connection) -> None:
@@ -238,8 +239,95 @@ def _migration_004(cx: sqlite3.Connection) -> None:
     )
 
 
+
+def _migration_005(cx: sqlite3.Connection) -> None:
+    """Compatibilidad con el registro manual/browser anterior.
+
+    La version anterior del Browser Bridge utilizaba ``manual_bets`` como
+    tabla auxiliar con solo ``bet_id`` y ``browser_event_id``.
+
+    La funcionalidad nueva utiliza ``manual_bets`` como libro completo de
+    apuestas: casa, mercado, cuota, monto, estado, utilidad y ROI.
+
+    Si una base existente trae la estructura antigua, se migra sin perder
+    esos enlaces a ``browser_manual_bets``.
+    """
+
+    columns = {
+        str(row[1])
+        for row in cx.execute(
+            "PRAGMA table_info(manual_bets)"
+        ).fetchall()
+    }
+
+    legacy_manual_table = (
+        "bet_id" in columns
+        and "browser_event_id" in columns
+        and "sportsbook" not in columns
+    )
+
+    cx.execute(
+        """
+        CREATE TABLE IF NOT EXISTS browser_manual_bets (
+            bet_id INTEGER PRIMARY KEY
+                REFERENCES bets(id) ON DELETE CASCADE,
+            browser_event_id TEXT
+        )
+        """
+    )
+
+    if legacy_manual_table:
+        cx.execute(
+            """
+            INSERT OR IGNORE INTO browser_manual_bets
+                (bet_id, browser_event_id)
+            SELECT bet_id, browser_event_id
+            FROM manual_bets
+            """
+        )
+
+        cx.execute("DROP TABLE manual_bets")
+
+    # Esto tambien cubre una BD que ya estuviera marcada como version 4
+    # pero trajera la estructura manual antigua.
+    cx.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS manual_bets (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+            sportsbook  TEXT NOT NULL,
+            event       TEXT NOT NULL DEFAULT '',
+            market_type TEXT NOT NULL,
+            quarter     INTEGER,
+            half        INTEGER,
+            side        TEXT NOT NULL,
+            line        REAL NOT NULL,
+            odds        REAL NOT NULL,
+            stake       REAL NOT NULL,
+            placed_at   REAL NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'PENDING',
+            settled_at  REAL,
+            notes       TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_placed_at
+            ON manual_bets(placed_at DESC);
+
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_session
+            ON manual_bets(session_id);
+
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_status
+            ON manual_bets(status);
+        """
+    )
+
+
 MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [
-    _migration_001, _migration_002, _migration_003, _migration_004,
+    _migration_001,
+    _migration_002,
+    _migration_003,
+    _migration_004,
+    _migration_005,
 ]
 
 
@@ -278,8 +366,22 @@ class Database:
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
             cur = self._cx.execute(sql, params)
-            self._cx.commit()
+            if not getattr(self, "_transaction", False):
+                self._cx.commit()
             return cur
+
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            self._transaction = True
+            try:
+                yield
+                self._cx.commit()
+            except Exception:
+                self._cx.rollback()
+                raise
+            finally:
+                self._transaction = False
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> None:
         with self._lock:

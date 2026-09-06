@@ -8,6 +8,7 @@ historial) se puede probar sin interfaz grafica.
 from __future__ import annotations
 
 import time
+import math
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -28,7 +29,7 @@ from .config.settings import AppSettings
 from .diagnostics.logbus import LogBus
 from .domain.bet import LockedBet
 from .domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
-from .domain.market import MarketKey, MarketLine, MarketSnapshot, Side
+from .domain.market import MarketKey, MarketType, MarketLine, MarketSnapshot, Side
 from .domain.rules import rules_from_name
 from .ocr.base import EngineNotAvailable, OcrEngine
 from .ocr.engine import create_engine
@@ -121,6 +122,7 @@ class ViewModel:
     link_latency_ms: Optional[float] = None
     field_sources: Dict[str, str] = field(default_factory=dict)
     source_conflicts: List[Dict[str, Any]] = field(default_factory=list)
+    manual_bets: list = field(default_factory=list)
 
 
 class AppController:
@@ -138,7 +140,11 @@ class AppController:
         self.sessions = SessionRepository(self.db)
         self.history = HistoryRepository(self.db)
         self.bets = BetRepository(self.db)
-        self.manual_bets = ManualBetRepository(self.db)
+        # Dos conceptos distintos:
+        # - manual_bet_repo: libro manual con monto, cuota, resultado y ROI.
+        # - manual_bets: apuestas manuales vinculadas al flujo/browser anterior.
+        self.manual_bet_repo = ManualBetRepository(self.db)
+        self.manual_bets = self.bets.list_manual()
 
         self._capture = capture
         #: Fuente DOM y puente local. Se arrancan al abrir la aplicacion para
@@ -518,7 +524,7 @@ class AppController:
         self.log.info("Apuesta liberada")
 
     # ------------------------------------------------------ apuestas manuales
-    def add_manual_bet(self, *, sportsbook: str, event: str, key: MarketKey,
+    def add_ledger_manual_bet(self, *, sportsbook: str, event: str, key: MarketKey,
                        side: Side, line: float, odds: float, stake: float,
                        notes: str = "") -> ManualBet:
         bet = ManualBet(
@@ -532,7 +538,7 @@ class AppController:
             notes=notes,
             session_id=self.session_id,
         )
-        saved = self.manual_bets.save(bet)
+        saved = self.manual_bet_repo.save(bet)
         self.log.info(
             f"APUESTA MANUAL #{saved.bet_id}: {saved.sportsbook} | "
             f"{saved.key.label} | {saved.description} | monto {saved.stake:g}"
@@ -540,22 +546,22 @@ class AppController:
         return saved
 
     def list_manual_bets(self, limit: int = 100) -> List[ManualBet]:
-        return self.manual_bets.list_recent(limit)
+        return self.manual_bet_repo.list_recent(limit)
 
     def settle_manual_bet(
         self, bet_id: int, status: ManualBetStatus
     ) -> Optional[ManualBet]:
-        bet = self.manual_bets.settle(bet_id, status)
+        bet = self.manual_bet_repo.settle(bet_id, status)
         if bet is not None:
             self.log.info(f"APUESTA MANUAL #{bet_id}: {status.label}")
         return bet
 
     def delete_manual_bet(self, bet_id: int) -> None:
-        self.manual_bets.delete(bet_id)
+        self.manual_bet_repo.delete(bet_id)
         self.log.info(f"APUESTA MANUAL #{bet_id}: eliminada")
 
     def manual_bet_summary(self) -> ManualBetSummary:
-        return self.manual_bets.summary()
+        return self.manual_bet_repo.summary()
 
     def set_period_baseline(self, period: int, score_a: int, score_b: int) -> None:
         if self.reader is None:
@@ -563,6 +569,97 @@ class AppController:
         self.reader.state.tracker.set_manual_baseline(period, score_a, score_b)
         self.log.info(f"Marcador inicial del periodo {period}: {score_a}-{score_b}",
                       region="PERIOD")
+
+    def add_browser_manual_bet(self, key: MarketKey, line: float, odds: float,
+                               sportsbook: str) -> LockedBet:
+        snapshot = self.reader.last_snapshot if self.reader else None
+        if snapshot is None or self.session_id is None:
+            raise ValueError("Inicia la lectura del partido antes de registrar una apuesta.")
+        if snapshot.browser_event_id != self.browser.event_id:
+            raise ValueError("Espera a que termine el cambio de partido.")
+        if not math.isfinite(line) or line <= 0 or line > 1000 or line * 2 != round(line * 2):
+            raise ValueError("La linea debe ser positiva y terminar en .0 o .5.")
+        if not math.isfinite(odds) or odds <= 1 or odds > 1000:
+            raise ValueError("La cuota decimal debe ser mayor que 1 y menor o igual a 1000.")
+        if not sportsbook.strip():
+            raise ValueError("Escribe la casa de apuestas.")
+        if (key.market_type is MarketType.QUARTER_TOTAL and key.period not in range(1, 5)
+                or key.market_type is MarketType.HALF_TOTAL and key.half not in (1, 2)):
+            raise ValueError("Selecciona partido, mitad 1/2 o cuarto 1 a 4.")
+        state = snapshot.state
+        event = " vs ".join(str(v.value) for v in (state.team_a, state.team_b) if v.value)
+        bet = LockedBet(sportsbook=sportsbook.strip(), event=event or f"Partido {self.session_id}",
+                        key=key, side=Side.UNDER, line=float(line), odds=float(odds),
+                        score_a_when_locked=state.score_a_value, score_b_when_locked=state.score_b_value,
+                        clock_when_locked=state.clock_value, period_when_locked=state.period_value,
+                        session_id=self.session_id)
+        bet = replace(bet, bet_id=self.bets.save_manual(bet, snapshot.browser_event_id))
+        self.manual_bets = self.bets.list_manual()
+        return bet
+
+    def add_manual_bet(
+        self,
+        key: MarketKey,
+        line: float,
+        odds: float,
+        sportsbook: str,
+        event: str = "",
+        side: Side = Side.UNDER,
+        stake: Optional[float] = None,
+        notes: str = "",
+    ):
+        """Registra una apuesta manual en el flujo correspondiente.
+
+        - Con ``stake``: usa el libro manual persistente con resultado,
+          utilidad y ROI.
+        - Sin ``stake``: conserva el flujo anterior del Browser Bridge,
+          asociado al partido/sesion que se esta leyendo.
+        """
+        if stake is None:
+            return self.add_browser_manual_bet(
+                key=key,
+                line=line,
+                odds=odds,
+                sportsbook=sportsbook,
+            )
+
+        return self.add_ledger_manual_bet(
+            sportsbook=sportsbook,
+            event=event,
+            key=key,
+            side=side,
+            line=line,
+            odds=odds,
+            stake=stake,
+            notes=notes,
+        )
+
+    def remove_manual_bet(self, bet_id: int) -> None:
+        if not any(b.bet_id == bet_id for b, _, _ in self.manual_bets):
+            raise ValueError("No existe esa apuesta manual.")
+        self.bets.close(bet_id, "RELEASED")
+        self.manual_bets = self.bets.list_manual()
+
+    def manual_bet_views(self, snapshot: Optional[ReaderSnapshot]) -> list:
+        rows = []
+        for bet, event_id, status in self.manual_bets:
+            evaluation = None
+            reason = "OTRA SESION / HISTORIAL"
+            if status != "OPEN":
+                reason = "SEGUIMIENTO RETIRADO"
+            elif bet.session_id == self.session_id and self.reader is not None:
+                reason = "ESPERANDO DATOS"
+                if (snapshot is not None and event_id == snapshot.browser_event_id
+                        and event_id == self.browser.event_id):
+                    if self.reader.is_paused:
+                        reason = "LECTURA PAUSADA"
+                    elif time.time() - snapshot.ts > self.reader.roi_manager.profile.value_ttl_seconds:
+                        reason = "DATOS DESACTUALIZADOS"
+                    else:
+                        evaluation = entry_mod.evaluate_locked_bet(snapshot.state, bet, self.criteria)
+                        reason = ""
+            rows.append((bet, evaluation, reason))
+        return rows
 
     # --------------------------------------------------------------- lectura
     def build_view_model(self, snapshot: Optional[ReaderSnapshot]) -> ViewModel:
@@ -576,7 +673,8 @@ class AppController:
             # Sin sesion todavia, pero el panel tiene que poder decir QUE cubre
             # ya el DOM: es justo lo que hace falta para entender por que no
             # arranca, en vez de un "faltan regiones" que no explica nada.
-            return ViewModel(criteria=self.criteria, link_state=self.browser.link_state(),
+            return ViewModel(manual_bets=self.manual_bet_views(None),
+                             criteria=self.criteria, link_state=self.browser.link_state(),
                              extension_state=self.browser.extension_state(),
                              waiting_for=self.missing_requirements(self.profile),
                              session_state=self.session_state,
@@ -630,6 +728,7 @@ class AppController:
 
         paquete = self.browser.last_packet
         return ViewModel(
+            manual_bets=self.manual_bet_views(snapshot),
             link_state=self.browser.link_state(),
             extension_state=self.browser.extension_state(),
             waiting_for=self.missing_requirements(self.profile),

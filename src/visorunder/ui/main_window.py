@@ -302,35 +302,100 @@ class MainWindow(QMainWindow):
         self._edit_profile(profile)
 
     def _edit_profile(self, profile) -> None:
-        was_running = self.controller.reader is not None
-        if was_running:
-            self.controller.pause()
+        reader = self.controller.reader
+
+        # Solo debemos reanudar si realmente estaba leyendo.
+        resume_reader = (
+            reader is not None
+            and not reader.is_paused
+        )
+
+        original_name = profile.name
+        original_profile_id = profile.profile_id
+
+        # Mientras se abre el selector de ROI no dejamos que el timer de la
+        # ventana siga refrescando los mismos objetos.
+        self.timer.stop()
+
+        if resume_reader:
+            reader.pause()
 
         try:
             capture = self.controller.capture
-        except CaptureError as exc:
-            QMessageBox.critical(self, "Captura", str(exc))
-            if was_running:
-                self.controller.resume()
-            return
+            engine = self.controller.ensure_engine(profile.engine)
 
-        engine = self.controller.ensure_engine(profile.engine)
-        dialog = ProfileDialog(profile, capture, engine, self)
+            dialog = ProfileDialog(
+                profile,
+                capture,
+                engine,
+                self,
+            )
 
-        if dialog.exec():
+            if not dialog.exec():
+                return
+
+            edited = dialog.profile
+
             try:
-                self.controller.save_profile(profile)
+                self.controller.save_profile(edited)
+
             except ValueError as exc:
-                QMessageBox.warning(self, "Perfil", str(exc))
-            else:
-                self._refresh_profiles()
-                self.profile_combo.setCurrentText(profile.name)
-                self.manual_bets_panel.set_default_sportsbook(
-                    profile.sportsbook or profile.name
+                QMessageBox.warning(
+                    self,
+                    "Perfil",
+                    str(exc),
+                )
+                return
+
+            self._refresh_profiles()
+            self.profile_combo.setCurrentText(edited.name)
+
+            self.manual_bets_panel.set_default_sportsbook(
+                edited.sportsbook or edited.name
+            )
+
+            # Si el lector vivo utiliza este mismo perfil, actualizamos sus
+            # regiones y layout sin destruir la sesion actual.
+            if reader is not None:
+                manager = getattr(
+                    reader,
+                    "roi_manager",
+                    None,
                 )
 
-        if was_running:
-            self.controller.resume()
+                if manager is not None:
+                    reader_profile = manager.profile
+
+                    if (
+                        original_profile_id is not None
+                        and reader_profile.profile_id is not None
+                    ):
+                        same_profile = (
+                            reader_profile.profile_id
+                            == original_profile_id
+                        )
+                    else:
+                        same_profile = (
+                            reader_profile.name
+                            == original_name
+                        )
+
+                    if same_profile:
+                        manager.profile = edited
+                        manager.refresh_layout()
+
+        except CaptureError as exc:
+            QMessageBox.critical(
+                self,
+                "Captura",
+                str(exc),
+            )
+
+        finally:
+            if resume_reader and reader is not None:
+                reader.resume()
+
+            self.timer.start()
 
     # ---------------------------------------------------------------- modos
     def configure_criteria(self) -> None:
