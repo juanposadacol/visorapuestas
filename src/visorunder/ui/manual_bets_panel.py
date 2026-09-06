@@ -11,6 +11,9 @@ La jerarquia visual sigue esa idea:
   P/CRUZAR, PROYECCION, DIF. LINEA) y deja MONTO y UTILIDAD al final, donde no
   desplazan a lo importante; la tabla tiene scroll horizontal para que ninguna
   columna se coma a las demas;
+* la columna SEGUIMIENTO dice como va la apuesta AHORA (FAVORABLE, EN RIESGO,
+  SUPERADA, SIN DATOS) mientras sigue pendiente, y solo ensena el resultado
+  -GANADA, PERDIDA, NULA- cuando tu la liquidas con los botones;
 * debajo hay un bloque de detalle de la apuesta seleccionada, con el mismo
   espiritu que la tarjeta "MI APUESTA" del panel principal;
 * el conteo (total, pendientes, ganadas, perdidas, utilidad, ROI) sigue
@@ -92,7 +95,10 @@ COLUMNS = [
     ("PROYECCION", 95),
     ("DIF. LINEA", 90),
     ("CUOTA", 60),
-    ("ESTADO", 105),
+    # SEGUIMIENTO, no ESTADO: mientras la apuesta esta pendiente esta columna
+    # dice como va en vivo (FAVORABLE, EN RIESGO, SUPERADA, SIN DATOS) y solo
+    # ensena el resultado -GANADA, PERDIDA, NULA- cuando ya se ha liquidado.
+    ("SEGUIMIENTO", 105),
     ("MONTO", 90),
     ("UTILIDAD", 90),
 ]
@@ -110,7 +116,7 @@ DETAIL_ROWS = [
     [("line", "LINEA"), ("current", "ACTUAL"), ("margin", "MARGEN"),
      ("tolerable", "CABEN"), ("cross", "P/CRUZAR")],
     [("projection", "PROY."), ("difference", "DIF. LINEA"), ("pace", "RITMO"),
-     ("required", "RITMO CRUZAR"), ("status", "ESTADO")],
+     ("required", "RITMO CRUZAR"), ("status", "SEGUIMIENTO")],
 ]
 
 #: Color de cada estado de seguimiento.
@@ -631,7 +637,16 @@ class ManualBetsPanel(QWidget):
         self.table.item(row, COL_STATUS).setForeground(color)
 
     def _status_text(self, seguimiento: ManualBetTracking) -> str:
-        """El resultado que TU marcaste manda sobre el seguimiento en vivo."""
+        """Que se escribe en la columna SEGUIMIENTO.
+
+        Mientras la apuesta sigue PENDIENTE lo util no es leer "PENDIENTE",
+        que ya se sabe: es ver como va en vivo (FAVORABLE, EN RIESGO,
+        SUPERADA, SIN DATOS). En cuanto tu la liquidas, ese resultado manda y
+        la columna pasa a decir GANADA, PERDIDA o NULA.
+
+        Por eso la columna se llama SEGUIMIENTO y no ESTADO: los botones de
+        abajo son los que fijan el RESULTADO.
+        """
         if seguimiento.bet.status is not ManualBetStatus.PENDING:
             return seguimiento.bet.status.label
         return seguimiento.status.label

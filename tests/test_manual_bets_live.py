@@ -233,7 +233,7 @@ def test_la_ventana_refresca_la_tabla_de_apuestas_manuales(qapp, app):
         assert tabla.item(0, _column("ACTUAL")).text() == "32"
         assert tabla.item(0, _column("MARGEN")).text() == "+8.5"
         assert tabla.item(0, _column("P/CRUZAR")).text() == "9"
-        assert tabla.item(0, _column("ESTADO")).text() in ("EN RIESGO", "FAVORABLE")
+        assert tabla.item(0, _column("SEGUIMIENTO")).text() in ("EN RIESGO", "FAVORABLE")
 
         # Y con el marcador siguiente la tabla cambia sola.
         enviar(app, payload(score_a=93, score_b=75, clock="04:00"))   # 21+15 = 36

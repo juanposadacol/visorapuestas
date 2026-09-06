@@ -349,7 +349,7 @@ def test_liquidar_sigue_funcionando(panel, estado, etiqueta):
     qapp.processEvents()
 
     assert controller.list_manual_bets()[0].status is estado
-    assert widget.table.item(0, _column("ESTADO")).text() == etiqueta
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == etiqueta
 
 
 def test_los_botones_caben_en_una_sola_franja(panel):

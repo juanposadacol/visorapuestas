@@ -86,7 +86,7 @@ def test_panel_agrega_y_liquida_apuesta_manual(panel):
     assert widget.table.item(0, _column("MERCADO")).text() == "Q2"
     assert widget.table.item(0, _column("APUESTA")).text() == "UNDER 48.5"
     assert widget.table.item(0, _column("CUOTA")).text() == "1.85"
-    assert widget.table.item(0, _column("ESTADO")).text() == "SIN DATOS"
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "SIN DATOS"
     assert controller.manual_bet_summary().pending == 1
 
     widget.table.selectRow(0)
@@ -99,7 +99,7 @@ def test_panel_agrega_y_liquida_apuesta_manual(panel):
     assert summary.net_profit == pytest.approx(8_500)
     assert summary.roi == pytest.approx(85.0)
     # El resultado que marca el usuario manda sobre el seguimiento en vivo.
-    assert widget.table.item(0, _column("ESTADO")).text() == "GANADA"
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "GANADA"
     assert "ROI +85.0%" in widget.money_label.text()
 
 
@@ -137,7 +137,7 @@ def test_las_columnas_de_seguimiento_van_antes_que_el_dinero():
     # El dinero existe, pero detras del seguimiento.
     assert nombres.index("DIF. LINEA") < nombres.index("MONTO")
     assert nombres.index("PROYECCION") < nombres.index("UTILIDAD")
-    assert nombres.index("ESTADO") < nombres.index("MONTO")
+    assert nombres.index("SEGUIMIENTO") < nombres.index("MONTO")
 
 
 def test_la_tabla_muestra_el_seguimiento_en_vivo(panel):
@@ -153,7 +153,7 @@ def test_la_tabla_muestra_el_seguimiento_en_vivo(panel):
     assert widget.table.item(0, _column("P/CRUZAR")).text() == "9"
     assert widget.table.item(0, _column("PROYECCION")).text() == "64.0 pts"
     assert widget.table.item(0, _column("DIF. LINEA")).text() == "+23.5"
-    assert widget.table.item(0, _column("ESTADO")).text() == "EN RIESGO"
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "EN RIESGO"
 
 
 def test_la_tabla_se_actualiza_sola_al_cambiar_el_marcador(panel):
@@ -213,7 +213,7 @@ def test_sin_partido_las_metricas_quedan_no_disponibles(panel):
 
     for columna in ("ACTUAL", "MARGEN", "P/CRUZAR", "PROYECCION", "DIF. LINEA"):
         assert widget.table.item(0, _column(columna)).text() == "--"
-    assert widget.table.item(0, _column("ESTADO")).text() == "SIN DATOS"
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "SIN DATOS"
     # Pero la apuesta si se ve entera.
     assert widget.table.item(0, _column("APUESTA")).text() == "UNDER 40.5"
     assert widget.table.item(0, _column("CUOTA")).text() == "1.80"
@@ -341,3 +341,91 @@ def test_borrar_una_apuesta_la_saca_del_seguimiento(panel):
 
     assert widget.table.rowCount() == 1
     assert len(widget._tracking) == 1
+
+
+# ---------------------------------------------------------------------------
+# La columna se llama SEGUIMIENTO, no ESTADO
+# ---------------------------------------------------------------------------
+def test_la_columna_se_llama_seguimiento():
+    """El nombre tiene que decir lo que la columna ensena de verdad.
+
+    Mientras la apuesta esta pendiente no dice "PENDIENTE": dice como va en
+    vivo. Llamarla ESTADO invitaba a confundirla con el resultado, que es lo
+    que fijan los botones de abajo.
+    """
+    nombres = [n for n, _ in COLUMNS]
+    assert "SEGUIMIENTO" in nombres
+    assert "ESTADO" not in nombres
+
+
+def test_el_detalle_tambien_lo_llama_seguimiento():
+    from visorunder.ui.manual_bets_panel import DETAIL_ROWS
+
+    rotulos = {clave: etiqueta for fila in DETAIL_ROWS for clave, etiqueta in fila}
+    assert rotulos["status"] == "SEGUIMIENTO"
+
+
+def test_pendiente_ensena_el_seguimiento_en_vivo(panel):
+    """PENDIENTE devuelve el mando al seguimiento: es lo util de ver."""
+    widget, controller = panel
+    _add(widget, sportsbook="BetPlay", market="Q4", line=40.5)
+
+    # Ritmo alto: la proyeccion se pasa de la linea.
+    state = _state(4, 300, 90, 74, baselines={4: (72, 60)})
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert controller.list_manual_bets()[0].status is ManualBetStatus.PENDING
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "EN RIESGO"
+
+    # Ritmo bajo: la proyeccion queda del lado del UNDER.
+    state = _state(4, 120, 82, 70, baselines={4: (72, 60)})
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "FAVORABLE"
+
+    # Linea superada: es un hecho, no una estimacion.
+    state = _state(4, 300, 113, 60, baselines={4: (72, 60)})
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "SUPERADA"
+
+
+@pytest.mark.parametrize("estado, etiqueta", [
+    (ManualBetStatus.WON, "GANADA"),
+    (ManualBetStatus.LOST, "PERDIDA"),
+    (ManualBetStatus.VOID, "NULA"),
+])
+def test_el_resultado_liquidado_manda_sobre_el_seguimiento(panel, estado, etiqueta):
+    widget, controller = panel
+    _add(widget, sportsbook="BetPlay", market="Q4", line=40.5)
+
+    state = _state(4, 300, 90, 74, baselines={4: (72, 60)})
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "EN RIESGO"
+
+    widget.table.selectRow(0)
+    widget._settle_selected(estado)
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == etiqueta
+
+
+def test_volver_a_pendiente_devuelve_el_seguimiento_en_vivo(panel):
+    widget, controller = panel
+    _add(widget, sportsbook="BetPlay", market="Q4", line=40.5)
+    state = _state(4, 300, 90, 74, baselines={4: (72, 60)})
+
+    widget.table.selectRow(0)
+    widget._settle_selected(ManualBetStatus.WON)
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "GANADA"
+
+    widget._settle_selected(ManualBetStatus.PENDING)
+    widget.update_tracking(controller.manual_bet_tracking_state(state))
+    assert widget.table.item(0, _column("SEGUIMIENTO")).text() == "EN RIESGO"
+
+
+def test_los_botones_siguen_hablando_de_resultado(panel):
+    """Los botones fijan el RESULTADO; la columna ensena el seguimiento."""
+    widget, _controller = panel
+    assert widget.won_button.text() == "GANADA"
+    assert widget.lost_button.text() == "PERDIDA"
+    assert widget.void_button.text() == "NULA"
+    assert widget.pending_button.text() == "PENDIENTE"
