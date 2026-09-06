@@ -46,6 +46,12 @@ from .profile_dialog import ProfileDialog
 from .quarter_start_dialog import QuarterStartDialog
 from .styles import STYLESHEET
 
+#: Reparto vertical del panel principal frente a las apuestas manuales.
+#: Son PROPORCIONES: Qt las usa como pesos y las reescala con la ventana, asi
+#: que no atan la interfaz a ninguna resolucion concreta.
+MAIN_AREA_SHARE = 800
+MANUAL_AREA_SHARE = 200
+
 
 class MainWindow(QMainWindow):
     def __init__(self, controller: AppController) -> None:
@@ -106,18 +112,26 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([460, 700])
 
-        # El registro manual se mantiene debajo del radar principal.
-        # El splitter vertical permite reducirlo si se quiere dedicar mas
-        # espacio al seguimiento en vivo.
+        # El registro manual es una herramienta SECUNDARIA y vive al pie.
+        # Las metricas del partido y el radar mandan en la pantalla: el
+        # reparto es 4 a 1, asi que al abrir y al redimensionar la ventana el
+        # panel principal se queda con ~80 % del alto. Los tamanos iniciales
+        # son una PROPORCION, no una resolucion: Qt los reescala solo.
         panel_splitter = QSplitter(Qt.Vertical)
         panel_splitter.addWidget(splitter)
         self.manual_bets_panel = ManualBetsPanel(self.controller)
         panel_splitter.addWidget(self.manual_bets_panel)
-        panel_splitter.setStretchFactor(0, 5)
-        panel_splitter.setStretchFactor(1, 2)
+        panel_splitter.setStretchFactor(0, 4)
+        panel_splitter.setStretchFactor(1, 1)
         panel_splitter.setCollapsible(0, False)
         panel_splitter.setCollapsible(1, True)
-        panel_splitter.setSizes([570, 250])
+        panel_splitter.setSizes([MAIN_AREA_SHARE, MANUAL_AREA_SHARE])
+        self.panel_splitter = panel_splitter
+
+        # Al contraer, el alto que suelta el panel pasa al area principal; al
+        # desplegar se recupera el reparto que hubiera en ese momento.
+        self._manual_splitter_sizes = None
+        self.manual_bets_panel.expandedChanged.connect(self._on_manual_panel_toggled)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(panel_splitter, "Panel")
@@ -450,6 +464,29 @@ class MainWindow(QMainWindow):
             self.activateWindow()
         else:
             self.showMinimized()
+
+    def _on_manual_panel_toggled(self, expanded: bool) -> None:
+        """Reparte el alto al contraer y lo devuelve al desplegar.
+
+        Contraido, el panel solo ocupa su encabezado y todo lo demas es para
+        las metricas. Al volver a desplegar se restaura el reparto que tenia
+        justo antes, de modo que se recuerda mientras la aplicacion sigue
+        abierta sin guardar nada en disco.
+        """
+        splitter = self.panel_splitter
+        if not expanded:
+            self._manual_splitter_sizes = splitter.sizes()
+            alto = sum(splitter.sizes())
+            # El panel ya esta contraido: su sizeHint es el del encabezado.
+            self.manual_bets_panel.updateGeometry()
+            minimo = max(self.manual_bets_panel.minimumHeight(),
+                         self.manual_bets_panel.sizeHint().height())
+            splitter.setSizes([max(0, alto - minimo), minimo])
+            return
+
+        if self._manual_splitter_sizes:
+            splitter.setSizes(self._manual_splitter_sizes)
+            self._manual_splitter_sizes = None
 
     def _apply_always_on_top(self, enabled: bool) -> None:
         self.controller.settings.always_on_top = bool(enabled)

@@ -117,6 +117,20 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
     border-radius: 5px;
     padding: 4px 6px;
 }}
+/* Panel de apuestas manuales: herramienta secundaria, sin alto desperdiciado.
+   Los selectores van acotados por objectName para no encoger el resto. */
+QGroupBox#manualPanel QPushButton {{ padding: 2px 8px; font-size: 11px; }}
+QGroupBox#manualPanel QComboBox,
+QGroupBox#manualPanel QDoubleSpinBox,
+QGroupBox#manualPanel QLineEdit {{ padding: 1px 5px; }}
+QToolButton#panelToggle {{
+    border: none;
+    background: transparent;
+    padding: 0px 2px;
+}}
+QToolButton#panelToggle:hover {{ background-color: {COLOR_PANEL_ALT}; border-radius: 4px; }}
+QTableWidget#manualTable::item {{ padding: 0px 4px; }}
+QTableWidget#manualTable QHeaderView::section {{ padding: 1px 4px; }}
 QGroupBox {{
     border: 1px solid {COLOR_BORDER};
     border-radius: 8px;

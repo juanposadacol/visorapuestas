@@ -18,19 +18,32 @@ La jerarquia visual sigue esa idea:
 
 Los numeros los calcula `calculations.manual_tracking`, que reutiliza el mismo
 motor que el radar. Aqui solo se pintan.
+
+ESTE PANEL ES UNA HERRAMIENTA SECUNDARIA
+----------------------------------------
+Lo que manda en la pantalla son las metricas del partido y el radar. En el uso
+real hay una, dos o tres apuestas abiertas, asi que el panel esta dimensionado
+para eso y no para una tabla enorme medio vacia:
+
+* la tabla tiene altura FIJA para `VISIBLE_ROWS` filas; a partir de ahi
+  aparece scroll vertical y el panel NO crece;
+* el detalle cabe en dos franjas horizontales en vez de una rejilla alta;
+* todo el bloque se puede contraer dejando solo su encabezado.
+
+Las alturas se derivan de la metrica de la fuente, no de pixeles fijos, para
+que sigan siendo correctas con otra escala de pantalla.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -40,8 +53,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -83,6 +99,20 @@ COLUMNS = [
 COL_ID = 0
 COL_STATUS = 10
 
+#: Filas visibles antes de que aparezca el scroll. En el uso real hay una,
+#: dos o tres apuestas abiertas: mas alto que esto seria area vacia robandole
+#: sitio a las metricas del partido.
+VISIBLE_ROWS = 3
+
+#: El detalle en DOS franjas horizontales en vez de una rejilla alta. Se
+#: conservan los diez campos; solo cambia como se reparten.
+DETAIL_ROWS = [
+    [("line", "LINEA"), ("current", "ACTUAL"), ("margin", "MARGEN"),
+     ("tolerable", "CABEN"), ("cross", "P/CRUZAR")],
+    [("projection", "PROY."), ("difference", "DIF. LINEA"), ("pace", "RITMO"),
+     ("required", "RITMO CRUZAR"), ("status", "ESTADO")],
+]
+
 #: Color de cada estado de seguimiento.
 STATUS_COLORS = {
     TrackingStatus.FAVORABLE: COLOR_OK,
@@ -123,11 +153,18 @@ def _signed(value: Optional[float], decimals: int = 1) -> str:
 class ManualBetsPanel(QWidget):
     """Formulario + seguimiento en vivo + detalle + conteo."""
 
+    #: Se emite al contraer o desplegar. La ventana lo usa para devolverle al
+    #: panel principal el alto que deja libre, y para restaurarlo despues.
+    expandedChanged = Signal(bool)
+
     def __init__(self, controller: AppController, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.controller = controller
         self._default_sportsbook = ""
         self._tracking: List[ManualBetTracking] = []
+        #: Alto de un control compacto, derivado de la fuente para que siga
+        #: siendo correcto con otra escala de pantalla.
+        self._field_height = self.fontMetrics().height() + 10
         self._build_ui()
         self.refresh()
 
@@ -135,22 +172,106 @@ class ManualBetsPanel(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setSpacing(0)
 
         box = QGroupBox("APUESTAS MANUALES - seguimiento en vivo")
+        box.setObjectName("manualPanel")
         box_layout = QVBoxLayout(box)
-        box_layout.setSpacing(6)
-        box_layout.addLayout(self._build_form())
-        box_layout.addWidget(self._build_table(), 1)
-        box_layout.addWidget(self._build_detail())
-        box_layout.addLayout(self._build_actions())
-        box_layout.addLayout(self._build_summary())
-        root.addWidget(box)
+        box_layout.setContentsMargins(8, 2, 8, 6)
+        box_layout.setSpacing(4)
+        box_layout.addLayout(self._build_header())
+
+        # Todo lo que se oculta al contraer vive dentro de este cuerpo.
+        self.body = QWidget()
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(4)
+        body.addLayout(self._build_form())
+        # Sin factor de estiramiento: la tabla tiene alto fijo y el panel no
+        # crece por tener mas apuestas.
+        body.addWidget(self._build_table())
+        body.addWidget(self._build_detail())
+        body.addLayout(self._build_actions())
+        body.addLayout(self._build_summary())
+        box_layout.addWidget(self.body)
+        self._box = box
+
+        # El contenido va dentro de un area con scroll para que el panel se
+        # pueda ESTRECHAR cuando la ventana es baja. Sin esto su altura minima
+        # seria la de todo su contenido y el divisor no podria darle al panel
+        # principal la altura que le corresponde.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(box)
+        self._scroll = scroll
+        root.addWidget(scroll)
+
+        # Puede encogerse hasta dejar ver poco mas que el encabezado; lo que
+        # no quepa se alcanza con el scroll interno.
+        self.setMinimumHeight(self._field_height * 2)
+        # Y no pide mas alto del que ocupa su contenido: lo que sobra es para
+        # las metricas del partido.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+
+    def sizeHint(self) -> QSize:
+        """Alto natural = el de su contenido.
+
+        El area con scroll, por si sola, sugiere un alto arbitrario. Aqui se
+        devuelve el del contenido real para que el divisor reparta bien y para
+        que al contraer el panel encoja de verdad.
+        """
+        base = super().sizeHint()
+        return QSize(base.width(), self._box.sizeHint().height())
+
+    def _build_header(self) -> QHBoxLayout:
+        """Franja del titulo con el boton de contraer/desplegar."""
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addStretch(1)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("panelToggle")
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(True)
+        self.toggle_button.setArrowType(Qt.UpArrow)
+        self.toggle_button.setToolTip("Contraer las apuestas manuales")
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.toggled.connect(self.set_expanded)
+        header.addWidget(self.toggle_button)
+        return header
+
+    # ------------------------------------------------------ contraer/desplegar
+    @property
+    def is_expanded(self) -> bool:
+        return self.body.isVisible()
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Muestra u oculta el cuerpo; contraido solo queda el encabezado."""
+        expanded = bool(expanded)
+        if self.toggle_button.isChecked() != expanded:
+            # Llega de codigo, no del boton: se sincroniza sin reentrar.
+            self.toggle_button.blockSignals(True)
+            self.toggle_button.setChecked(expanded)
+            self.toggle_button.blockSignals(False)
+        if self.body.isVisible() == expanded:
+            return
+        self.body.setVisible(expanded)
+        self.toggle_button.setArrowType(Qt.UpArrow if expanded else Qt.DownArrow)
+        self.toggle_button.setToolTip(
+            "Contraer las apuestas manuales" if expanded
+            else "Desplegar las apuestas manuales")
+        self.expandedChanged.emit(expanded)
+
+    def toggle_expanded(self) -> None:
+        self.set_expanded(not self.is_expanded)
 
     def _build_form(self) -> QGridLayout:
         form = QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(6)
-        form.setVerticalSpacing(4)
+        form.setVerticalSpacing(1)
 
         self.sportsbook_combo = QComboBox()
         self.sportsbook_combo.setEditable(True)
@@ -202,93 +323,139 @@ class ManualBetsPanel(QWidget):
         self.add_button.setObjectName("primary")
         self.add_button.clicked.connect(self._add_bet)
 
-        form.addWidget(QLabel("Casa"), 0, 0)
-        form.addWidget(self.sportsbook_combo, 1, 0)
-        form.addWidget(QLabel("Evento"), 0, 1)
-        form.addWidget(self.event_edit, 1, 1)
-        form.addWidget(QLabel("Mercado"), 0, 2)
-        form.addWidget(self.market_combo, 1, 2)
-        form.addWidget(QLabel("Lado"), 0, 3)
-        form.addWidget(self.side_combo, 1, 3)
-        form.addWidget(QLabel("Linea"), 0, 4)
-        form.addWidget(self.line_spin, 1, 4)
-        form.addWidget(QLabel("Cuota"), 0, 5)
-        form.addWidget(self.odds_spin, 1, 5)
-        form.addWidget(QLabel("Monto"), 0, 6)
-        form.addWidget(self.stake_spin, 1, 6)
-        form.addWidget(self.add_button, 1, 7)
+        campos = [
+            ("Casa", self.sportsbook_combo),
+            ("Evento", self.event_edit),
+            ("Mercado", self.market_combo),
+            ("Lado", self.side_combo),
+            ("Linea", self.line_spin),
+            ("Cuota", self.odds_spin),
+            ("Monto", self.stake_spin),
+        ]
+        for columna, (texto, control) in enumerate(campos):
+            titulo = QLabel(texto)
+            titulo.setObjectName("metricLabel")
+            form.addWidget(titulo, 0, columna)
+            control.setFixedHeight(self._field_height)
+            form.addWidget(control, 1, columna)
+
+        self.add_button.setFixedHeight(self._field_height)
+        form.addWidget(self.add_button, 1, len(campos))
         form.setColumnStretch(1, 1)
         return form
 
     def _build_table(self) -> QTableWidget:
         self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setObjectName("manualTable")
         self.table.setHorizontalHeaderLabels([name for name, _ in COLUMNS])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(120)
         self.table.setColumnHidden(COL_ID, True)
+
+        # Filas compactas: lo justo para leerlas sin desperdiciar alto.
+        filas = self.table.verticalHeader()
+        filas.setVisible(False)
+        filas.setDefaultSectionSize(self._field_height)
+        filas.setMinimumSectionSize(self._field_height)
+
         # Ninguna columna se come a las demas: anchura propia y scroll
         # horizontal cuando no caben todas.
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
         for index, (_, width) in enumerate(COLUMNS):
             if width:
                 self.table.setColumnWidth(index, width)
+
+        self._apply_table_height()
         self.table.itemSelectionChanged.connect(self._update_detail)
         return self.table
 
+    def _apply_table_height(self) -> None:
+        """Fija la altura de la tabla a exactamente `VISIBLE_ROWS` filas.
+
+        Con mas apuestas aparece scroll vertical y el panel NO crece: es lo
+        que impide que una tabla medio vacia le robe media pantalla a las
+        metricas del partido.
+
+        Se reserva ademas el alto de la barra horizontal, que siempre puede
+        aparecer porque la tabla tiene mas columnas de las que suelen caber;
+        sin reservarlo taparia la tercera fila.
+        """
+        fila = self.table.verticalHeader().defaultSectionSize()
+        cabecera = self.table.horizontalHeader().sizeHint().height()
+        marco = 2 * self.table.frameWidth()
+        barra = self.table.horizontalScrollBar().sizeHint().height()
+        self.table.setFixedHeight(cabecera + VISIBLE_ROWS * fila + marco + barra)
+
+    @property
+    def visible_rows(self) -> int:
+        """Cuantas filas caben sin hacer scroll."""
+        fila = self.table.verticalHeader().defaultSectionSize()
+        if fila <= 0:
+            return 0
+        alto = (self.table.height()
+                - self.table.horizontalHeader().sizeHint().height()
+                - 2 * self.table.frameWidth()
+                - self.table.horizontalScrollBar().sizeHint().height())
+        return max(0, alto // fila)
+
     def _build_detail(self) -> QFrame:
-        """Bloque de detalle, con el mismo espiritu que 'MI APUESTA'."""
+        """Detalle de la apuesta seleccionada, en franjas horizontales.
+
+        Estan los mismos diez campos que antes; lo que cambia es el reparto.
+        La rejilla anterior ponia el rotulo encima del valor, asi que diez
+        campos ocupaban cuatro filas de widgets mas el titular. Aqui cada
+        campo es "ROTULO valor" en linea, de modo que caben en dos franjas.
+        """
         card = QFrame()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(2)
 
+        # Titulo y titular comparten franja para no gastar dos.
+        encabezado = QHBoxLayout()
+        encabezado.setSpacing(10)
         self.detail_title = QLabel("Selecciona una apuesta para ver su seguimiento")
         self.detail_title.setObjectName("metricValue")
-        layout.addWidget(self.detail_title)
-
         self.detail_headline = QLabel("")
         self.detail_headline.setObjectName("status")
-        self.detail_headline.setWordWrap(True)
-        layout.addWidget(self.detail_headline)
+        self.detail_headline.setWordWrap(False)
+        encabezado.addWidget(self.detail_title)
+        encabezado.addWidget(self.detail_headline, 1)
+        layout.addLayout(encabezado)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(2)
         self.detail_values = {}
-        campos = [
-            ("line", "Linea apostada"),
-            ("current", "Puntos actuales"),
-            ("margin", "Margen"),
-            ("tolerable", "Puntos que caben"),
-            ("cross", "Puntos para superar"),
-            ("projection", "Proyeccion"),
-            ("difference", "Dif. contra linea"),
-            ("pace", "Ritmo actual"),
-            ("required", "Ritmo para cruzar"),
-            ("status", "Estado"),
-        ]
-        for index, (clave, etiqueta) in enumerate(campos):
-            fila, columna = divmod(index, 5)
-            titulo = QLabel(etiqueta)
-            titulo.setObjectName("metricLabel")
-            valor = QLabel(fmt.UNKNOWN)
-            valor.setObjectName("metricValue")
-            grid.addWidget(titulo, fila * 2, columna)
-            grid.addWidget(valor, fila * 2 + 1, columna)
-            self.detail_values[clave] = valor
-        layout.addLayout(grid)
+        for campos in DETAIL_ROWS:
+            franja = QHBoxLayout()
+            franja.setSpacing(14)
+            for clave, etiqueta in campos:
+                celda = QHBoxLayout()
+                celda.setSpacing(4)
+                titulo = QLabel(etiqueta)
+                titulo.setObjectName("metricLabel")
+                valor = QLabel(fmt.UNKNOWN)
+                valor.setObjectName("metricValue")
+                celda.addWidget(titulo)
+                celda.addWidget(valor)
+                franja.addLayout(celda)
+                self.detail_values[clave] = valor
+            franja.addStretch(1)
+            layout.addLayout(franja)
+
         self.detail_card = card
         return card
 
     def _build_actions(self) -> QHBoxLayout:
+        """Una sola franja de botones, sin crear otro bloque vertical."""
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(4)
+
         self.won_button = QPushButton("GANADA")
         self.lost_button = QPushButton("PERDIDA")
         self.void_button = QPushButton("NULA")
@@ -299,7 +466,14 @@ class ManualBetsPanel(QWidget):
         self.void_button.clicked.connect(lambda: self._settle_selected(ManualBetStatus.VOID))
         self.pending_button.clicked.connect(lambda: self._settle_selected(ManualBetStatus.PENDING))
         self.delete_button.clicked.connect(self._delete_selected)
-        actions.addWidget(QLabel("Resultado de la fila seleccionada:"))
+
+        rotulo = QLabel("Resultado:")
+        rotulo.setObjectName("metricLabel")
+        rotulo.setToolTip("Se aplica a la apuesta seleccionada en la tabla.")
+        actions.addWidget(rotulo)
+        for boton in (self.won_button, self.lost_button, self.void_button,
+                      self.pending_button, self.delete_button):
+            boton.setFixedHeight(self._field_height)
         actions.addWidget(self.won_button)
         actions.addWidget(self.lost_button)
         actions.addWidget(self.void_button)
@@ -309,7 +483,9 @@ class ManualBetsPanel(QWidget):
         return actions
 
     def _build_summary(self) -> QHBoxLayout:
+        """Conteo en una sola linea al pie: informacion secundaria."""
         summary = QHBoxLayout()
+        summary.setContentsMargins(0, 0, 0, 0)
         summary.setSpacing(14)
         self.count_label = QLabel()
         self.results_label = QLabel()
