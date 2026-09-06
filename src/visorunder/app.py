@@ -604,6 +604,14 @@ class AppController:
         if snapshot is None and self.reader is not None:
             snapshot = self.reader.last_snapshot
         state = snapshot.state if snapshot is not None else None
+        return self.manual_bet_tracking_state(state)
+
+    def manual_bet_tracking_state(self, state) -> List[ManualBetTracking]:
+        """Igual que `manual_bet_tracking`, partiendo de un GameState concreto.
+
+        Sirve para calcular el seguimiento contra un estado que no viene del
+        lector: una repeticion del historial o una prueba.
+        """
         return manual_tracking_mod.track_manual_bets(state, self.manual_ledger())
 
     def manual_bet_tracking_for(

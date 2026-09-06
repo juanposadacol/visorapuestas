@@ -1,14 +1,37 @@
-"""Panel compacto para registrar y contabilizar apuestas manuales."""
+"""Panel de APUESTAS MANUALES: seguimiento en vivo, no un historial de dinero.
+
+Una apuesta manual se introduce una vez (casa, mercado, lado, linea, cuota) y
+a partir de ahi la aplicacion la sigue sola con el marcador real del partido:
+cuantos puntos lleva SU mercado, cuanto margen queda, cuantos puntos hacen
+cruzar la linea, que proyecta el ritmo y de que lado cae esa proyeccion.
+
+La jerarquia visual sigue esa idea:
+
+* la tabla ensena primero el seguimiento deportivo (ACTUAL, MARGEN, PUNTOS
+  P/CRUZAR, PROYECCION, DIF. LINEA) y deja MONTO y UTILIDAD al final, donde no
+  desplazan a lo importante; la tabla tiene scroll horizontal para que ninguna
+  columna se coma a las demas;
+* debajo hay un bloque de detalle de la apuesta seleccionada, con el mismo
+  espiritu que la tarjeta "MI APUESTA" del panel principal;
+* el conteo (total, pendientes, ganadas, perdidas, utilidad, ROI) sigue
+  existiendo como informacion secundaria, en una sola linea.
+
+Los numeros los calcula `calculations.manual_tracking`, que reutiliza el mismo
+motor que el radar. Aqui solo se pintan.
+"""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,10 +47,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..app import AppController
+from ..calculations.manual_tracking import ManualBetTracking, TrackingStatus
 from ..config.profiles import KNOWN_SPORTSBOOKS
 from ..domain.manual_bet import ManualBetStatus
 from ..domain.market import MarketKey, Side
-
+from . import formatters as fmt
+from .styles import COLOR_DANGER, COLOR_MUTED, COLOR_OK, COLOR_TEXT, COLOR_WARN
 
 MARKET_CHOICES = [
     ("GAME", "Partido"),
@@ -38,6 +63,37 @@ MARKET_CHOICES = [
     ("H1", "1.a mitad"),
     ("H2", "2.a mitad"),
 ]
+
+#: Columnas de la tabla. El seguimiento va primero; el dinero, al final.
+COLUMNS = [
+    ("ID", 0),
+    ("CASA", 90),
+    ("MERCADO", 80),
+    ("APUESTA", 105),
+    ("ACTUAL", 70),
+    ("MARGEN", 75),
+    ("P/CRUZAR", 85),
+    ("PROYECCION", 95),
+    ("DIF. LINEA", 90),
+    ("CUOTA", 60),
+    ("ESTADO", 105),
+    ("MONTO", 90),
+    ("UTILIDAD", 90),
+]
+COL_ID = 0
+COL_STATUS = 10
+
+#: Color de cada estado de seguimiento.
+STATUS_COLORS = {
+    TrackingStatus.FAVORABLE: COLOR_OK,
+    TrackingStatus.AT_RISK: COLOR_WARN,
+    TrackingStatus.EXCEEDED: COLOR_DANGER,
+    TrackingStatus.WON: COLOR_OK,
+    TrackingStatus.LOST: COLOR_DANGER,
+    TrackingStatus.PUSH: COLOR_MUTED,
+    TrackingStatus.NOT_STARTED: COLOR_MUTED,
+    TrackingStatus.NO_DATA: COLOR_MUTED,
+}
 
 
 def _market_key(value: str) -> MarketKey:
@@ -51,29 +107,47 @@ def _market_key(value: str) -> MarketKey:
     raise ValueError(f"Mercado manual no soportado: {value}")
 
 
-def _money(value: float) -> str:
+def _money(value: Optional[float]) -> str:
+    if value is None:
+        return fmt.UNKNOWN
     return f"$ {value:,.0f}".replace(",", ".")
 
 
+def _signed(value: Optional[float], decimals: int = 1) -> str:
+    """Numero con signo explicito. El signo es la lectura rapida."""
+    if value is None:
+        return fmt.UNKNOWN
+    return f"{value:+.{decimals}f}"
+
+
 class ManualBetsPanel(QWidget):
-    """Formulario + historial + conteo de apuestas introducidas a mano."""
+    """Formulario + seguimiento en vivo + detalle + conteo."""
 
     def __init__(self, controller: AppController, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.controller = controller
         self._default_sportsbook = ""
+        self._tracking: List[ManualBetTracking] = []
         self._build_ui()
         self.refresh()
 
+    # ---------------------------------------------------------- construccion
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        box = QGroupBox("APUESTAS MANUALES - registro y conteo")
+        box = QGroupBox("APUESTAS MANUALES - seguimiento en vivo")
         box_layout = QVBoxLayout(box)
         box_layout.setSpacing(6)
+        box_layout.addLayout(self._build_form())
+        box_layout.addWidget(self._build_table(), 1)
+        box_layout.addWidget(self._build_detail())
+        box_layout.addLayout(self._build_actions())
+        box_layout.addLayout(self._build_summary())
+        root.addWidget(box)
 
+    def _build_form(self) -> QGridLayout:
         form = QGridLayout()
         form.setHorizontalSpacing(6)
         form.setVerticalSpacing(4)
@@ -83,7 +157,8 @@ class ManualBetsPanel(QWidget):
         self.sportsbook_combo.addItems(KNOWN_SPORTSBOOKS)
         self.sportsbook_combo.setMinimumWidth(110)
         self.sportsbook_combo.setToolTip(
-            "Puedes elegir una casa de la lista o escribir cualquier otra, por ejemplo Stake.")
+            "Puedes elegir una casa de la lista o escribir cualquier otra, por ejemplo Stake.\n"
+            "La casa no cambia el calculo: el marcador es del partido, no de la casa.")
 
         self.event_edit = QLineEdit()
         self.event_edit.setPlaceholderText("Partido / evento (opcional)")
@@ -92,6 +167,9 @@ class ManualBetsPanel(QWidget):
         self.market_combo = QComboBox()
         for value, label in MARKET_CHOICES:
             self.market_combo.addItem(label, value)
+        self.market_combo.setToolTip(
+            "El mercado decide QUE puntos se miran: Q4 usa los del Q4, "
+            "1.a mitad usa Q1+Q2 y Partido usa el total.")
 
         self.side_combo = QComboBox()
         self.side_combo.addItem("UNDER", Side.UNDER.value)
@@ -110,13 +188,17 @@ class ManualBetsPanel(QWidget):
         self.odds_spin.setValue(1.80)
 
         self.stake_spin = QDoubleSpinBox()
-        self.stake_spin.setRange(1.0, 999_999_999_999.0)
+        self.stake_spin.setRange(0.0, 999_999_999_999.0)
         self.stake_spin.setDecimals(0)
         self.stake_spin.setSingleStep(1000.0)
-        self.stake_spin.setValue(10_000.0)
+        self.stake_spin.setValue(0.0)
         self.stake_spin.setPrefix("$ ")
+        self.stake_spin.setSpecialValueText("$ (opcional)")
+        self.stake_spin.setToolTip(
+            "Opcional. Sin monto la apuesta se sigue igual; solo no entra en "
+            "el conteo de utilidad y ROI.")
 
-        self.add_button = QPushButton("AGREGAR APUESTA")
+        self.add_button = QPushButton("AGREGAR Y SEGUIR")
         self.add_button.setObjectName("primary")
         self.add_button.clicked.connect(self._add_bet)
 
@@ -136,42 +218,76 @@ class ManualBetsPanel(QWidget):
         form.addWidget(self.stake_spin, 1, 6)
         form.addWidget(self.add_button, 1, 7)
         form.setColumnStretch(1, 1)
-        box_layout.addLayout(form)
+        return form
 
-        summary = QHBoxLayout()
-        summary.setSpacing(14)
-        self.count_label = QLabel()
-        self.results_label = QLabel()
-        self.money_label = QLabel()
-        self.count_label.setObjectName("metricValue")
-        self.results_label.setObjectName("metricValue")
-        self.money_label.setObjectName("metricValue")
-        summary.addWidget(self.count_label)
-        summary.addWidget(self.results_label)
-        summary.addWidget(self.money_label)
-        summary.addStretch(1)
-        box_layout.addLayout(summary)
-
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "CASA", "MERCADO", "APUESTA", "CUOTA", "MONTO", "ESTADO", "UTILIDAD"])
+    def _build_table(self) -> QTableWidget:
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels([name for name, _ in COLUMNS])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(110)
-        self.table.setMaximumHeight(170)
-        self.table.setColumnHidden(0, True)
+        self.table.setMinimumHeight(120)
+        self.table.setColumnHidden(COL_ID, True)
+        # Ninguna columna se come a las demas: anchura propia y scroll
+        # horizontal cuando no caben todas.
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        box_layout.addWidget(self.table)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        for index, (_, width) in enumerate(COLUMNS):
+            if width:
+                self.table.setColumnWidth(index, width)
+        self.table.itemSelectionChanged.connect(self._update_detail)
+        return self.table
 
+    def _build_detail(self) -> QFrame:
+        """Bloque de detalle, con el mismo espiritu que 'MI APUESTA'."""
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        self.detail_title = QLabel("Selecciona una apuesta para ver su seguimiento")
+        self.detail_title.setObjectName("metricValue")
+        layout.addWidget(self.detail_title)
+
+        self.detail_headline = QLabel("")
+        self.detail_headline.setObjectName("status")
+        self.detail_headline.setWordWrap(True)
+        layout.addWidget(self.detail_headline)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(2)
+        self.detail_values = {}
+        campos = [
+            ("line", "Linea apostada"),
+            ("current", "Puntos actuales"),
+            ("margin", "Margen"),
+            ("tolerable", "Puntos que caben"),
+            ("cross", "Puntos para superar"),
+            ("projection", "Proyeccion"),
+            ("difference", "Dif. contra linea"),
+            ("pace", "Ritmo actual"),
+            ("required", "Ritmo para cruzar"),
+            ("status", "Estado"),
+        ]
+        for index, (clave, etiqueta) in enumerate(campos):
+            fila, columna = divmod(index, 5)
+            titulo = QLabel(etiqueta)
+            titulo.setObjectName("metricLabel")
+            valor = QLabel(fmt.UNKNOWN)
+            valor.setObjectName("metricValue")
+            grid.addWidget(titulo, fila * 2, columna)
+            grid.addWidget(valor, fila * 2 + 1, columna)
+            self.detail_values[clave] = valor
+        layout.addLayout(grid)
+        self.detail_card = card
+        return card
+
+    def _build_actions(self) -> QHBoxLayout:
         actions = QHBoxLayout()
         self.won_button = QPushButton("GANADA")
         self.lost_button = QPushButton("PERDIDA")
@@ -190,17 +306,23 @@ class ManualBetsPanel(QWidget):
         actions.addWidget(self.pending_button)
         actions.addStretch(1)
         actions.addWidget(self.delete_button)
-        box_layout.addLayout(actions)
+        return actions
 
-        self.help_label = QLabel(
-            "El conteo se guarda en SQLite. GANADA suma monto x (cuota - 1); "
-            "PERDIDA resta el monto; NULA deja utilidad 0. Pendientes no entran al ROI.")
-        self.help_label.setObjectName("status")
-        self.help_label.setWordWrap(True)
-        box_layout.addWidget(self.help_label)
+    def _build_summary(self) -> QHBoxLayout:
+        summary = QHBoxLayout()
+        summary.setSpacing(14)
+        self.count_label = QLabel()
+        self.results_label = QLabel()
+        self.money_label = QLabel()
+        for etiqueta in (self.count_label, self.results_label, self.money_label):
+            etiqueta.setObjectName("status")
+        summary.addWidget(self.count_label)
+        summary.addWidget(self.results_label)
+        summary.addWidget(self.money_label)
+        summary.addStretch(1)
+        return summary
 
-        root.addWidget(box)
-
+    # ----------------------------------------------------------------- datos
     def set_default_sportsbook(self, sportsbook: str) -> None:
         sportsbook = (sportsbook or "").strip()
         current = self.sportsbook_combo.currentText().strip()
@@ -221,6 +343,8 @@ class ManualBetsPanel(QWidget):
                 side=Side(self.side_combo.currentData()),
                 line=float(self.line_spin.value()),
                 odds=float(self.odds_spin.value()),
+                # Siempre un numero: `None` esta reservado para el flujo del
+                # Browser Bridge, que no se toca.
                 stake=float(self.stake_spin.value()),
             )
         except ValueError as exc:
@@ -234,7 +358,7 @@ class ManualBetsPanel(QWidget):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
             return None
-        item = self.table.item(rows[0].row(), 0)
+        item = self.table.item(rows[0].row(), COL_ID)
         return int(item.text()) if item is not None and item.text() else None
 
     def _settle_selected(self, status: ManualBetStatus) -> None:
@@ -260,42 +384,143 @@ class ManualBetsPanel(QWidget):
         self.controller.delete_manual_bet(bet_id)
         self.refresh()
 
+    # ---------------------------------------------------------------- pintar
+    def update_tracking(self, tracking: List[ManualBetTracking]) -> None:
+        """Refresco en vivo desde el ciclo de la ventana principal.
+
+        Se llama en cada lectura, asi que solo reconstruye la tabla cuando
+        cambia el conjunto de apuestas; en el caso normal actualiza las celdas
+        de seguimiento y conserva la seleccion del usuario.
+        """
+        anteriores = [t.bet.bet_id for t in self._tracking]
+        actuales = [t.bet.bet_id for t in tracking]
+        self._tracking = list(tracking)
+        if anteriores != actuales:
+            self.refresh()
+            return
+        for row, seguimiento in enumerate(self._tracking):
+            self._fill_row(row, seguimiento)
+        self._update_detail()
+
     def refresh(self, select_bet_id: Optional[int] = None) -> None:
-        bets = self.controller.list_manual_bets(100)
-        self.table.setRowCount(len(bets))
+        """Reconstruye la tabla entera desde el libro guardado."""
+        self.controller._invalidate_manual_ledger()
+        self._tracking = self.controller.manual_bet_tracking()
+
+        self.table.setRowCount(len(self._tracking))
         selected_row = None
-        for row, bet in enumerate(bets):
-            profit = bet.profit
-            values = [
-                str(bet.bet_id or ""),
-                bet.sportsbook,
-                bet.key.label.replace(" - Total de puntos", ""),
-                f"{bet.side.value} {bet.line:g}",
-                f"{bet.odds:.2f}",
-                _money(bet.stake),
-                bet.status.label,
-                "--" if profit is None else _money(profit),
-            ]
-            for column, text in enumerate(values):
-                item = QTableWidgetItem(text)
-                if column in (4, 5, 7):
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if bet.event:
-                    item.setToolTip(bet.event)
-                self.table.setItem(row, column, item)
-            if select_bet_id is not None and bet.bet_id == select_bet_id:
+        for row, seguimiento in enumerate(self._tracking):
+            self._fill_row(row, seguimiento)
+            if select_bet_id is not None and seguimiento.bet.bet_id == select_bet_id:
                 selected_row = row
 
         if selected_row is not None:
             self.table.selectRow(selected_row)
+        elif self._tracking and not self.table.selectionModel().hasSelection():
+            self.table.selectRow(0)
 
+        self._update_summary()
+        self._update_detail()
+
+    def _fill_row(self, row: int, seguimiento: ManualBetTracking) -> None:
+        bet = seguimiento.bet
+        profit = bet.profit
+        valores = [
+            str(bet.bet_id or ""),
+            bet.sportsbook,
+            seguimiento.market_label,
+            seguimiento.description,
+            fmt.integer(seguimiento.scope_points),
+            _signed(seguimiento.margin),
+            fmt.integer(seguimiento.points_to_cross),
+            fmt.projection(seguimiento.projection),
+            _signed(seguimiento.projection_vs_line),
+            f"{bet.odds:.2f}",
+            self._status_text(seguimiento),
+            _money(bet.stake) if bet.has_stake else fmt.UNKNOWN,
+            _money(profit),
+        ]
+        for column, texto in enumerate(valores):
+            item = self.table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                self.table.setItem(row, column, item)
+            item.setText(texto)
+            if column >= 4:
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if bet.event:
+                item.setToolTip(bet.event)
+
+        color = QColor(self._status_color(seguimiento))
+        self.table.item(row, COL_STATUS).setForeground(color)
+
+    def _status_text(self, seguimiento: ManualBetTracking) -> str:
+        """El resultado que TU marcaste manda sobre el seguimiento en vivo."""
+        if seguimiento.bet.status is not ManualBetStatus.PENDING:
+            return seguimiento.bet.status.label
+        return seguimiento.status.label
+
+    def _status_color(self, seguimiento: ManualBetTracking) -> str:
+        estado = seguimiento.bet.status
+        if estado is ManualBetStatus.WON:
+            return COLOR_OK
+        if estado is ManualBetStatus.LOST:
+            return COLOR_DANGER
+        if estado is ManualBetStatus.VOID:
+            return COLOR_MUTED
+        return STATUS_COLORS.get(seguimiento.status, COLOR_TEXT)
+
+    def _selected_tracking(self) -> Optional[ManualBetTracking]:
+        bet_id = self._selected_bet_id()
+        if bet_id is None:
+            return None
+        return next((t for t in self._tracking if t.bet.bet_id == bet_id), None)
+
+    def _update_detail(self) -> None:
+        seguimiento = self._selected_tracking()
+        if seguimiento is None:
+            self.detail_title.setText("Selecciona una apuesta para ver su seguimiento")
+            self.detail_headline.setText("")
+            for etiqueta in self.detail_values.values():
+                etiqueta.setText(fmt.UNKNOWN)
+            return
+
+        bet = seguimiento.bet
+        self.detail_title.setText(
+            f"{bet.sportsbook}   |   {seguimiento.market_label}   |   "
+            f"{seguimiento.description} @ {bet.odds:.2f}")
+
+        titular = seguimiento.describe_margin()
+        if seguimiento.unavailable_reason:
+            titular = seguimiento.unavailable_reason
+        self.detail_headline.setText(titular)
+
+        self.detail_values["line"].setText(fmt.line(bet.line))
+        self.detail_values["current"].setText(fmt.integer(seguimiento.scope_points))
+        self.detail_values["margin"].setText(_signed(seguimiento.margin))
+        self.detail_values["tolerable"].setText(
+            fmt.integer(seguimiento.tolerable_points)
+            if bet.side is Side.UNDER else fmt.UNKNOWN)
+        self.detail_values["cross"].setText(fmt.integer(seguimiento.points_to_cross))
+        self.detail_values["projection"].setText(fmt.projection(seguimiento.projection))
+        self.detail_values["difference"].setText(_signed(seguimiento.projection_vs_line))
+        self.detail_values["pace"].setText(fmt.pace(seguimiento.current_pace))
+        self.detail_values["required"].setText(fmt.pace(seguimiento.required_pace))
+
+        estado = self.detail_values["status"]
+        estado.setText(self._status_text(seguimiento))
+        estado.setStyleSheet(
+            f"color: {self._status_color(seguimiento)}; font-size: 15px; font-weight: 700;")
+
+    def _update_summary(self) -> None:
         summary = self.controller.manual_bet_summary()
-        hit_rate = "--" if summary.hit_rate is None else f"{summary.hit_rate:.1f}%"
-        roi = "--" if summary.roi is None else f"{summary.roi:+.1f}%"
+        hit_rate = fmt.UNKNOWN if summary.hit_rate is None else f"{summary.hit_rate:.1f}%"
+        roi = fmt.UNKNOWN if summary.roi is None else f"{summary.roi:+.1f}%"
         self.count_label.setText(
             f"TOTAL {summary.total}   |   PENDIENTES {summary.pending}")
         self.results_label.setText(
             f"GANADAS {summary.won}   |   PERDIDAS {summary.lost}   |   NULAS {summary.void}   |   "
-            f"ACIerto {hit_rate}".upper())
+            f"ACIERTO {hit_rate}")
         self.money_label.setText(
-            f"APOSTADO {_money(summary.total_staked)}   |   UTILIDAD {_money(summary.net_profit)}   |   ROI {roi}")
+            f"APOSTADO {_money(summary.total_staked)}   |   "
+            f"UTILIDAD {_money(summary.net_profit)}   |   ROI {roi}")

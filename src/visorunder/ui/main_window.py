@@ -523,6 +523,7 @@ class MainWindow(QMainWindow):
                 conflicts=view.source_conflicts,
                 extension_state=view.extension_state, waiting_for=view.waiting_for,
             )
+            self.manual_bets_panel.update_tracking(view.manual_tracking)
             self._update_waiting_status(view)
             return
 
@@ -547,6 +548,9 @@ class MainWindow(QMainWindow):
             in_transition=view.snapshot.market_in_transition,
             now=view.snapshot.ts,
         )
+        # Cada lectura actualiza sola el seguimiento de las apuestas manuales:
+        # cuando el marcador pasa de 32 a 34, la tabla cambia sin tocar nada.
+        self.manual_bets_panel.update_tracking(view.manual_tracking)
         self._update_status(view)
         self._check_event_change()
 
