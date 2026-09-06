@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migration_001(cx: sqlite3.Connection) -> None:
@@ -161,7 +161,49 @@ def _migration_002(cx: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [_migration_001, _migration_002]
+def _migration_003(cx: sqlite3.Connection) -> None:
+    """Registro persistente de apuestas introducidas manualmente.
+
+    Se mantiene separado de ``bets`` porque esa tabla representa apuestas
+    fijadas desde una linea leida por OCR. Una apuesta manual puede existir
+    sin sesion, pertenecer a cualquier casa y necesita monto + resultado para
+    llevar conteo, utilidad y ROI.
+    """
+    cx.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS manual_bets (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+            sportsbook  TEXT NOT NULL,
+            event       TEXT NOT NULL DEFAULT '',
+            market_type TEXT NOT NULL,
+            quarter     INTEGER,
+            half        INTEGER,
+            side        TEXT NOT NULL,
+            line        REAL NOT NULL,
+            odds        REAL NOT NULL,
+            stake       REAL NOT NULL,
+            placed_at   REAL NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'PENDING',
+            settled_at  REAL,
+            notes       TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_placed_at
+            ON manual_bets(placed_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_session
+            ON manual_bets(session_id);
+        CREATE INDEX IF NOT EXISTS ix_manual_bets_status
+            ON manual_bets(status);
+        """
+    )
+
+
+MIGRATIONS: List[Callable[[sqlite3.Connection], None]] = [
+    _migration_001,
+    _migration_002,
+    _migration_003,
+]
 
 
 class Database:
