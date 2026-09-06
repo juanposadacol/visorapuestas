@@ -6,12 +6,14 @@ from visorunder.capture.roi import Rect, RoiKind
 from visorunder.config.profiles import ScreenContext, SportsbookProfile
 from visorunder.domain.bet import LockedBet
 from visorunder.domain.game_state import GameState
+from visorunder.domain.manual_bet import ManualBet, ManualBetStatus
 from visorunder.domain.market import MarketKey, MarketLine, MarketSnapshot, Side
 from visorunder.domain.values import Observed
 from visorunder.storage.database import Database
 from visorunder.storage.repositories import (
     BetRepository,
     HistoryRepository,
+    ManualBetRepository,
     ProfileRepository,
     SessionRepository,
 )
@@ -62,6 +64,54 @@ def test_actualizar_perfil_no_duplica(db):
     repo.save(profile)
     assert repo.list_names() == ["Sportium 1080"]
     assert repo.load("Sportium 1080").notes == "segunda version"
+
+
+def test_perfiles_de_distintas_casas_conviven(db):
+    repo = ProfileRepository(db)
+    sportium = _profile()
+    stake = _profile()
+    stake.name = "Stake principal"
+    stake.sportsbook = "Stake"
+
+    repo.save(sportium)
+    repo.save(stake)
+
+    assert repo.list_names() == ["Sportium 1080", "Stake principal"]
+    assert repo.load("Sportium 1080").sportsbook == "Sportium"
+    assert repo.load("Stake principal").sportsbook == "Stake"
+    assert repo.load("Sportium 1080").profile_id != repo.load("Stake principal").profile_id
+
+
+def test_perfil_nuevo_repetido_no_sobrescribe_el_anterior(db):
+    repo = ProfileRepository(db)
+    original = _profile()
+    original.notes = "original"
+    repo.save(original)
+
+    repetido = _profile()  # profile_id None: es realmente OTRO perfil
+    repetido.notes = "no debe reemplazar"
+    with pytest.raises(ValueError, match="Ya existe"):
+        repo.save(repetido)
+
+    assert repo.load("Sportium 1080").notes == "original"
+    assert repo.list_names() == ["Sportium 1080"]
+
+
+def test_renombrar_perfil_actualiza_el_mismo_registro(db):
+    repo = ProfileRepository(db)
+    profile = _profile()
+    original_id = repo.save(profile)
+
+    profile.name = "Stake escritorio"
+    profile.sportsbook = "Stake"
+    renamed_id = repo.save(profile)
+
+    assert renamed_id == original_id
+    assert repo.load("Sportium 1080") is None
+    loaded = repo.load("Stake escritorio")
+    assert loaded is not None
+    assert loaded.profile_id == original_id
+    assert loaded.sportsbook == "Stake"
 
 
 def test_regiones_quedan_consultables(db):
@@ -136,6 +186,50 @@ def test_apuesta_fijada_se_guarda_y_se_recupera(db):
     assert db.query_one("SELECT status FROM bets WHERE id = ?", (bet_id,))["status"] == "CLOSED"
 
 
+def test_apuestas_manuales_se_guardan_liquidan_y_contabilizan(db):
+    repo = ManualBetRepository(db)
+    first = repo.save(ManualBet(
+        sportsbook="Stake", event="A vs B", key=MarketKey.quarter(2),
+        side=Side.UNDER, line=48.5, odds=1.85, stake=10_000,
+    ))
+    second = repo.save(ManualBet(
+        sportsbook="Sportium", event="C vs D", key=MarketKey.game(),
+        side=Side.UNDER, line=192.5, odds=1.78, stake=5_000,
+    ))
+
+    pending = repo.summary()
+    assert (pending.total, pending.pending) == (2, 2)
+    assert pending.net_profit == 0
+    assert pending.roi is None
+
+    won = repo.settle(first.bet_id, ManualBetStatus.WON)
+    lost = repo.settle(second.bet_id, ManualBetStatus.LOST)
+    assert won.profit == pytest.approx(8_500)
+    assert lost.profit == pytest.approx(-5_000)
+
+    summary = repo.summary()
+    assert (summary.won, summary.lost, summary.pending) == (1, 1, 0)
+    assert summary.total_staked == pytest.approx(15_000)
+    assert summary.resolved_stake == pytest.approx(15_000)
+    assert summary.net_profit == pytest.approx(3_500)
+    assert summary.hit_rate == pytest.approx(50.0)
+    assert summary.roi == pytest.approx(3500 / 15000 * 100)
+
+
+def test_apuesta_manual_nula_no_afecta_utilidad_ni_roi(db):
+    repo = ManualBetRepository(db)
+    saved = repo.save(ManualBet(
+        sportsbook="Stake", event="", key=MarketKey.game(), side=Side.OVER,
+        line=180.5, odds=2.0, stake=20_000,
+    ))
+    repo.settle(saved.bet_id, ManualBetStatus.VOID)
+    summary = repo.summary()
+    assert summary.void == 1
+    assert summary.net_profit == 0
+    assert summary.resolved_stake == 0
+    assert summary.roi is None
+
+
 def test_observaciones_ocr_para_diagnostico(db):
     sessions = SessionRepository(db)
     history = HistoryRepository(db)
@@ -146,12 +240,12 @@ def test_observaciones_ocr_para_diagnostico(db):
     assert rows[0]["value_text"] == "328"
 
 
-# --------------------------------------- criterios de la sesion (migracion 002)
-def test_migracion_002_actualiza_una_base_de_la_version_1(tmp_path):
-    """Una base ya existente debe subir de version sin perder el historial."""
+# --------------------------------------- criterios de la sesion (migraciones)
+def test_migraciones_actualizan_una_base_de_la_version_1(tmp_path):
+    """Una base ya existente debe subir a la ultima version sin perder historial."""
     import sqlite3
 
-    from visorunder.storage.database import _migration_001
+    from visorunder.storage.database import SCHEMA_VERSION, _migration_001
 
     path = tmp_path / "vieja.db"
     cx = sqlite3.connect(path)
@@ -162,11 +256,13 @@ def test_migracion_002_actualiza_una_base_de_la_version_1(tmp_path):
     cx.close()
 
     db = Database(path)
-    assert db.version == 2
+    assert db.version == SCHEMA_VERSION
     fila = db.query_one("SELECT started_at, status, entry_criteria FROM sessions")
-    assert fila["started_at"] == 1000.0     # el historial anterior sigue ahi
+    assert fila["started_at"] == 1000.0
     assert fila["status"] == "FINISHED"
-    assert fila["entry_criteria"] == "{}"   # sin criterios registrados
+    assert fila["entry_criteria"] == "{}"
+    assert db.query_one(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='manual_bets'") is not None
     db.close()
 
 
@@ -182,7 +278,6 @@ def test_la_sesion_guarda_los_criterios_usados(db):
     assert recuperados.reference_pace == 4.25
     assert recuperados.target_under_odds == 1.95
     assert recuperados.threshold_very_demanding == 1.5
-    # consultables tambien como columnas sueltas
     fila = db.query_one("SELECT reference_pace, target_under_odds FROM sessions WHERE id = ?",
                         (session_id,))
     assert fila["reference_pace"] == 4.25
