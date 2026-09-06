@@ -10,12 +10,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional
 
 from .calculations import entry as entry_mod
 from .calculations import metrics as metrics_mod
 from .calculations.entry import LineEvaluation
-from .calculations.metrics import BetMetrics, GeneralMetrics
+from .calculations.metrics import GeneralMetrics
 from .config.criteria import EntryCriteria
 from .capture.roi_manager import RoiManager
 from .capture.screen_capture import ScreenCapture, create_capture
@@ -23,7 +23,8 @@ from .config.profiles import ScreenContext, SportsbookProfile
 from .config.settings import AppSettings
 from .diagnostics.logbus import LogBus
 from .domain.bet import LockedBet
-from .domain.market import MarketLine, MarketSnapshot, Side
+from .domain.manual_bet import ManualBet, ManualBetStatus, ManualBetSummary
+from .domain.market import MarketKey, MarketLine, Side
 from .domain.rules import rules_from_name
 from .ocr.base import EngineNotAvailable, OcrEngine
 from .ocr.engine import create_engine
@@ -32,6 +33,7 @@ from .storage.database import Database
 from .storage.repositories import (
     BetRepository,
     HistoryRepository,
+    ManualBetRepository,
     ProfileRepository,
     SessionRepository,
 )
@@ -89,9 +91,11 @@ class AppController:
         self.sessions = SessionRepository(self.db)
         self.history = HistoryRepository(self.db)
         self.bets = BetRepository(self.db)
+        self.manual_bets = ManualBetRepository(self.db)
 
         self._capture = capture
         self.engine: Optional[OcrEngine] = None
+        self._engine_setting: Optional[str] = None
         self.profile: Optional[SportsbookProfile] = None
         self.reader: Optional[LiveReader] = None
         self.session_id: Optional[int] = None
@@ -113,14 +117,24 @@ class AppController:
         return self._capture
 
     def ensure_engine(self, name: str = "auto") -> Optional[OcrEngine]:
-        if self.engine is not None:
+        """Devuelve el motor pedido por el perfil activo.
+
+        Antes se reutilizaba siempre el primer motor creado. Al cambiar entre
+        perfiles de distintas casas, un perfil que pidiera otro motor OCR no
+        llegaba a aplicarlo. Ahora el motor se reutiliza solo si la
+        configuracion solicitada coincide.
+        """
+        requested = (name or "auto").strip() or "auto"
+        if self.engine is not None and self._engine_setting == requested:
             return self.engine
         try:
-            self.engine = create_engine(name)
+            self.engine = create_engine(requested)
             self.engine.warmup()
+            self._engine_setting = requested
             self.log.info(f"Motor OCR: {self.engine.describe()}")
         except EngineNotAvailable as exc:
             self.engine = None
+            self._engine_setting = None
             self.log.error(str(exc))
         return self.engine
 
@@ -140,6 +154,7 @@ class AppController:
         self._capture = NullCapture()
         self.engine = demo_engine(self.demo_game)
         profile = demo_profile()
+        self._engine_setting = profile.engine
         existing = self.profiles.load(profile.name)
         if existing is not None:
             profile.profile_id = existing.profile_id
@@ -150,6 +165,9 @@ class AppController:
     # -------------------------------------------------------------- perfiles
     def profile_names(self) -> List[str]:
         return self.profiles.list_names()
+
+    def profile_exists(self, name: str, *, exclude_profile_id: Optional[int] = None) -> bool:
+        return self.profiles.exists(name, exclude_profile_id=exclude_profile_id)
 
     def load_profile(self, name: str) -> Optional[SportsbookProfile]:
         profile = self.profiles.load(name)
@@ -162,7 +180,7 @@ class AppController:
         profile_id = self.profiles.save(profile)
         self.profile = profile
         self.settings.last_profile = profile.name
-        self.log.info(f"Perfil guardado: {profile.name}")
+        self.log.info(f"Perfil guardado: {profile.name} ({profile.sportsbook or profile.name})")
         return profile_id
 
     def new_profile(self, name: str = "Nuevo perfil") -> SportsbookProfile:
@@ -306,6 +324,44 @@ class AppController:
             self.bets.close(self.locked_bet.bet_id, "RELEASED")
         self.locked_bet = None
         self.log.info("Apuesta liberada")
+
+    # ------------------------------------------------------ apuestas manuales
+    def add_manual_bet(self, *, sportsbook: str, event: str, key: MarketKey,
+                       side: Side, line: float, odds: float, stake: float,
+                       notes: str = "") -> ManualBet:
+        bet = ManualBet(
+            sportsbook=sportsbook,
+            event=event,
+            key=key,
+            side=side,
+            line=float(line),
+            odds=float(odds),
+            stake=float(stake),
+            notes=notes,
+            session_id=self.session_id,
+        )
+        saved = self.manual_bets.save(bet)
+        self.log.info(
+            f"APUESTA MANUAL #{saved.bet_id}: {saved.sportsbook} | "
+            f"{saved.key.label} | {saved.description} | monto {saved.stake:g}"
+        )
+        return saved
+
+    def list_manual_bets(self, limit: int = 100) -> List[ManualBet]:
+        return self.manual_bets.list_recent(limit)
+
+    def settle_manual_bet(self, bet_id: int, status: ManualBetStatus) -> Optional[ManualBet]:
+        bet = self.manual_bets.settle(bet_id, status)
+        if bet is not None:
+            self.log.info(f"APUESTA MANUAL #{bet_id}: {status.label}")
+        return bet
+
+    def delete_manual_bet(self, bet_id: int) -> None:
+        self.manual_bets.delete(bet_id)
+        self.log.info(f"APUESTA MANUAL #{bet_id}: eliminada")
+
+    def manual_bet_summary(self) -> ManualBetSummary:
+        return self.manual_bets.summary()
 
     def set_period_baseline(self, period: int, score_a: int, score_b: int) -> None:
         if self.reader is None:
